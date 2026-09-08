@@ -1,0 +1,772 @@
+{
+  "CapturedAt": "2026-09-09T03:16:58.5238702+07:00",
+  "OsVersion": "Microsoft Windows NT 10.0.26200.0",
+  "Method": "Read-only registry snapshot; not a live MMDevice/KS capability probe",
+  "AsioDrivers": [
+    {
+      "Name": "Ableton Move",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "Ableton Push",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "ASIO4ALL v2",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "FL Studio ASIO",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-128",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-256A",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-256B",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-32",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-64A",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-64B",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-8",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VirtualAudioSystem",
+      "RegistryView": "Registry64",
+      "StreamVerified": false
+    },
+    {
+      "Name": "Ableton Move",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "Ableton Push",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "ASIO4ALL v2",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "FL Studio ASIO",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-128",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-256A",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-256B",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-32",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-512",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-64A",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-64B",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VB-Matrix VASIO-8",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    },
+    {
+      "Name": "VirtualAudioSystem",
+      "RegistryView": "Registry32",
+      "StreamVerified": false
+    }
+  ],
+  "Endpoints": [
+    {
+      "Id": "{01276b23-920e-4c36-b5f2-5f1bd5bc6f2e}",
+      "Direction": "Render",
+      "Description": "CABLE In 16ch",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{04420815-e000-4247-8fa4-46f6e61f6256}",
+      "Direction": "Render",
+      "Description": "1 - LM22-B200S",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{0988ea3c-28fe-4e75-a1b3-e5f83b663279}",
+      "Direction": "Render",
+      "Description": "Digital Output",
+      "RawRegistryState": 4,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{0ce31831-1328-4d31-a326-bf3fdf2e7496}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 5",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{1a9a3f7e-4989-4fcd-8e28-60b78b29201c}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{1c1f930b-203e-435c-a409-d9349e870989}",
+      "Direction": "Render",
+      "Description": "1 - SIE  HMD *08",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{1c45469a-500f-4d82-b029-f4eb570ca11b}",
+      "Direction": "Render",
+      "Description": "1 - HDMI",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{23468850-7059-47b3-83df-8c10e23a7f8d}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 3",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{2ae4f747-1c48-4556-a8f1-fe0b26a9b332}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 7",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{405869a9-7643-4359-bbf8-950ce2d324a4}",
+      "Direction": "Render",
+      "Description": "2 - HDMI",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{42c6d3be-b34e-4f56-bf15-94c3b6669ca2}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 6",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{47b94c53-200a-4c27-b037-65bf64ca0d2c}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 2",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{517e6d3d-5c80-4d5d-a757-5d83c161b2bc}",
+      "Direction": "Render",
+      "Description": "Headphones",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{525443b7-e193-4e00-a2e0-c1ea3b179927}",
+      "Direction": "Render",
+      "Description": "1 - SIE  HMD *08",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{52ecaeed-d79b-4526-b55a-cb786e0ec423}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 1",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{53ae5e92-13f8-4d43-919d-73aa5ebed38c}",
+      "Direction": "Render",
+      "Description": "Speakers",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{61f73aa9-4049-4f02-9895-a47f75833f50}",
+      "Direction": "Render",
+      "Description": "Digital Output",
+      "RawRegistryState": 4,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{6313065f-71e2-4a80-b124-9edc7120ba3d}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{656b16a8-fb8a-47ff-a34a-7a40a0730e54}",
+      "Direction": "Render",
+      "Description": "Digital Output",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{6941330e-2f50-4b4a-9bf8-e47e42fd0ae3}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{78311b9f-8c70-4441-99a1-9902e4363c7f}",
+      "Direction": "Render",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{7b587503-5da6-465c-a0f1-8dd4bb1bb601}",
+      "Direction": "Render",
+      "Description": "Speakers",
+      "RawRegistryState": 8,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{840a16c7-3cdf-4e26-9964-74aaaf0e15d2}",
+      "Direction": "Render",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{877d4c66-882c-434c-aaf0-cbef3fdd850a}",
+      "Direction": "Render",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{930b7836-46ad-4a37-97e0-65c0846f51aa}",
+      "Direction": "Render",
+      "Description": "HDMI",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{9ccca707-1d8e-4984-8ee2-292eaca31566}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{a0f83f8f-f0cb-4e84-9cd8-8c3c3ab0ffe6}",
+      "Direction": "Render",
+      "Description": "Realtek Digital Output",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{a4a0ee83-5078-4995-82a3-0c7436e75776}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 4",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{aa181baa-3b1d-4347-a0d3-34dcc13dd140}",
+      "Direction": "Render",
+      "Description": "MT128 Input",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{c2ecc5dc-2a6b-4e6c-b075-df81aef3fc84}",
+      "Direction": "Render",
+      "Description": "2 - LM22-B200S",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{c5834646-bc20-49f2-92d2-dfeb4fbe9135}",
+      "Direction": "Render",
+      "Description": "Headphones",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{cceda867-5571-4318-bdfb-70db74cb125a}",
+      "Direction": "Render",
+      "Description": "Line",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{d14b70e8-1a18-4703-9785-f11716fd30b5}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{d27990d4-daaa-4be4-949e-182e876b9368}",
+      "Direction": "Render",
+      "Description": "Digital Audio (S/PDIF)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{d59be8cb-7cf6-4e55-b8e2-8258ec70c773}",
+      "Direction": "Render",
+      "Description": "CABLE Input",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e0c3fe16-7359-4548-b139-89af9b532416}",
+      "Direction": "Render",
+      "Description": "LM22-B200S",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e481c920-4518-4fe2-916a-fcabba9e8917}",
+      "Direction": "Render",
+      "Description": "Realtek HD Audio 2nd output",
+      "RawRegistryState": 8,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e7a9974b-ef2d-4956-9355-06e5fec8cb3b}",
+      "Direction": "Render",
+      "Description": "VBMatrix In 8",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e8ed31a1-5010-4af5-bce6-6367e0f1805a}",
+      "Direction": "Render",
+      "Description": "Digital Audio (HDMI)",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{ee9c295f-c208-42cf-b80b-a4c5a46efd59}",
+      "Direction": "Render",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{f00cbefb-de47-4563-9dfe-0f9764578614}",
+      "Direction": "Render",
+      "Description": "Headphones",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{f6450ce1-3522-4b71-8f8b-25e82a7a9d30}",
+      "Direction": "Render",
+      "Description": "Digital Output",
+      "RawRegistryState": 4,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{f7a6ea17-a48b-4879-bc76-8b9bf6c6fa56}",
+      "Direction": "Render",
+      "Description": "Line",
+      "RawRegistryState": 268435457,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{fb0802ea-93ee-45e4-930e-23d5d04c6266}",
+      "Direction": "Render",
+      "Description": "Speakers",
+      "RawRegistryState": 268435457,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{fb7a5afe-e9b5-4680-b8e8-dbbc6c080902}",
+      "Direction": "Render",
+      "Description": "Digital Output",
+      "RawRegistryState": 4,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{033e5903-6f7f-4ffe-a18f-9aeab8eb34e5}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 5",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{0880d587-4444-4a39-b3e5-9204eacd6e08}",
+      "Direction": "Capture",
+      "Description": "Line In",
+      "RawRegistryState": 8,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{12e0bdb4-60af-4103-be4a-0b3437c80f2c}",
+      "Direction": "Capture",
+      "Description": "Line In",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{159336f6-fee8-4d81-ade4-3d805406f195}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{2008657d-4609-47e6-8aae-7503b359132d}",
+      "Direction": "Capture",
+      "Description": "Front Green In",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{20bf0244-6d72-4fcd-be6e-014aa9053e3d}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 553648132,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{2205e3f0-bd41-4a8c-9c9f-8a09acdddeb8}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 2",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{25129bd8-f058-4703-a551-422adaff0cc6}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{32be5ad4-c7bc-4b85-acc4-e44b16ba45a0}",
+      "Direction": "Capture",
+      "Description": "Rear",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{358ebc18-337a-4dc6-93db-bee212863437}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 7",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{39a4aa90-8db6-4232-bf57-911023b0a797}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{404ffc2e-6304-4646-a353-a5634dd68a7d}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 6",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{46c7b0b7-a9af-4671-bcfc-17b1358ed4d0}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{502407eb-b1b5-4f08-82d7-cb3b4e93596d}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{552d0741-32de-4fbb-a2f0-32bef192f965}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 8,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{5d9c8488-6990-4d88-952a-00ca3fb9d0ac}",
+      "Direction": "Capture",
+      "Description": "Rear Green In",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{795b9d42-24b2-466f-9344-b98449062fe2}",
+      "Direction": "Capture",
+      "Description": "Center",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{813d1d44-2bff-4fe0-ab2f-f2f9769babe2}",
+      "Direction": "Capture",
+      "Description": "Line",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{831d353a-aec9-4602-baad-babc25108e66}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{8d5a7677-069f-4c29-9aa7-a1ad673b2749}",
+      "Direction": "Capture",
+      "Description": "Stereo Mix",
+      "RawRegistryState": 268435457,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{94a8c6a8-1229-4338-b178-168f766fd5b9}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{9758baf0-fbac-42a7-ae13-0605d76ce17d}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{9fb9d8e3-2d80-4329-b9ae-97bdd324863e}",
+      "Direction": "Capture",
+      "Description": "Front Pink In",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{a6946f1c-4549-4e01-9b48-256c5b324d82}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{a7ab2b16-8fe5-428d-900a-616c55a02314}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 4",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{ac5ca5f4-4ea4-413e-97cb-db43eb972781}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 1",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{ac8849db-9f99-4b59-9e4c-acf96d76af7c}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{acf5851e-9b6f-4f3b-9fa1-600b2ed298d0}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{ae47f6b8-1104-4e4d-9329-f4d0a873e531}",
+      "Direction": "Capture",
+      "Description": "Front",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{afdd4e20-55cb-4d44-8d1d-c1df6e8b34b0}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{b9bf856b-cbc7-45fe-855d-5647fa79e4a5}",
+      "Direction": "Capture",
+      "Description": "CABLE Output",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{bdad24d5-93b3-4235-ba44-fb120094583b}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 570425348,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{c8ea038a-4dcd-4bf5-aec9-d38efff47fb5}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{c9c18b7c-3da1-4ed0-bc46-4e14318665d3}",
+      "Direction": "Capture",
+      "Description": "Rear Pink In",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{cd9388d6-a761-408e-af96-93af6f026d46}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{d7a48ae2-1e1a-45c0-8864-e2823a54f885}",
+      "Direction": "Capture",
+      "Description": "Rear Blue In",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{db4ec3b4-0044-4abf-9bde-9f0e236c5224}",
+      "Direction": "Capture",
+      "Description": "MT128 Output",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{dbac9cc9-4d13-4e5f-a005-2f080a303ea4}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 822083588,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{dfe3d555-0a6a-4ffc-a2d7-94c18ecae568}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 268435457,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e4212540-3881-491f-8831-3be59f627e73}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 3",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e6ff9021-282e-45c0-9a52-f3cf0c52cba2}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{e9d57854-c4bf-480d-b196-1625bdc0c406}",
+      "Direction": "Capture",
+      "Description": "VBMatrix Out 8",
+      "RawRegistryState": 1,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{ed4158e0-dad9-4349-bcbf-7e06e7f62a8f}",
+      "Direction": "Capture",
+      "Description": "Internal AUX Jack",
+      "RawRegistryState": 838860804,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{f2ffb19a-e84d-4825-8ecc-05223b38928b}",
+      "Direction": "Capture",
+      "Description": "Subwoofer",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{f8d73ccc-be8d-4801-98a1-7062d2cd894c}",
+      "Direction": "Capture",
+      "Description": "Side",
+      "RawRegistryState": 268435460,
+      "StreamVerified": false
+    },
+    {
+      "Id": "{fa29a74b-2df0-4d2e-bd8e-8a79925cba6c}",
+      "Direction": "Capture",
+      "Description": "Microphone",
+      "RawRegistryState": 268435457,
+      "StreamVerified": false
+    }
+  ],
+  "Warnings": []
+}

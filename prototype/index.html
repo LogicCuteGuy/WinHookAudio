@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WinHookAudio · Patchbay concept</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="patchbay.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="logo">W↔</span> WinHookAudio <span class="version">/ studio environment</span></div><span class="badge">INTERACTIVE CONCEPT · NO AUDIO ENGINE</span></header>
+  <main>
+    <div class="intro"><div><p class="eyebrow">DEVICE CONTROL / 01</p><h1>Your devices. Your DAW.</h1><p class="sub">Assign channels here. Mix, process, and route inside your DAW.</p></div><div class="session"><span class="dot"></span> Universal Windows ASIO target<small>32 inputs / 32 outputs · illustrative device data</small></div></div>
+
+    <section class="settings" aria-label="Session settings">
+      <label>Clock master<select id="master" aria-label="Clock master"></select></label>
+      <label>Session rate<select id="rate"><option value="44100">44.1 kHz</option><option value="48000" selected>48 kHz</option><option value="96000">96 kHz</option></select></label>
+      <label>DAW block<select id="block"><option>64</option><option selected>128</option><option>256</option><option>512</option><option>1024</option></select></label>
+      <div><span class="field-label">ASIO representation</span><strong class="fixed">32-bit float</strong></div>
+      <div class="block-time"><span class="field-label">One block · calculated</span><strong id="block-time"></strong><small>Not total round-trip latency</small></div>
+    </section>
+    <div class="profiles"><span>Buffer presets</span><button data-profile="128">Low</button><button data-profile="256">Balanced</button><button data-profile="1024">High / resilient</button><span class="profile-note">Device periods and LAN jitter remain independent.</span></div>
+
+    <section class="patchbay" aria-labelledby="grid-title">
+      <div class="section-head"><div><h2 id="grid-title">Device patchbay</h2><p>Two rows. One column per device. Directions are relative to the DAW.</p></div><div class="add-device"><label class="sr-only" for="device-type">Example device type</label><select id="device-type"><option value="ks">KS device</option><option value="cable">App cable pair</option><option value="bridge">ASIO bridge</option><option value="lan">LAN peer</option><option value="asio">Hardware ASIO</option></select><button id="add">+ Add example</button></div></div>
+      <div class="grid-scroll"><table id="grid"><caption class="sr-only">Illustrative device channels assigned to a 32-channel ASIO bank</caption><thead></thead><tbody></tbody></table></div>
+      <div class="grid-foot"><span>Click a device name to inspect its settings.</span><span id="route-count"></span></div>
+    </section>
+
+    <section class="daw"><div class="daw-port">TO DAW <strong id="input-count"></strong></div><div class="daw-center"><span class="eyebrow">WINHOOKAUDIO ASIO</span><h2>Any compatible ASIO DAW</h2><p>Inputs → tracks & effects → buses → outputs</p></div><div class="daw-port right">FROM DAW <strong id="output-count"></strong></div></section>
+
+    <div class="lower"><section class="inspector" aria-labelledby="inspector-title"><div class="section-head"><div><p class="eyebrow">DEVICE INSPECTOR</p><h2 id="inspector-title"></h2></div><span class="badge">EXAMPLE CAPABILITIES</span></div><p id="device-description"></p><div class="device-settings"><label>Endpoint sample rate<select id="endpoint-rate"><option value="44100">44.1 kHz</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option></select></label><label>Endpoint format<select id="endpoint-format"><option value="pcm16">16-bit PCM</option><option value="pcm24in32">24-bit PCM / 32-bit container</option><option value="float32">32-bit float</option></select></label><label>Endpoint buffer (frames)<select id="endpoint-buffer"><option>64</option><option>128</option><option>256</option><option>512</option><option>1024</option></select></label><label id="jitter-label">LAN jitter target<select id="jitter"><option value="5">5 ms</option><option value="10">10 ms</option><option value="20">20 ms</option><option value="50">50 ms</option><option value="100">100 ms</option></select></label></div><p class="clock-note" id="clock-note"></p></section>
+      <aside><p class="eyebrow">SESSION NOTES</p><h2>The DAW stays in the middle.</h2><p>“To DAW” assigns source channels to DAW inputs. “From DAW” assigns DAW outputs to destinations.</p><p>Use different cable send and return paths. One DAW output can feed several destinations; input assignments cannot overlap.</p><p class="muted">These controls edit a design preview. Device opening, driver panels, metering, and audio transport are not connected.</p></aside></div>
+
+    <footer class="actions"><div id="status" role="status" aria-live="polite">Example configuration loaded. No system audio is changed.</div><div class="action-buttons"><button id="reset">Reset example</button><button id="export">Export concept JSON</button><button class="primary" id="apply">Apply to preview</button></div></footer>
+  </main>
+</body>
+</html>
