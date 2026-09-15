@@ -29,6 +29,8 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
     if (s.type > SLOT_BRIDGE4) return fail("masterIn slot type invalid");
     if (s.type == SLOT_NETWORK && (s.streamId < 0 || s.streamId >= WHA_NET_STREAMS))
       return fail("masterIn network streamId out of range");
+    if (!IsValidSlotEnabled(s.enabled)) return fail("masterIn enabled must be 0/1");
+    if (!IsValidSlotLoopback(s.loopback)) return fail("masterIn loopback must be 0/1");
     if (!IsLoopbackValid(s)) return fail("masterIn loopback only valid on Virtual");
     if (std::strlen(s.name) >= WHA_NAME_LEN) return fail("masterIn name not null-terminated");
   }
@@ -37,6 +39,8 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
     if (s.type > SLOT_BRIDGE4) return fail("masterOut slot type invalid");
     if (s.type == SLOT_NETWORK && (s.streamId < 0 || s.streamId >= WHA_NET_STREAMS))
       return fail("masterOut network streamId out of range");
+    if (!IsValidSlotEnabled(s.enabled)) return fail("masterOut enabled must be 0/1");
+    if (!IsValidSlotLoopback(s.loopback)) return fail("masterOut loopback must be 0/1");
     if (!IsLoopbackValid(s)) return fail("masterOut loopback only valid on Virtual");
     if (std::strlen(s.name) >= WHA_NAME_LEN) return fail("masterOut name not null-terminated");
   }

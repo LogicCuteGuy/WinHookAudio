@@ -268,11 +268,11 @@ bool CheckBridgeRegion() {
   if (wha::IsValidBridgeClientCount(-1)) return false;
   int32_t id = -1;
   if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (id != 0 || b->clientCount.load() != 1) return false;
+  if (id != 0 || b->clientCount != 1) return false;
   if (!wha::TryAddBridgeClient(*b, &id)) return false;
   if (!wha::TryAddBridgeClient(*b, &id)) return false;
   if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (b->clientCount.load() != 4) return false;
+  if (b->clientCount != 4) return false;
   if (wha::TryAddBridgeClient(*b, &id)) return false;  // 5th rejected
   if (!wha::IsValidBridgeReady(0) || !wha::IsValidBridgeReady(1)) return false;
   if (wha::IsValidBridgeReady(2)) return false;

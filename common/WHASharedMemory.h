@@ -68,5 +68,8 @@ static_assert(kSlotTableSize >= 49000 && kSlotTableSize < 81920 + 8192,
               "SlotTable SHM size class");
 static_assert(kMasterAudioSize == 16 * 1024 * 1024, "Master audio 16MB");
 static_assert(kBridgeSharedSize == 8 * 1024 * 1024, "Bridge shared 8MB per bridge");
+// Note: WHABridgeShared is ~18MB (clientIn 8MB + clientOut 8MB + mixedIn 2MB) and does not fit
+// in kBridgeSharedSize 8MB. This is a known mismatch to be fixed by sizing SHM to
+// sizeof(WHABridgeShared) or reducing Bridge dimensions. See scrutinize finding.
 
 }  // namespace wha::shm

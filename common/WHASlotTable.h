@@ -98,16 +98,19 @@ constexpr bool IsBridgeType(WHASlotType type) {
 }
 
 // Bridge types live inside the 512 pool, not as extra pool.
-// Validates that a bridge type is within the defined 4 bridges and 512 pool.
+// Validates slot index for bridge types (index must be <512).
+constexpr bool IsBridgeInsidePool(WHASlotType type, uint32_t index) {
+  if (!IsBridgeType(type)) return true;
+  return index < kMax;
+}
 constexpr bool IsBridgeInsidePool(WHASlotType type) {
   if (!IsBridgeType(type)) return true;
-  // Bridge types must be SLOT_BRIDGE1..SLOT_BRIDGE4 and pool must be 512 with 4 bridges
-  return type >= SLOT_BRIDGE1 && type <= SLOT_BRIDGE4 && kMax == 512 && kBridgeCount == 4;
+  return type >= SLOT_BRIDGE1 && type <= SLOT_BRIDGE4;
 }
 
 // Empty Slots count but stay silent.
 constexpr bool IsSilentSlot(const WHASlot& slot) {
-  return slot.type == SLOT_NONE || slot.enabled == false;
+  return slot.type == SLOT_NONE || slot.enabled == 0;
 }
 
 // Loopback is meaningful only on Virtual Cable Slots and defaults off.
@@ -115,6 +118,9 @@ constexpr bool IsLoopbackValid(const WHASlot& slot) {
   if (slot.loopback && slot.type != SLOT_VIRTUAL) return false;
   return true;
 }
+
+constexpr bool IsValidSlotEnabled(uint8_t v) { return v == 0 || v == 1; }
+constexpr bool IsValidSlotLoopback(uint8_t v) { return v == 0 || v == 1; }
 
 constexpr bool IsValidCodec(uint32_t codec) {
   return codec == WHA_PCM_F32 || codec == WHA_PCM_I16 || codec == WHA_VORBIS;

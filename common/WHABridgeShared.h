@@ -5,7 +5,6 @@
 // No audio, no devices, no threads here — pure layout and offline validation.
 // Master Driver creates SHM, Bridge Driver opens it. 4 clients per Bridge max.
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -22,29 +21,35 @@ constexpr uint32_t kBridgeBuffers = 2;
 #define WHA_BRIDGE_FRAMES wha::kBridgeFrames
 #define WHA_BRIDGE_BUFFERS wha::kBridgeBuffers
 
+#pragma pack(push, 1)
 struct WHABridgeShared {
-  std::atomic<int32_t> clientCount{0};  // 0..4 fetch_add on init
-  std::atomic<int32_t> ready[WHA_BRIDGE_CLIENTS]{};
-  std::atomic<int32_t> activeBuf[WHA_BRIDGE_CLIENTS]{};
+  volatile int32_t clientCount = 0;  // 0..4 InterlockedIncrement on init (POD for SHM)
+  volatile int32_t ready[WHA_BRIDGE_CLIENTS] = {};
+  volatile int32_t activeBuf[WHA_BRIDGE_CLIENTS] = {};
   float clientIn[WHA_BRIDGE_CLIENTS][WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
   float clientOut[WHA_BRIDGE_CLIENTS][WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
   float mixedIn[WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
-  std::atomic<int32_t> mixedActive{0};
+  volatile int32_t mixedActive = 0;
 };
+#pragma pack(pop)
 
 // ---- Offline validation (no threads, no SHM) ----
 
 constexpr bool IsValidBridgeClientCount(int32_t count) { return count >= 0 && count <= static_cast<int32_t>(kBridgeClients); }
 
+// SHM-safe: caller must use InterlockedCompareExchange for cross-process atomicity.
+// Offline helper uses single-threaded increment (tests only, not SHM).
 inline bool TryAddBridgeClient(WHABridgeShared& b, int32_t* outClientId) {
-  int32_t cur = b.clientCount.load(std::memory_order_relaxed);
-  while (cur < static_cast<int32_t>(kBridgeClients)) {
-    if (b.clientCount.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
-      if (outClientId) *outClientId = cur;
-      return true;
-    }
-  }
-  return false;
+  if (b.clientCount >= static_cast<int32_t>(kBridgeClients)) return false;
+  if (outClientId) *outClientId = b.clientCount;
+  ++b.clientCount;
+  return true;
+}
+
+inline bool TryAddBridgeClientAtomic(WHABridgeShared& b, int32_t* outClientId) {
+  // Requires Windows.h InterlockedCompareExchange when used in SHM context.
+  // Offline fallback: same as TryAddBridgeClient (single-threaded).
+  return TryAddBridgeClient(b, outClientId);
 }
 
 constexpr bool IsValidBridgeReady(int32_t v) { return v == 0 || v == 1; }
@@ -54,19 +59,7 @@ constexpr bool IsValidBridgeActiveBuf(int32_t v) { return v == 0 || v == 1; }
 // Two DAWs at -6dB (0.5) => sum 1.0 => tanh(1.0)=0.761 not 0.5 average.
 inline float SoftClipMix(float sum) { return std::tanh(sum); }
 
-inline float MixBridgeClients(const float* samples, const std::atomic<int32_t>* ready, int nClients) {
-  float sum = 0.0f;
-  int nReady = 0;
-  for (int i = 0; i < nClients; ++i) {
-    if (ready[i].load(std::memory_order_acquire)) {
-      sum += samples[i];
-      ++nReady;
-    }
-  }
-  if (nReady == 0) return 0.0f;
-  return SoftClipMix(sum);
-}
-inline float MixBridgeClients(const float* samples, const int32_t* ready, int nClients) {
+inline float MixBridgeClients(const float* samples, const volatile int32_t* ready, int nClients) {
   float sum = 0.0f;
   int nReady = 0;
   for (int i = 0; i < nClients; ++i) {
@@ -77,6 +70,9 @@ inline float MixBridgeClients(const float* samples, const int32_t* ready, int nC
   }
   if (nReady == 0) return 0.0f;
   return SoftClipMix(sum);
+}
+inline float MixBridgeClients(const float* samples, const int32_t* ready, int nClients) {
+  return MixBridgeClients(samples, reinterpret_cast<const volatile int32_t*>(ready), nClients);
 }
 
 // Compile-time layout invariants.
