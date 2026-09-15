@@ -13,9 +13,11 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames) {
   close();
   sampleRate_ = sampleRate;
   bufferFrames_ = bufferFrames;
+  exclusive_ = false;
 
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  bool needUninit = SUCCEEDED(hr);
+  comInitialized_ = SUCCEEDED(hr);
+  bool needUninit = comInitialized_;
 
   IMMDeviceEnumerator* enumerator = nullptr;
   hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator);
@@ -32,41 +34,61 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames) {
 
   WAVEFORMATEX* mixFormat = nullptr;
   hr = audioClient_->GetMixFormat(&mixFormat);
-  if (FAILED(hr)) return false;
+  if (FAILED(hr)) {
+    if (needUninit) CoUninitialize();
+    comInitialized_ = false;
+    return false;
+  }
 
-  WAVEFORMATEX fmt{};
-  fmt.wFormatTag = WAVE_FORMAT_PCM;
-  fmt.nChannels = 2;
-  fmt.nSamplesPerSec = sampleRate;
-  fmt.wBitsPerSample = 32;
-  fmt.nBlockAlign = fmt.nChannels * fmt.wBitsPerSample / 8;
-  fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
-  fmt.cbSize = 0;
-  // Use float if mix is float
+  WAVEFORMATEXTENSIBLE extFmt{};
+  extFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+  extFmt.Format.nChannels = 2;
+  extFmt.Format.nSamplesPerSec = sampleRate;
+  extFmt.Format.wBitsPerSample = 32;
+  extFmt.Format.nBlockAlign = extFmt.Format.nChannels * extFmt.Format.wBitsPerSample / 8;
+  extFmt.Format.nAvgBytesPerSec = extFmt.Format.nSamplesPerSec * extFmt.Format.nBlockAlign;
+  extFmt.Format.cbSize = 22;
+  extFmt.Samples.wValidBitsPerSample = 32;
+  extFmt.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+  extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+  WAVEFORMATEX* fmtPtr = reinterpret_cast<WAVEFORMATEX*>(&extFmt);
+  // If mix is not float, use PCM
   if (mixFormat && mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-    auto* ext = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(mixFormat);
-    if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) {
-      fmt.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-      fmt.cbSize = 22;
+    auto* mixExt = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(mixFormat);
+    if (mixExt->SubFormat != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) {
+      extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
     }
+  } else if (mixFormat && mixFormat->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
+    extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
   }
   CoTaskMemFree(mixFormat);
+  mixFormat = nullptr;
 
-  // Try exclusive first, fall back to shared for offline test
-  hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, 0, bufferFrames * 10000000 / sampleRate, bufferFrames * 10000000 / sampleRate, &fmt, nullptr);
+  // Exclusive only — no shared fallback (busy pin must surface as failure)
+  hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, 0, bufferFrames * 10000000 / sampleRate, bufferFrames * 10000000 / sampleRate, fmtPtr, nullptr);
   if (FAILED(hr)) {
-    hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, &fmt, nullptr);
-    if (FAILED(hr)) { audioClient_->Release(); audioClient_ = nullptr; if (needUninit) CoUninitialize(); return false; }
+    audioClient_->Release();
+    audioClient_ = nullptr;
+    if (needUninit) CoUninitialize();
+    comInitialized_ = false;
+    return false;
   }
+  exclusive_ = true;
 
   hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
-  if (FAILED(hr)) { audioClient_->Release(); audioClient_ = nullptr; if (needUninit) CoUninitialize(); return false; }
+  if (FAILED(hr)) {
+    audioClient_->Release();
+    audioClient_ = nullptr;
+    if (needUninit) CoUninitialize();
+    comInitialized_ = false;
+    return false;
+  }
 
   hr = audioClient_->GetService(__uuidof(IAudioClock), (void**)&audioClock_);
   // Not fatal if no clock
 
   opened_ = true;
-  if (needUninit) CoUninitialize();
+  // Do not CoUninitialize while IAudioClient is held — caller or close() will handle it
   return true;
 }
 
@@ -75,6 +97,8 @@ void KsAudio::close() {
   if (audioClock_) { audioClock_->Release(); audioClock_ = nullptr; }
   if (audioClient_) { audioClient_->Stop(); audioClient_->Release(); audioClient_ = nullptr; }
   opened_ = false;
+  exclusive_ = false;
+  if (comInitialized_) { CoUninitialize(); comInitialized_ = false; }
 }
 
 bool KsAudio::start() {
