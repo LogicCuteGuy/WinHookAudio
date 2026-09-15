@@ -37,6 +37,8 @@ class MasterHolder {
   HANDLE thread_ = nullptr;
   bool running_ = false;
   bool stopRequested_ = false;
+  HANDLE mmcssHandle_ = nullptr;
+  HMODULE avrtModule_ = nullptr;
 };
 
 }  // namespace wha

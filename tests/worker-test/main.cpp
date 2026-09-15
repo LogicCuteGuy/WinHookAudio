@@ -67,20 +67,18 @@ int main() {
   }
   check("loopback OUT->IN next tick", loopbackOk);
 
-  // Bridge sum: 0.5+0.5=1.0 -> tanh(1.0)=0.761
+  // Bridge sum: 0.5+0.5=1.0 -> tanh(1.0)=0.761, now toggles to mixedIn[1] (nextActive)
   bool bridgeOk = true;
   float expected = std::tanh(1.0f);
+  // After fix, mixedActive toggles 0->1, so check mixedIn[1]
+  int active = bridge->mixedActive;
   for (int f = 0; f < 128; ++f) {
-    float v = bridge->mixedIn[0][0][f];
+    float v = bridge->mixedIn[active][0][f];
     if (std::abs(v - expected) > 0.001f) { bridgeOk = false; break; }
   }
   check("bridge sum tanh soft-clip", bridgeOk);
 
-  // Bridge broadcast: events signaled (check immediately after tickOnce, before auto-reset)
-  bool broadcastOk = false;
-  // MasterHolder sets events; they are auto-reset, so check via polling quickly
-  // For test, just verify mixedIn was written (broadcast side effect)
-  broadcastOk = (std::abs(bridge->mixedIn[0][0][0] - std::tanh(1.0f)) < 0.001f);
+  bool broadcastOk = (std::abs(bridge->mixedIn[active][0][0] - std::tanh(1.0f)) < 0.001f);
   check("bridge broadcast events", broadcastOk);
 
   // Per-thing FIFOs: check defaults
