@@ -5,6 +5,10 @@ if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WinHookAudio currently requires Windows, MSVC, and x64.")
 endif()
 
+add_library(wha_common INTERFACE)
+target_include_directories(wha_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
+target_compile_features(wha_common INTERFACE cxx_std_20)
+
 add_executable(winhookaudio-probe
     src/probe/main.cpp
     src/probe/mmdevice.cpp
@@ -14,12 +18,13 @@ target_compile_features(winhookaudio-probe PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-probe PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-probe PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
-target_link_libraries(winhookaudio-probe PRIVATE ole32 propsys setupapi ksuser advapi32 uuid)
+target_link_libraries(winhookaudio-probe PRIVATE ole32 propsys setupapi ksuser advapi32 uuid wha_common)
 add_executable(winhookaudio-abi-check src/abi-check/main.cpp)
 target_compile_features(winhookaudio-abi-check PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-abi-check PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-abi-check PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-abi-check PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+target_link_libraries(winhookaudio-abi-check PRIVATE wha_common)
 install(TARGETS winhookaudio-probe RUNTIME DESTINATION bin)
 install(FILES docs/probe-vm.md DESTINATION . RENAME README.md)
 install(FILES scripts/Run-Probe.ps1 DESTINATION .)
