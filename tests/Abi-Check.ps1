@@ -11,7 +11,7 @@ if ($result.operation -ne 'abi_check') { throw 'Missing operation abi_check' }
 if ($result.schema_version -ne 1) { throw 'Bad schema_version' }
 if ($result.stream_verified -ne $false) { throw 'stream_verified must be false offline' }
 if ($result.pass -ne $true) { throw "abi-check did not pass: $($output -join "`n")" }
-$required = @('counts_1_to_512', 'empty_counts_silent', 'name_truncation_32', 'loopback_virtual_only', 'bridge_inside_pool', 'network_streams_8', 'master_clock_defaults')
+$required = @('counts_1_to_512', 'empty_counts_silent', 'name_truncation_32', 'loopback_virtual_only', 'bridge_inside_pool', 'network_streams_8', 'master_clock_defaults', 'shm_names_unique', 'shm_sizes_fixed')
 foreach ($name in $required) {
     $check = $result.checks | Where-Object { $_.name -eq $name }
     if (-not $check) { throw "Missing check $name" }

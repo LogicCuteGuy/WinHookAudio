@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "../../common/WHASlotTable.h"
+#include "../../common/WHASharedMemory.h"
 
 namespace {
 
@@ -117,6 +118,55 @@ bool CheckMasterClockDefaults() {
   return true;
 }
 
+bool CheckShmNamesUnique() {
+  const char* names[] = {
+      wha::shm::kSlotTableName,
+      wha::shm::kMasterAudioName,
+      wha::shm::kBridgeSharedNames[0],
+      wha::shm::kBridgeSharedNames[1],
+      wha::shm::kBridgeSharedNames[2],
+      wha::shm::kBridgeSharedNames[3],
+      wha::shm::kMasterTickName,
+      wha::shm::kTableChangedName,
+      wha::shm::kBridgeTickNames[0][0],
+      wha::shm::kBridgeTickNames[0][1],
+      wha::shm::kBridgeTickNames[0][2],
+      wha::shm::kBridgeTickNames[0][3],
+      wha::shm::kBridgeTickNames[1][0],
+      wha::shm::kBridgeTickNames[1][1],
+      wha::shm::kBridgeTickNames[1][2],
+      wha::shm::kBridgeTickNames[1][3],
+      wha::shm::kBridgeTickNames[2][0],
+      wha::shm::kBridgeTickNames[2][1],
+      wha::shm::kBridgeTickNames[2][2],
+      wha::shm::kBridgeTickNames[2][3],
+      wha::shm::kBridgeTickNames[3][0],
+      wha::shm::kBridgeTickNames[3][1],
+      wha::shm::kBridgeTickNames[3][2],
+      wha::shm::kBridgeTickNames[3][3],
+  };
+  for (std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    if (names[i] == nullptr || names[i][0] == '\0') return false;
+    for (std::size_t j = i + 1; j < sizeof(names) / sizeof(names[0]); ++j) {
+      if (std::strcmp(names[i], names[j]) == 0) return false;
+    }
+  }
+  return true;
+}
+
+bool CheckShmSizes() {
+  if (wha::shm::kSlotTableSize != 81920) return false;
+  if (wha::shm::kMasterAudioSize != 16 * 1024 * 1024) return false;
+  if (wha::shm::kBridgeSharedSize != 8 * 1024 * 1024) return false;
+  if (wha::shm::kTotalShmSize !=
+      wha::shm::kSlotTableSize + wha::shm::kMasterAudioSize + 4 * wha::shm::kBridgeSharedSize)
+    return false;
+  // Closing Master DAW unmaps all SHM — silence by design, no stale replay.
+  // Offline invariant: total is 48 MB class, not unbounded.
+  if (wha::shm::kTotalShmSize != 81920 + 16 * 1024 * 1024 + 32 * 1024 * 1024) return false;
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +178,8 @@ int main() {
       {"bridge_inside_pool", CheckBridgeInsidePool()},
       {"network_streams_8", CheckNetworkStreams()},
       {"master_clock_defaults", CheckMasterClockDefaults()},
+      {"shm_names_unique", CheckShmNamesUnique()},
+      {"shm_sizes_fixed", CheckShmSizes()},
   };
   bool allPass = true;
   for (const auto& check : checks) {
