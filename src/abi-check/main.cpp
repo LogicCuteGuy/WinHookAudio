@@ -1,8 +1,12 @@
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
-#include "../../common/WHASlotTable.h"
+#include "../../common/WHABridgeShared.h"
+#include "../../common/WHAPacket.h"
 #include "../../common/WHASharedMemory.h"
+#include "../../common/WHASlotTable.h"
+#include "../../common/WHASlotsJson.h"
 
 namespace {
 
@@ -167,6 +171,170 @@ bool CheckShmSizes() {
   return true;
 }
 
+bool CheckSlotsJsonRoundTrip() {
+  auto t = std::make_unique<wha::WHASlotTable>();
+  t->version = 1;
+  t->masterInCount = 3;
+  t->masterIn[0].type = wha::SLOT_HW;
+  t->masterIn[0].enabled = true;
+  wha::SetSlotName(t->masterIn[0], "SM58 Mic");
+  t->masterIn[1].type = wha::SLOT_NONE;
+  t->masterIn[1].enabled = false;
+  wha::SetSlotName(t->masterIn[1], "- empty -");
+  t->masterIn[2].type = wha::SLOT_VIRTUAL;
+  t->masterIn[2].enabled = true;
+  t->masterIn[2].loopback = true;
+  wha::SetSlotName(t->masterIn[2], "Loopback VRCT");
+  t->masterOutCount = 2;
+  t->masterOut[0].type = wha::SLOT_HW;
+  t->masterOut[0].enabled = true;
+  wha::SetSlotName(t->masterOut[0], "Main L");
+  t->masterOut[1].type = wha::SLOT_VIRTUAL;
+  t->masterOut[1].enabled = true;
+  t->masterOut[1].loopback = true;
+  wha::SetSlotName(t->masterOut[1], "To VRCT");
+  t->general.sampleRate = 48000;
+  t->general.asioBuffer = 128;
+  t->netTx[0].port = 6980;
+  t->netTx[0].codec = wha::WHA_VORBIS;
+  t->netTx[0].quality = 0.4f;
+  t->netTx[0].channels = 2;
+  {
+    const char* ip = "192.168.1.50";
+    std::size_t i = 0;
+    for (; i + 1 < sizeof(t->netTx[0].ip) && ip[i] != '\0'; ++i) t->netTx[0].ip[i] = ip[i];
+    t->netTx[0].ip[i] = '\0';
+  }
+  std::string json = wha::SerializeSlots(*t);
+  auto out = std::make_unique<wha::WHASlotTable>();
+  std::string err;
+  if (!wha::DeserializeSlots(json, *out, &err)) return false;
+  if (out->version != 1) return false;
+  if (out->masterInCount != 3) return false;
+  if (out->masterOutCount != 2) return false;
+  if (std::strcmp(out->masterIn[0].name, "SM58 Mic") != 0) return false;
+  if (std::strcmp(out->masterIn[1].name, "- empty -") != 0) return false;
+  if (!out->masterIn[2].loopback) return false;
+  if (out->masterIn[2].type != wha::SLOT_VIRTUAL) return false;
+  if (std::strcmp(out->masterOut[1].name, "To VRCT") != 0) return false;
+  if (out->netTx[0].channels != 2) return false;
+  if (out->netTx[0].codec != wha::WHA_VORBIS) return false;
+  // Version increments on Save to trigger Master DAW re-query
+  wha::IncrementVersion(*out);
+  if (out->version != 2) return false;
+  return true;
+}
+
+bool CheckSlotsJsonRejects() {
+  auto t = std::make_unique<wha::WHASlotTable>();
+  t->version = 1;
+  t->masterInCount = 1;
+  t->masterIn[0].type = wha::SLOT_HW;
+  t->masterIn[0].enabled = true;
+  wha::SetSlotName(t->masterIn[0], "OK");
+  t->masterOutCount = 1;
+  t->masterOut[0].type = wha::SLOT_HW;
+  t->masterOut[0].enabled = true;
+  wha::SetSlotName(t->masterOut[0], "OK");
+  std::string json = wha::SerializeSlots(*t);
+  // Overlong name should be rejected on deserialize
+  std::string bad = json;
+  // Inject overlong name: replace "OK" with 40-char name
+  size_t pos = bad.find("\"OK\"");
+  if (pos == std::string::npos) return false;
+  bad.replace(pos, 4, "\"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-extra\"");
+  auto out = std::make_unique<wha::WHASlotTable>();
+  std::string err;
+  if (wha::DeserializeSlots(bad, *out, &err)) return false;
+  // Loopback on non-virtual should be rejected
+  auto t2 = std::make_unique<wha::WHASlotTable>(*t);
+  t2->masterIn[0].type = wha::SLOT_HW;
+  t2->masterIn[0].loopback = true;
+  std::string json2 = wha::SerializeSlots(*t2);
+  if (wha::DeserializeSlots(json2, *out, &err)) return false;
+  // Out-of-range count
+  auto t3 = std::make_unique<wha::WHASlotTable>(*t);
+  t3->masterInCount = 0;
+  std::string json3 = wha::SerializeSlots(*t3);
+  if (wha::DeserializeSlots(json3, *out, &err)) return false;
+  return true;
+}
+
+bool CheckBridgeRegion() {
+  auto b = std::make_unique<wha::WHABridgeShared>();
+  if (!wha::IsValidBridgeClientCount(0)) return false;
+  if (!wha::IsValidBridgeClientCount(4)) return false;
+  if (wha::IsValidBridgeClientCount(5)) return false;
+  if (wha::IsValidBridgeClientCount(-1)) return false;
+  int32_t id = -1;
+  if (!wha::TryAddBridgeClient(*b, &id)) return false;
+  if (id != 0 || b->clientCount != 1) return false;
+  if (!wha::TryAddBridgeClient(*b, &id)) return false;
+  if (!wha::TryAddBridgeClient(*b, &id)) return false;
+  if (!wha::TryAddBridgeClient(*b, &id)) return false;
+  if (b->clientCount != 4) return false;
+  if (wha::TryAddBridgeClient(*b, &id)) return false;  // 5th rejected
+  if (!wha::IsValidBridgeReady(0) || !wha::IsValidBridgeReady(1)) return false;
+  if (wha::IsValidBridgeReady(2)) return false;
+  if (!wha::IsValidBridgeActiveBuf(0) || !wha::IsValidBridgeActiveBuf(1)) return false;
+  // Soft-clip preserves loudness: tanh(1.0)=0.761 not 0.5 average
+  float samples[4] = {0.5f, 0.5f, 0.0f, 0.0f};
+  int32_t ready[4] = {1, 1, 0, 0};
+  float mixed = wha::MixBridgeClients(samples, ready, 4);
+  if (mixed < 0.7f || mixed > 0.8f) return false;
+  float silent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int32_t none[4] = {0, 0, 0, 0};
+  if (wha::MixBridgeClients(silent, none, 4) != 0.0f) return false;
+  return true;
+}
+
+bool CheckWhaaPacket() {
+  wha::WHAAPacketHeader h{};
+  h.magic = WHAA_MAGIC;
+  h.version = WHAA_VERSION;
+  h.packetType = wha::WHAA_AUDIO;
+  h.codec = wha::WHA_PCM_F32;
+  h.channels = 2;
+  h.frames = 128;
+  h.streamId = 0;
+  h.payloadBytes = 2 * 128 * 4;
+  std::string err;
+  if (!wha::ValidateWhaaHeader(h, &err)) return false;
+  h.codec = wha::WHA_PCM_I16;
+  h.payloadBytes = 2 * 128 * 2;
+  if (!wha::ValidateWhaaHeader(h, &err)) return false;
+  h.codec = wha::WHA_VORBIS;
+  h.channels = 64;
+  h.payloadBytes = 1234;
+  if (!wha::ValidateWhaaHeader(h, &err)) return false;
+  // Invalid codec
+  h.codec = 99;
+  if (wha::ValidateWhaaHeader(h, &err)) return false;
+  h.codec = wha::WHA_PCM_F32;
+  h.channels = 33;  // PCM max 32
+  if (wha::ValidateWhaaHeader(h, &err)) return false;
+  h.channels = 2;
+  h.streamId = 8;  // max 7
+  if (wha::ValidateWhaaHeader(h, &err)) return false;
+  h.streamId = 0;
+  h.payloadBytes = WHAA_MAX_PAYLOAD + 1;
+  if (wha::ValidateWhaaHeader(h, &err)) return false;
+  // Codebook
+  wha::WHAACodebookHeader cb{};
+  cb.magic = WHAA_MAGIC;
+  cb.version = WHAA_VERSION;
+  cb.packetType = wha::WHAA_CODEBOOK;
+  cb.streamId = 1;
+  cb.sampleRate = 48000;
+  cb.channels = 2;
+  cb.quality = 0.4f;
+  cb.headersBytes = 100;
+  if (!wha::ValidateWhaaCodebook(cb, &err)) return false;
+  cb.quality = 2.0f;
+  if (wha::ValidateWhaaCodebook(cb, &err)) return false;
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -180,6 +348,10 @@ int main() {
       {"master_clock_defaults", CheckMasterClockDefaults()},
       {"shm_names_unique", CheckShmNamesUnique()},
       {"shm_sizes_fixed", CheckShmSizes()},
+      {"slots_json_roundtrip", CheckSlotsJsonRoundTrip()},
+      {"slots_json_rejects", CheckSlotsJsonRejects()},
+      {"bridge_region", CheckBridgeRegion()},
+      {"whaa_packet", CheckWhaaPacket()},
   };
   bool allPass = true;
   for (const auto& check : checks) {
