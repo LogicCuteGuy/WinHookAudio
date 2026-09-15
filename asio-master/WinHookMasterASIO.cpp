@@ -1,4 +1,5 @@
 #include "WinHookMasterASIO.h"
+#include "MasterHolder.h"
 
 #include <cstring>
 #include <cstdio>
@@ -77,7 +78,7 @@ ASIOError WinHookMasterASIO::init(void* sysHandle) {
   for (int i = 0; i < 4; ++i) {
     bridgeMappings_[i] = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                             static_cast<DWORD>(shm::kBridgeSharedSize), shm::kBridgeSharedNames[i] + 7);
-    if (bridgeMappings_[i]) bridgeShared_[i] = MapViewOfFile(bridgeMappings_[i], FILE_MAP_ALL_ACCESS, 0, 0, shm::kBridgeSharedSize);
+    if (bridgeMappings_[i]) bridgeShared_[i] = static_cast<WHABridgeShared*>(MapViewOfFile(bridgeMappings_[i], FILE_MAP_ALL_ACCESS, 0, 0, shm::kBridgeSharedSize));
   }
   masterTick_ = CreateEventA(nullptr, FALSE, FALSE, shm::kMasterTickName + 7);
   tableChanged_ = CreateEventA(nullptr, FALSE, FALSE, shm::kTableChangedName + 7);
@@ -91,10 +92,15 @@ int32_t WinHookMasterASIO::getDriverVersion() { return 0x00010000; }
 void WinHookMasterASIO::getErrorMessage(char* text) { strcpy_s(text, 128, errorText_); }
 ASIOError WinHookMasterASIO::start() {
   if (!initialized_) return ASE_NotPresent;
+  if (!holder_) {
+    holder_ = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
+    holder_->start();
+  }
   running_ = true;
   return ASE_OK;
 }
 ASIOError WinHookMasterASIO::stop() {
+  if (holder_) { holder_->stop(); delete holder_; holder_ = nullptr; }
   running_ = false;
   return ASE_OK;
 }

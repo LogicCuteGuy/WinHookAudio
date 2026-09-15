@@ -6,6 +6,7 @@
 #include "ASIOStub.h"
 #include "WHASlotTable.h"
 #include "WHASharedMemory.h"
+#include "WHABridgeShared.h"
 
 namespace wha {
 
@@ -55,7 +56,7 @@ class WinHookMasterASIO : public IASIO {
   HANDLE masterAudioMapping_ = nullptr;
   float* masterAudio_ = nullptr;  // 16MB ping-pong
   HANDLE bridgeMappings_[4] = {};
-  void* bridgeShared_[4] = {};
+  WHABridgeShared* bridgeShared_[4] = {};
   HANDLE masterTick_ = nullptr;
   HANDLE tableChanged_ = nullptr;
   HANDLE bridgeTicks_[4][4] = {};
@@ -63,6 +64,7 @@ class WinHookMasterASIO : public IASIO {
   int32_t bufferSize_ = 128;
   bool resetRequested_ = false;
   char errorText_[128] = {};
+  class MasterHolder* holder_ = nullptr;
 };
 
 }  // namespace wha
