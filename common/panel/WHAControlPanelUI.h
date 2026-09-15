@@ -45,6 +45,29 @@ bool SetInputEnabled(PanelModel& model, uint32_t index, bool enabled);
 bool SetInputName(PanelModel& model, uint32_t index, const char* name);
 bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type);
 
+// Operations on OUTPUTS only (12) — independent indices
+bool AddOutput(PanelModel& model);
+bool InsertEmptyAboveOutput(PanelModel& model, uint32_t index);
+bool InsertEmptyBelowOutput(PanelModel& model, uint32_t index);
+bool DuplicateOutput(PanelModel& model, uint32_t index);
+bool DeleteOutput(PanelModel& model, uint32_t index);
+bool MoveOutput(PanelModel& model, uint32_t from, uint32_t to);
+bool SetOutputLoopback(PanelModel& model, uint32_t index, bool loopback);
+bool SetOutputEnabled(PanelModel& model, uint32_t index, bool enabled);
+bool SetOutputName(PanelModel& model, uint32_t index, const char* name);
+bool SetOutputType(PanelModel& model, uint32_t index, WHASlotType type);
+
+// GENERAL Per-Thing (12)
+bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer);  // requires host reset
+bool SetHwBuffer(PanelModel& model, uint32_t frames);
+bool SetVirtualBuffer(PanelModel& model, uint32_t frames);
+bool SetBridgeBuffer(PanelModel& model, int bridgeIndex, uint32_t frames);
+bool SetNetworkPcmBuffer(PanelModel& model, uint32_t frames);
+bool SetNetworkVorbisBuffer(PanelModel& model, uint32_t frames);
+bool SetJitterPcm(PanelModel& model, uint32_t ms);
+bool SetJitterVorbis(PanelModel& model, uint32_t ms);
+bool IsGeneralReadOnly(const PanelModel& model);  // true if !isMaster
+
 // Helpers
 const char* SlotDisplayName(const WHASlot& slot);  // "- empty -" for SLOT_NONE else name
 bool IsLoopbackEditable(const WHASlot& slot);  // true only if VIRTUAL

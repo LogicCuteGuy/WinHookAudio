@@ -148,8 +148,142 @@ bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type) {
   if (index >= model.table.masterInCount) return false;
   if (type > SLOT_BRIDGE4) return false;
   model.table.masterIn[index].type = type;
-  // Clear loopback if not VIRTUAL
   if (type != SLOT_VIRTUAL) model.table.masterIn[index].loopback = 0;
+  return true;
+}
+
+// OUTPUTS — independent indices
+bool AddOutput(PanelModel& model) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (model.table.masterOutCount >= kMax) return false;
+  uint32_t idx = model.table.masterOutCount;
+  model.table.masterOut[idx].type = SLOT_NONE;
+  model.table.masterOut[idx].enabled = 0;
+  model.table.masterOut[idx].loopback = 0;
+  model.table.masterOut[idx].srcChannel = 0;
+  model.table.masterOut[idx].streamId = 0;
+  TruncateCopy(model.table.masterOut[idx].name, kNameLen, "- empty -");
+  model.table.masterOutCount++;
+  return true;
+}
+bool InsertEmptyAboveOutput(PanelModel& model, uint32_t index) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (model.table.masterOutCount >= kMax) return false;
+  if (index > model.table.masterOutCount) return false;
+  for (uint32_t i = model.table.masterOutCount; i > index; --i) model.table.masterOut[i] = model.table.masterOut[i - 1];
+  model.table.masterOut[index].type = SLOT_NONE;
+  model.table.masterOut[index].enabled = 0;
+  model.table.masterOut[index].loopback = 0;
+  model.table.masterOut[index].srcChannel = 0;
+  model.table.masterOut[index].streamId = 0;
+  TruncateCopy(model.table.masterOut[index].name, kNameLen, "- empty -");
+  model.table.masterOutCount++;
+  return true;
+}
+bool InsertEmptyBelowOutput(PanelModel& model, uint32_t index) {
+  if (index >= model.table.masterOutCount) return false;
+  return InsertEmptyAboveOutput(model, index + 1);
+}
+bool DuplicateOutput(PanelModel& model, uint32_t index) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (model.table.masterOutCount >= kMax) return false;
+  if (index >= model.table.masterOutCount) return false;
+  for (uint32_t i = model.table.masterOutCount; i > index + 1; --i) model.table.masterOut[i] = model.table.masterOut[i - 1];
+  model.table.masterOut[index + 1] = model.table.masterOut[index];
+  model.table.masterOutCount++;
+  return true;
+}
+bool DeleteOutput(PanelModel& model, uint32_t index) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (index >= model.table.masterOutCount) return false;
+  if (model.table.masterOutCount <= 1) return false;
+  for (uint32_t i = index; i + 1 < model.table.masterOutCount; ++i) model.table.masterOut[i] = model.table.masterOut[i + 1];
+  model.table.masterOutCount--;
+  model.table.masterOut[model.table.masterOutCount] = WHASlot{};
+  return true;
+}
+bool MoveOutput(PanelModel& model, uint32_t from, uint32_t to) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (from >= model.table.masterOutCount || to >= model.table.masterOutCount) return false;
+  if (from == to) return true;
+  WHASlot tmp = model.table.masterOut[from];
+  if (from < to) std::memmove(&model.table.masterOut[from], &model.table.masterOut[from + 1], (to - from) * sizeof(WHASlot));
+  else std::memmove(&model.table.masterOut[to + 1], &model.table.masterOut[to], (from - to) * sizeof(WHASlot));
+  model.table.masterOut[to] = tmp;
+  return true;
+}
+bool SetOutputLoopback(PanelModel& model, uint32_t index, bool loopback) {
+  if (index >= model.table.masterOutCount) return false;
+  if (loopback && !IsLoopbackEditable(model.table.masterOut[index])) return false;
+  model.table.masterOut[index].loopback = loopback ? 1 : 0;
+  return true;
+}
+bool SetOutputEnabled(PanelModel& model, uint32_t index, bool enabled) {
+  if (index >= model.table.masterOutCount) return false;
+  model.table.masterOut[index].enabled = enabled ? 1 : 0;
+  return true;
+}
+bool SetOutputName(PanelModel& model, uint32_t index, const char* name) {
+  if (index >= model.table.masterOutCount) return false;
+  TruncateCopy(model.table.masterOut[index].name, kNameLen, name);
+  return true;
+}
+bool SetOutputType(PanelModel& model, uint32_t index, WHASlotType type) {
+  if (index >= model.table.masterOutCount) return false;
+  if (type > SLOT_BRIDGE4) return false;
+  model.table.masterOut[index].type = type;
+  if (type != SLOT_VIRTUAL) model.table.masterOut[index].loopback = 0;
+  return true;
+}
+
+// GENERAL Per-Thing
+bool IsGeneralReadOnly(const PanelModel& model) { return !model.isMaster; }
+bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (!IsValidMasterClock(sampleRate, asioBuffer)) return false;
+  model.table.general.sampleRate = sampleRate;
+  model.table.general.asioBuffer = asioBuffer;
+  return true;
+}
+bool SetHwBuffer(PanelModel& model, uint32_t frames) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.hwBuffer = frames;
+  return true;
+}
+bool SetVirtualBuffer(PanelModel& model, uint32_t frames) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.virtualBuffer = frames;
+  return true;
+}
+bool SetBridgeBuffer(PanelModel& model, int bridgeIndex, uint32_t frames) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (bridgeIndex < 0 || bridgeIndex >= 4) return false;
+  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.bridgeBuffer[bridgeIndex] = frames;
+  return true;
+}
+bool SetNetworkPcmBuffer(PanelModel& model, uint32_t frames) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.networkPcmBuffer = frames;
+  return true;
+}
+bool SetNetworkVorbisBuffer(PanelModel& model, uint32_t frames) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.networkVorbisBuffer = frames;
+  return true;
+}
+bool SetJitterPcm(PanelModel& model, uint32_t ms) {
+  if (IsGeneralReadOnly(model)) return false;
+  model.table.general.jitterPcm = ms;
+  return true;
+}
+bool SetJitterVorbis(PanelModel& model, uint32_t ms) {
+  if (IsGeneralReadOnly(model)) return false;
+  model.table.general.jitterVorbis = ms;
   return true;
 }
 

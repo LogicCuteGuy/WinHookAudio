@@ -91,6 +91,47 @@ int main() {
   model.table.masterIn[0].type = SLOT_VIRTUAL; model.table.masterIn[0].loopback = 1;
   check("SetInputType clears loopback", SetInputType(model, 0, SLOT_HW) == true && model.table.masterIn[0].loopback == 0);
 
+  // OUTPUTS 512 — independent indices
+  PanelModel outModel{};
+  outModel.table.masterOutCount = 2;
+  outModel.table.masterOut[0].type = SLOT_HW; outModel.table.masterOut[0].enabled = 1;
+  TruncateCopy(outModel.table.masterOut[0].name, kNameLen, "Main L");
+  outModel.table.masterOut[1].type = SLOT_VIRTUAL; outModel.table.masterOut[1].enabled = 1;
+  TruncateCopy(outModel.table.masterOut[1].name, kNameLen, "To VRCT");
+  outModel.table.masterInCount = 1;
+  outModel.table.masterIn[0].type = SLOT_HW; outModel.table.masterIn[0].enabled = 1;
+  TruncateCopy(outModel.table.masterIn[0].name, kNameLen, "Mic 1");
+  uint32_t outBefore = outModel.table.masterOutCount;
+  check("AddOutput", AddOutput(outModel) == true && outModel.table.masterOutCount == outBefore + 1);
+  check("AddOutput not move INPUT", outModel.table.masterInCount == 1);
+  check("MoveOutput", MoveOutput(outModel, 0, 1) == true && outModel.table.masterOut[1].type == SLOT_HW);
+  check("MoveOutput not move INPUT", outModel.table.masterIn[0].type == SLOT_HW);
+  check("SetOutputLoopback VIRTUAL ok", SetOutputLoopback(outModel, 1, true) == false);  // SLOT_HW not VIRTUAL
+  outModel.table.masterOut[1].type = SLOT_VIRTUAL;
+  check("SetOutputLoopback VIRTUAL", SetOutputLoopback(outModel, 1, true) == true);
+  check("DeleteOutput", DeleteOutput(outModel, 0) == true);
+  check("DuplicateOutput", DuplicateOutput(outModel, 0) == true);
+
+  // GENERAL Per-Thing
+  PanelModel genModel{};
+  genModel.table.general.sampleRate = 48000; genModel.table.general.asioBuffer = 128;
+  check("SetMasterClock ok", SetMasterClock(genModel, 48000, 128) == true);
+  check("SetMasterClock invalid", SetMasterClock(genModel, 22050, 128) == false);
+  check("SetHwBuffer ok", SetHwBuffer(genModel, 64) == true && genModel.table.general.hwBuffer == 64);
+  check("SetHwBuffer invalid", SetHwBuffer(genModel, 100) == false);
+  check("SetVirtualBuffer", SetVirtualBuffer(genModel, 256) == true);
+  check("SetBridgeBuffer", SetBridgeBuffer(genModel, 0, 128) == true);
+  check("SetBridgeBuffer invalid index", SetBridgeBuffer(genModel, 4, 128) == false);
+  check("SetNetworkPcmBuffer", SetNetworkPcmBuffer(genModel, 512) == true);
+  check("SetNetworkVorbisBuffer", SetNetworkVorbisBuffer(genModel, 1024) == true);
+  check("SetJitterPcm", SetJitterPcm(genModel, 20) == true);
+  check("SetJitterVorbis", SetJitterVorbis(genModel, 50) == true);
+  // Bridge popup GENERAL read-only
+  PanelModel bridgeGen = genModel; bridgeGen.isMaster = false;
+  check("GENERAL read-only Bridge", IsGeneralReadOnly(bridgeGen) == true);
+  check("SetMasterClock Bridge fail", SetMasterClock(bridgeGen, 48000, 128) == false);
+  check("SetHwBuffer Bridge fail", SetHwBuffer(bridgeGen, 64) == false);
+
   std::printf("{\"schema_version\":1,\"operation\":\"panel_test\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");
   return pass ? 0 : 1;
 }
