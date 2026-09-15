@@ -32,10 +32,15 @@ int FilteredCount(const PanelModel& model, bool isInput) {
   uint32_t n = isInput ? model.table.masterInCount : model.table.masterOutCount;
   const WHASlot* slots = isInput ? model.table.masterIn : model.table.masterOut;
   for (uint32_t i = 0; i < n; ++i) {
+    // Bridge popup: always filtered to BRIDGE1, ignore Filter setting
+    if (!model.isMaster) {
+      if (slots[i].type != SLOT_BRIDGE1) continue;
+      if (!MatchesSearch(slots[i], model.search)) continue;
+      ++count;
+      continue;
+    }
     if (!MatchesFilter(slots[i], model.filter)) continue;
     if (!MatchesSearch(slots[i], model.search)) continue;
-    // Bridge popup filtered to BRIDGE1 only
-    if (!model.isMaster && slots[i].type != SLOT_BRIDGE1) continue;
     ++count;
   }
   return count;
@@ -80,6 +85,7 @@ bool InsertEmptyAbove(PanelModel& model, uint32_t index) {
 }
 
 bool InsertEmptyBelow(PanelModel& model, uint32_t index) {
+  if (index >= model.table.masterInCount) return false;
   return InsertEmptyAbove(model, index + 1);
 }
 
@@ -111,9 +117,9 @@ bool MoveInput(PanelModel& model, uint32_t from, uint32_t to) {
   if (from == to) return true;
   WHASlot tmp = model.table.masterIn[from];
   if (from < to) {
-    for (uint32_t i = from; i < to; ++i) model.table.masterIn[i] = model.table.masterIn[i + 1];
+    std::memmove(&model.table.masterIn[from], &model.table.masterIn[from + 1], (to - from) * sizeof(WHASlot));
   } else {
-    for (uint32_t i = from; i > to; --i) model.table.masterIn[i] = model.table.masterIn[i - 1];
+    std::memmove(&model.table.masterIn[to + 1], &model.table.masterIn[to], (from - to) * sizeof(WHASlot));
   }
   model.table.masterIn[to] = tmp;
   return true;
