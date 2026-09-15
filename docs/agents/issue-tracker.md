@@ -2,8 +2,7 @@
 
 Issues and specs live in GitHub Issues. Use gh for operations.
 
-Resolve the repository from git remote -v. No remote is currently
-configured; obtain the intended repository before publishing.
+Resolve the repository from git remote -v (origin: https://github.com/LogicCuteGuy/WinHookAudio.git).
 Do not infer a destination solely from the workspace name.
 
 ## Conventions
