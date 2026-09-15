@@ -15,6 +15,11 @@ set_property(TARGET winhookaudio-probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThrea
 target_compile_definitions(winhookaudio-probe PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-probe PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_link_libraries(winhookaudio-probe PRIVATE ole32 propsys setupapi ksuser advapi32 uuid)
+add_executable(winhookaudio-abi-check src/abi-check/main.cpp)
+target_compile_features(winhookaudio-abi-check PRIVATE cxx_std_20)
+set_property(TARGET winhookaudio-abi-check PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_compile_definitions(winhookaudio-abi-check PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(winhookaudio-abi-check PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 install(TARGETS winhookaudio-probe RUNTIME DESTINATION bin)
 install(FILES docs/probe-vm.md DESTINATION . RENAME README.md)
 install(FILES scripts/Run-Probe.ps1 DESTINATION .)
@@ -22,9 +27,12 @@ install(FILES scripts/Run-Probe.ps1 DESTINATION .)
 include(CTest)
 if(BUILD_TESTING)
     find_program(POWERSHELL_EXECUTABLE NAMES pwsh powershell REQUIRED)
-    add_test(NAME probe-offline-cli COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile
+    add_test(NAME probe-offline-cli COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Probe-Cli.ps1" -Probe "$<TARGET_FILE:winhookaudio-probe>")
     set_tests_properties(probe-offline-cli PROPERTIES TIMEOUT 30)
+    add_test(NAME abi-offline-check COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Abi-Check.ps1" -AbiCheck "$<TARGET_FILE:winhookaudio-abi-check>")
+    set_tests_properties(abi-offline-check PROPERTIES TIMEOUT 30)
 endif()
 
 set(CPACK_GENERATOR ZIP)
