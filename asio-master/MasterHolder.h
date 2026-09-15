@@ -39,6 +39,7 @@ class MasterHolder {
   bool stopRequested_ = false;
   HANDLE mmcssHandle_ = nullptr;
   HMODULE avrtModule_ = nullptr;
+  class KsAudio* ksAudio_ = nullptr;
 };
 
 }  // namespace wha

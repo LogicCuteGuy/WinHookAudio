@@ -1,4 +1,5 @@
 #include "MasterHolder.h"
+#include "KsAudio.h"
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -11,7 +12,7 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
   for (int i = 0; i < 4; ++i) bridges_[i] = bridges[i];
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
 }
-MasterHolder::~MasterHolder() { stop(); }
+MasterHolder::~MasterHolder() { stop(); delete ksAudio_; }
 
 bool MasterHolder::start() {
   if (running_) return true;
@@ -39,6 +40,15 @@ void MasterHolder::run() {
     auto pfn = reinterpret_cast<AvSetMmThreadCharacteristicsA>(GetProcAddress(avrtModule_, "AvSetMmThreadCharacteristicsA"));
     if (pfn) { DWORD idx = 0; mmcssHandle_ = pfn("Pro Audio", &idx); }
   }
+  // Open KS exclusive for HW slots (deferred if no HW)
+  if (!ksAudio_) ksAudio_ = new KsAudio();
+  bool ksOpened = false;
+  for (uint32_t i = 0; i < table_->masterInCount; ++i) if (table_->masterIn[i].type == SLOT_HW) { ksOpened = true; break; }
+  for (uint32_t i = 0; i < table_->masterOutCount; ++i) if (table_->masterOut[i].type == SLOT_HW) { ksOpened = true; break; }
+  if (ksOpened) {
+    ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer);
+    ksAudio_->start();
+  }
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
   while (!stopRequested_) {
@@ -49,6 +59,7 @@ void MasterHolder::run() {
       doTick();
     }
   }
+  if (ksAudio_) { ksAudio_->stop(); ksAudio_->close(); }
   if (mmcssHandle_ && avrtModule_) {
     using AvRevertMmThreadCharacteristics = BOOL(WINAPI*)(HANDLE);
     auto pfn = reinterpret_cast<AvRevertMmThreadCharacteristics>(GetProcAddress(avrtModule_, "AvRevertMmThreadCharacteristics"));
@@ -126,10 +137,22 @@ void MasterHolder::doTick() {
       for (int ci = 0; ci < 4; ++ci) {
         if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
       }
-      // Clear ready after sum (3ms timeout: lagging client not ready next tick)
       for (int ci = 0; ci < 4; ++ci) b->ready[ci] = 0;
     } else {
       for (int ch = 0; ch < 64; ++ch) for (int f = 0; f < frames; ++f) b->mixedIn[b->mixedActive][ch][f] = 0;
+    }
+  }
+  // KS write: DAW Out -> HW (if HW slots present)
+  if (ksAudio_ && ksAudio_->opened()) {
+    // Find first HW OUT slot and write its audio
+    for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
+      if (table_->masterOut[oi].type == SLOT_HW) {
+        int frames = static_cast<int>(table_->general.asioBuffer);
+        if (frames > 4096) frames = 4096;
+        float* outBuf = masterAudio_ + oi * 4096;
+        ksAudio_->write(outBuf, frames, 1);
+        break;
+      }
     }
   }
 }
