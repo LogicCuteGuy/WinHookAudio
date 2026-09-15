@@ -51,3 +51,7 @@ _Avoid_: LAN channel, VBAN stream
 **Control Panel**:
 The native configuration UI opened from the driver's controlPanel entry.
 _Avoid_: Settings window, popup
+
+**Worker**:
+The MMCSS Pro Audio thread inside the Master DLL driven by Master_Tick, handling Loopback, Shared Bridge sum, and KS I/O.
+_Avoid_: Engine, Holder, audio thread

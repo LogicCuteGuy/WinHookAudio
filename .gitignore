@@ -4,3 +4,7 @@
 /third_party/asio/asiodrv.h
 /third_party/asio/asiodrivers.*
 /third_party/asio/host/
+# ImGui payload — keep README, ignore SDK files
+/third_party/imgui/imgui.h
+/third_party/imgui/imgui.cpp
+/third_party/imgui/backends/

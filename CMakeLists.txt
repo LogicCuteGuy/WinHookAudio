@@ -90,6 +90,16 @@ if(BUILD_TESTING)
     add_test(NAME ks-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Ks-Test.ps1" -KsTest "$<TARGET_FILE:winhookaudio-ks-test>")
     set_tests_properties(ks-offline PROPERTIES TIMEOUT 30)
+    add_executable(winhookaudio-panel-test tests/panel-test/main.cpp common/panel/WHAControlPanelUI.cpp)
+    target_compile_features(winhookaudio-panel-test PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-panel-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-panel-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-panel-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_include_directories(winhookaudio-panel-test PRIVATE common common/panel)
+    target_link_libraries(winhookaudio-panel-test PRIVATE wha_common)
+    add_test(NAME panel-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Panel-Test.ps1" -PanelTest "$<TARGET_FILE:winhookaudio-panel-test>")
+    set_tests_properties(panel-offline PROPERTIES TIMEOUT 30)
 endif()
 
 set(CPACK_GENERATOR ZIP)
