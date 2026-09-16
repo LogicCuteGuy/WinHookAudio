@@ -60,6 +60,7 @@ bool ValidateCodebook(const WHACodebook& cb) {
 }
 
 bool SendWhaaPacket(const WHAAPacketHeader& header, const uint8_t* payload, const char* ip, uint16_t port) {
+  if (!IsValidWhaaPayload(header.payloadBytes)) return false;
   WSADATA wsa;
   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
   SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -68,7 +69,6 @@ bool SendWhaaPacket(const WHAAPacketHeader& header, const uint8_t* payload, cons
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   inet_pton(AF_INET, ip, &addr.sin_addr);
-  // Send header + payload
   std::vector<uint8_t> packet(sizeof(header) + header.payloadBytes);
   std::memcpy(packet.data(), &header, sizeof(header));
   if (payload && header.payloadBytes) std::memcpy(packet.data() + sizeof(header), payload, header.payloadBytes);
