@@ -1,0 +1,21 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Master]
+"CLSID"="{12345678-1234-1234-1234-56789abcdef0}"
+"Description"="WinHookAudio Master (512)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Bridge 1]
+"CLSID"="{12345678-1234-1234-1234-56789abcdef1}"
+"Description"="WinHookAudio Bridge 1"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Bridge 2]
+"CLSID"="{12345678-1234-1234-1234-56789abcdef2}"
+"Description"="WinHookAudio Bridge 2"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Bridge 3]
+"CLSID"="{12345678-1234-1234-1234-56789abcdef3}"
+"Description"="WinHookAudio Bridge 3"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Bridge 4]
+"CLSID"="{12345678-1234-1234-1234-56789abcdef4}"
+"Description"="WinHookAudio Bridge 4"

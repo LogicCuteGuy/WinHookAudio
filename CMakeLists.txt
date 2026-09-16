@@ -120,6 +120,16 @@ if(BUILD_TESTING)
     add_test(NAME virtual-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Virtual-Test.ps1" -VirtualTest "$<TARGET_FILE:winhookaudio-virtual-test>")
     set_tests_properties(virtual-offline PROPERTIES TIMEOUT 30)
+    add_executable(winhookaudio-installer-test tests/installer-test/main.cpp)
+    target_compile_features(winhookaudio-installer-test PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-installer-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-installer-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-installer-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_include_directories(winhookaudio-installer-test PRIVATE common)
+    target_link_libraries(winhookaudio-installer-test PRIVATE wha_common)
+    add_test(NAME installer-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Installer-Test.ps1" -InstallerTest "$<TARGET_FILE:winhookaudio-installer-test>")
+    set_tests_properties(installer-offline PROPERTIES TIMEOUT 30)
 endif()
 
 set(CPACK_GENERATOR ZIP)
