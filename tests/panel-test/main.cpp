@@ -199,6 +199,26 @@ int main() {
   check("VirtualCables Bridge read-only", SetVirtualCableCount(vcBridge, 8) == false);
   check("VirtualCableName Bridge read-only", SetVirtualCableName(vcBridge, "X") == false);
 
+  // NETWORK 8 tab (16)
+  PanelModel netModel{};
+  WHANetworkStream tx{}; tx.port = 6980; tx.codec = WHA_PCM_F32; tx.channels = 32; tx.quality = 0.4f;
+  strcpy_s(tx.ip, "192.168.1.50");
+  check("SetNetworkTx", SetNetworkTx(netModel, 0, tx) == true);
+  check("GetNetworkTx", GetNetworkTx(netModel, 0).channels == 32);
+  check("SetNetworkTx invalid index", SetNetworkTx(netModel, 8, tx) == false);
+  WHANetworkStream badTx = tx; badTx.channels = 100;
+  check("SetNetworkTx invalid channels", SetNetworkTx(netModel, 0, badTx) == false);
+  WHANetworkStream rx{}; rx.port = 6980; rx.codec = WHA_VORBIS; rx.channels = 2; rx.quality = 0.4f;
+  strcpy_s(rx.ip, "192.168.1.50");
+  check("SetNetworkRx", SetNetworkRx(netModel, 0, rx) == true);
+  check("NetworkBandwidth PCM_F32", NetworkBandwidthMbps(tx) > 40.0);
+  check("NetworkBandwidth VORBIS", NetworkBandwidthMbps(rx) > 0.05 && NetworkBandwidthMbps(rx) < 1.0);
+  // INPUTS Type=NETWORK Rx1 linkage
+  netModel.table.masterInCount = 1;
+  netModel.table.masterIn[0].type = SLOT_NETWORK; netModel.table.masterIn[0].streamId = 0; netModel.table.masterIn[0].enabled = 1;
+  TruncateCopy(netModel.table.masterIn[0].name, kNameLen, "Network Rx1");
+  check("NETWORK Rx linkage", netModel.table.masterIn[0].type == SLOT_NETWORK && netModel.table.masterIn[0].streamId == 0);
+
   std::printf("{\"schema_version\":1,\"operation\":\"panel_test\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");
   return pass ? 0 : 1;
 }

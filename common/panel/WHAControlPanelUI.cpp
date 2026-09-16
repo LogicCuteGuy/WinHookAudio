@@ -379,4 +379,39 @@ bool SetVirtualCableName(PanelModel& model, const char* name) {
 uint32_t GetVirtualCableCount(const PanelModel& model) { return model.table.general.virtualCables; }
 std::string GetVirtualCableName(const PanelModel& model) { return std::string(model.table.general.virtualName); }
 
+// NETWORK 8 tab (16)
+bool SetNetworkTx(PanelModel& model, int index, const WHANetworkStream& stream) {
+  if (index < 0 || index >= 8) return false;
+  if (!IsValidCodec(stream.codec)) return false;
+  if (!IsValidNetworkChannels(stream.codec, stream.channels)) return false;
+  if (stream.quality < 0.1f || stream.quality > 1.0f) return false;
+  if (stream.port == 0) return false;
+  model.table.netTx[index] = stream;
+  return true;
+}
+bool SetNetworkRx(PanelModel& model, int index, const WHANetworkStream& stream) {
+  if (index < 0 || index >= 8) return false;
+  if (!IsValidCodec(stream.codec)) return false;
+  if (!IsValidNetworkChannels(stream.codec, stream.channels)) return false;
+  if (stream.quality < 0.1f || stream.quality > 1.0f) return false;
+  if (stream.port == 0) return false;
+  model.table.netRx[index] = stream;
+  return true;
+}
+WHANetworkStream GetNetworkTx(const PanelModel& model, int index) {
+  if (index < 0 || index >= 8) return WHANetworkStream{};
+  return model.table.netTx[index];
+}
+WHANetworkStream GetNetworkRx(const PanelModel& model, int index) {
+  if (index < 0 || index >= 8) return WHANetworkStream{};
+  return model.table.netRx[index];
+}
+double NetworkBandwidthMbps(const WHANetworkStream& stream) {
+  if (stream.codec == WHA_PCM_F32) return stream.channels * 48000.0 * 32 / 1e6;
+  if (stream.codec == WHA_PCM_I16) return stream.channels * 48000.0 * 16 / 1e6;
+  // VORBIS: approx 64-500 kbps per stereo at Q0.1-1.0, scale by channels/2
+  double kbpsPerStereo = 64 + (stream.quality - 0.1) / 0.9 * (500 - 64);
+  return stream.channels / 2.0 * kbpsPerStereo / 1000.0;
+}
+
 }  // namespace wha

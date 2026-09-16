@@ -74,6 +74,13 @@ bool ExportSlots(const WHASlotTable& table, const std::string& path);
 bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error);
 bool ResetToDefault(PanelModel& model);
 
+// NETWORK 8 tab (16)
+bool SetNetworkTx(PanelModel& model, int index, const WHANetworkStream& stream);
+bool SetNetworkRx(PanelModel& model, int index, const WHANetworkStream& stream);
+WHANetworkStream GetNetworkTx(const PanelModel& model, int index);
+WHANetworkStream GetNetworkRx(const PanelModel& model, int index);
+double NetworkBandwidthMbps(const WHANetworkStream& stream);  // PCM_F32: ch*48000*32/1e6, PCM_I16: ch*48000*16/1e6, VORBIS: ch*quality*500k/1e6 approx
+
 // GENERAL Virtual Cables (18)
 bool SetVirtualCableCount(PanelModel& model, uint32_t count);  // 8 or 64
 bool SetVirtualCableName(PanelModel& model, const char* name);
