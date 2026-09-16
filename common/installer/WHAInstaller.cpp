@@ -1,6 +1,7 @@
 #include "WHAInstaller.h"
 #include <windows.h>
 #include <string>
+#include <memory>
 
 namespace wha {
 
@@ -9,8 +10,9 @@ bool IsAdmin() {
   PSID adminGroup = nullptr;
   SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
   if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
+    struct SidDeleter { void operator()(PSID p) const { if (p) FreeSid(p); } };
+    std::unique_ptr<void, SidDeleter> guard(adminGroup);
     CheckTokenMembership(nullptr, adminGroup, &isAdmin);
-    FreeSid(adminGroup);
   }
   return isAdmin != FALSE;
 }

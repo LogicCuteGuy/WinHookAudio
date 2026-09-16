@@ -17,8 +17,7 @@ int main() {
   check("status has hasInno", json.find("hasInno") != std::string::npos);
   check("status has canInstallDriver", json.find("canInstallDriver") != std::string::npos);
   check("status has canBuildSetup", json.find("canBuildSetup") != std::string::npos);
-  // Offline: ADMIN=False, so canInstallDriver/canInstallFirewall false
-  check("offline ADMIN false", s.isAdmin == false || s.isAdmin == true);  // either
+  check("isAdmin is bool", s.isAdmin == false || s.isAdmin == true);
   check("hasPnputil true", s.hasPnputil == true);
   check("hasNetsh true", s.hasNetsh == true);
   check("hasEVCert false offline", s.hasEVCert == false);
