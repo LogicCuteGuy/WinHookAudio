@@ -47,6 +47,9 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   if (!IsValidMasterClock(table.general.sampleRate, table.general.asioBuffer))
     return fail("general Master Clock invalid");
   if (table.general.bitDepth != 32) return fail("general bitDepth must be 32");
+  if (table.general.virtualCables != 8 && table.general.virtualCables != 64)
+    return fail("general virtualCables must be 8 or 64");
+  if (std::strlen(table.general.virtualName) >= 32) return fail("general virtualName too long");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -476,7 +479,9 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += "\"networkPcmBuffer\":" + std::to_string(t.general.networkPcmBuffer) + ",";
   out += "\"networkVorbisBuffer\":" + std::to_string(t.general.networkVorbisBuffer) + ",";
   out += "\"jitterPcm\":" + std::to_string(t.general.jitterPcm) + ",";
-  out += "\"jitterVorbis\":" + std::to_string(t.general.jitterVorbis);
+  out += "\"jitterVorbis\":" + std::to_string(t.general.jitterVorbis) + ",";
+  out += "\"virtualCables\":" + std::to_string(t.general.virtualCables) + ",";
+  out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName);
   out += "},";
   out += "\"netTx\":[";
   for (int i = 0; i < WHA_NET_STREAMS; ++i) {
@@ -588,7 +593,8 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
     } else if (key == "general") {
       if (!detail::Expect(s, p, '{')) return fail("general expected {");
       bool haveSR = false, haveBD = false, haveAB = false, haveHW = false, haveVB = false,
-           haveBB = false, havePCM = false, haveVorbis = false, haveJP = false, haveJV = false;
+           haveBB = false, havePCM = false, haveVorbis = false, haveJP = false, haveJV = false,
+           haveVC = false, haveVN = false;
       while (true) {
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == '}') {
@@ -656,6 +662,17 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
           if (!detail::ParseUInt(s, p, v)) return fail("jitterVorbis");
           out.general.jitterVorbis = v;
           haveJV = true;
+        } else if (gkey == "virtualCables") {
+          uint32_t v;
+          if (!detail::ParseUInt(s, p, v)) return fail("virtualCables");
+          out.general.virtualCables = v;
+          haveVC = true;
+        } else if (gkey == "virtualName") {
+          std::string v;
+          if (!detail::ParseString(s, p, v)) return fail("virtualName");
+          if (v.size() >= 32) return fail("virtualName too long");
+          TruncateCopy(out.general.virtualName, 32, v.c_str());
+          haveVN = true;
         } else return fail("unknown general key");
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == ',') {
@@ -666,7 +683,7 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
         return fail("general object");
       }
       haveGeneral = haveSR && haveBD && haveAB && haveHW && haveVB && haveBB && havePCM &&
-                    haveVorbis && haveJP && haveJV;
+                    haveVorbis && haveJP && haveJV && haveVC && haveVN;
       if (!haveGeneral) return fail("general missing fields");
     } else if (key == "netTx") {
       if (!detail::Expect(s, p, '[')) return fail("netTx [");

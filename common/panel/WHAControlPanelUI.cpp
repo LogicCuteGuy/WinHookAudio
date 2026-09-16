@@ -348,7 +348,7 @@ bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* erro
 }
 
 bool ResetToDefault(PanelModel& model) {
-  model.table = WHASlotTable{};  // WHAGeneral in-class initializers give 64/256/128/512/1024/20/50
+  model.table = WHASlotTable{};  // WHAGeneral in-class initializers give 64/256/128/512/1024/20/50/8
   model.table.masterInCount = 2;
   model.table.masterIn[0].type = SLOT_HW; model.table.masterIn[0].enabled = 1;
   TruncateCopy(model.table.masterIn[0].name, kNameLen, "Mic 1");
@@ -359,9 +359,24 @@ bool ResetToDefault(PanelModel& model) {
   TruncateCopy(model.table.masterOut[0].name, kNameLen, "Main L");
   model.table.masterOut[1].type = SLOT_NONE; model.table.masterOut[1].enabled = 0;
   TruncateCopy(model.table.masterOut[1].name, kNameLen, "- empty -");
-  // WHAGeneral defaults already correct via WHASlotTable{} in-class initializers
   model.table.version = 1;
   return true;
 }
+
+// GENERAL Virtual Cables (18)
+bool SetVirtualCableCount(PanelModel& model, uint32_t count) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (count != 8 && count != 64) return false;
+  model.table.general.virtualCables = count;
+  return true;
+}
+bool SetVirtualCableName(PanelModel& model, const char* name) {
+  if (IsGeneralReadOnly(model)) return false;
+  if (!name) return false;
+  TruncateCopy(model.table.general.virtualName, 32, name);
+  return true;
+}
+uint32_t GetVirtualCableCount(const PanelModel& model) { return model.table.general.virtualCables; }
+std::string GetVirtualCableName(const PanelModel& model) { return std::string(model.table.general.virtualName); }
 
 }  // namespace wha

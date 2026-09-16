@@ -66,6 +66,8 @@ struct WHAGeneral {
   uint32_t networkVorbisBuffer = 1024;
   uint32_t jitterPcm = 20;
   uint32_t jitterVorbis = 50;
+  uint32_t virtualCables = 8;  // 8 or 64 (GENERAL Virtual Cables)
+  char virtualName[32] = "WinHookAudio Virtual";
 };
 
 struct WHANetworkStream {

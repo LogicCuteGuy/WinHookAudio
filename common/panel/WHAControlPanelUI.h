@@ -74,6 +74,12 @@ bool ExportSlots(const WHASlotTable& table, const std::string& path);
 bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error);
 bool ResetToDefault(PanelModel& model);
 
+// GENERAL Virtual Cables (18)
+bool SetVirtualCableCount(PanelModel& model, uint32_t count);  // 8 or 64
+bool SetVirtualCableName(PanelModel& model, const char* name);
+uint32_t GetVirtualCableCount(const PanelModel& model);
+std::string GetVirtualCableName(const PanelModel& model);
+
 // GENERAL Per-Thing (12)
 bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer);  // requires host reset
 bool SetHwBuffer(PanelModel& model, uint32_t frames);

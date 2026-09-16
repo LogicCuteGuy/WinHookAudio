@@ -187,6 +187,18 @@ int main() {
   check("ImportSlots", ImportSlots(impTable, tmpPath, &impErr) == true && std::strcmp(impTable.masterIn[0].name, "ExportTest") == 0);
   std::remove(tmpPath.c_str());
 
+  // GENERAL Virtual Cables (18)
+  PanelModel vcModel{};
+  check("VirtualCables default 8", GetVirtualCableCount(vcModel) == 8);
+  check("VirtualCableName default", GetVirtualCableName(vcModel) == "WinHookAudio Virtual");
+  check("SetVirtualCableCount 8", SetVirtualCableCount(vcModel, 8) == true);
+  check("SetVirtualCableCount 64", SetVirtualCableCount(vcModel, 64) == true && GetVirtualCableCount(vcModel) == 64);
+  check("SetVirtualCableCount invalid", SetVirtualCableCount(vcModel, 16) == false);
+  check("SetVirtualCableName", SetVirtualCableName(vcModel, "My Virtual") == true && GetVirtualCableName(vcModel) == "My Virtual");
+  PanelModel vcBridge = vcModel; vcBridge.isMaster = false;
+  check("VirtualCables Bridge read-only", SetVirtualCableCount(vcBridge, 8) == false);
+  check("VirtualCableName Bridge read-only", SetVirtualCableName(vcBridge, "X") == false);
+
   std::printf("{\"schema_version\":1,\"operation\":\"panel_test\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");
   return pass ? 0 : 1;
 }
