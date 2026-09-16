@@ -10,3 +10,6 @@
 /third_party/imgui/backends/
 # WDK payload — keep README, ignore SDK files
 /third_party/wdk/
+# Vorbis/r8brain payload — keep README, ignore SDK files
+/third_party/libvorbis/
+third_party/r8brain/

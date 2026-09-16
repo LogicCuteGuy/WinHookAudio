@@ -47,6 +47,23 @@ int main() {
   check("CODEBOOK build", ValidateCodebook(cb));
   check("CODEBOOK 3x redundant", kWhaaCodebookRedundant == 3);
 
+  // Vorbis encode/decode (stub as PCM fallback)
+  auto vorbisPayload = VorbisEncode(data, 2, 2, 0.4f);
+  check("Vorbis encode", !vorbisPayload.empty());
+  float vorbisOut[4] = {};
+  check("Vorbis decode", VorbisDecode(vorbisPayload.data(), static_cast<uint32_t>(vorbisPayload.size()), vorbisOut, 2, 2, 0.4f) && std::abs(vorbisOut[0] - 0.5f) < 0.01f);
+
+  // r8brain SRC
+  float resampled[4] = {};
+  check("Resample same rate", Resample(data, 2, 48000, resampled, 2, 48000, 2) && resampled[0] == 0.5f);
+  float resampled2[8] = {};
+  check("Resample 48k->96k", Resample(data, 2, 48000, resampled2, 4, 96000, 2));
+
+  // Jitter Vorbis 50ms
+  WHAJitterBuffer jitterVorbis(50, 48000);
+  jitterVorbis.push(hdr, payload.data(), static_cast<uint32_t>(payload.size()), 1000);
+  check("jitter Vorbis 50ms", jitterVorbis.jitterMs() == 50);
+
   // UDP loopback 127.0.0.1:6980 (may fail without network, but should not crash)
   WHAAPacketHeader sendHdr = hdr;
   sendHdr.qpc = 12345;

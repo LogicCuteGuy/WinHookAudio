@@ -12,6 +12,12 @@
 
 namespace wha {
 
+// Vorbis encode/decode (15) — stub as PCM fallback if libvorbis not available
+std::vector<uint8_t> VorbisEncode(const float* data, uint32_t channels, uint32_t frames, float quality);
+bool VorbisDecode(const uint8_t* payload, uint32_t payloadBytes, float* out, uint32_t channels, uint32_t frames, float quality);
+// r8brain SRC (15) — stub as memcpy if r8brain not available
+bool Resample(const float* in, uint32_t inFrames, uint32_t inRate, float* out, uint32_t outFrames, uint32_t outRate, uint32_t channels);
+
 // CODEBOOK: 3 Vorbis headers (ident/comment/codebook) — stub as PCM fallback for 14
 struct WHACodebook {
   uint32_t streamId = 0;
