@@ -154,7 +154,6 @@ bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type) {
 
 // OUTPUTS — independent indices
 bool AddOutput(PanelModel& model) {
-  if (IsGeneralReadOnly(model)) return false;
   if (model.table.masterOutCount >= kMax) return false;
   uint32_t idx = model.table.masterOutCount;
   model.table.masterOut[idx].type = SLOT_NONE;
@@ -167,7 +166,6 @@ bool AddOutput(PanelModel& model) {
   return true;
 }
 bool InsertEmptyAboveOutput(PanelModel& model, uint32_t index) {
-  if (IsGeneralReadOnly(model)) return false;
   if (model.table.masterOutCount >= kMax) return false;
   if (index > model.table.masterOutCount) return false;
   for (uint32_t i = model.table.masterOutCount; i > index; --i) model.table.masterOut[i] = model.table.masterOut[i - 1];
@@ -185,7 +183,6 @@ bool InsertEmptyBelowOutput(PanelModel& model, uint32_t index) {
   return InsertEmptyAboveOutput(model, index + 1);
 }
 bool DuplicateOutput(PanelModel& model, uint32_t index) {
-  if (IsGeneralReadOnly(model)) return false;
   if (model.table.masterOutCount >= kMax) return false;
   if (index >= model.table.masterOutCount) return false;
   for (uint32_t i = model.table.masterOutCount; i > index + 1; --i) model.table.masterOut[i] = model.table.masterOut[i - 1];
@@ -194,7 +191,6 @@ bool DuplicateOutput(PanelModel& model, uint32_t index) {
   return true;
 }
 bool DeleteOutput(PanelModel& model, uint32_t index) {
-  if (IsGeneralReadOnly(model)) return false;
   if (index >= model.table.masterOutCount) return false;
   if (model.table.masterOutCount <= 1) return false;
   for (uint32_t i = index; i + 1 < model.table.masterOutCount; ++i) model.table.masterOut[i] = model.table.masterOut[i + 1];
@@ -203,7 +199,6 @@ bool DeleteOutput(PanelModel& model, uint32_t index) {
   return true;
 }
 bool MoveOutput(PanelModel& model, uint32_t from, uint32_t to) {
-  if (IsGeneralReadOnly(model)) return false;
   if (from >= model.table.masterOutCount || to >= model.table.masterOutCount) return false;
   if (from == to) return true;
   WHASlot tmp = model.table.masterOut[from];
