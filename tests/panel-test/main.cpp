@@ -132,6 +132,54 @@ int main() {
   check("SetMasterClock Bridge fail", SetMasterClock(bridgeGen, 48000, 128) == false);
   check("SetHwBuffer Bridge fail", SetHwBuffer(bridgeGen, 64) == false);
 
+  // ABOUT + Save contract (13)
+  PanelModel aboutModel{};
+  aboutModel.table.masterInCount = 2;
+  aboutModel.table.masterIn[0].type = SLOT_BRIDGE1; aboutModel.table.masterIn[0].enabled = 1;
+  TruncateCopy(aboutModel.table.masterIn[0].name, kNameLen, "Bridge1 Ch1");
+  aboutModel.table.masterIn[1].type = SLOT_BRIDGE1; aboutModel.table.masterIn[1].enabled = 1;
+  TruncateCopy(aboutModel.table.masterIn[1].name, kNameLen, "Bridge1 Ch2");
+  AboutInfo about = GetAboutInfo(aboutModel);
+  check("ABOUT version", !about.version.empty());
+  check("ABOUT clsidCount 5", about.clsidCount == 5);
+  check("ABOUT slotsJsonPath", !about.slotsJsonPath.empty());
+  check("ABOUT bridgeClients", !about.bridgeClients[0].empty());
+
+  // SavePanel: version++ + slots.json + resetRequested
+  WHASlotTable pTable{};
+  pTable.version = 5;
+  pTable.masterInCount = 1; pTable.masterIn[0].type = SLOT_HW; pTable.masterIn[0].enabled = 1;
+  TruncateCopy(pTable.masterIn[0].name, kNameLen, "Mic 1");
+  pTable.masterOutCount = 1; pTable.masterOut[0].type = SLOT_HW; pTable.masterOut[0].enabled = 1;
+  TruncateCopy(pTable.masterOut[0].name, kNameLen, "Main L");
+  PanelModel editCopy{}; editCopy.table = pTable;
+  editCopy.table.masterIn[0].type = SLOT_VIRTUAL;
+  TruncateCopy(editCopy.table.masterIn[0].name, kNameLen, "VRChat Out");
+  std::string jsonOut; bool resetRequested = false;
+  check("SavePanel", SavePanel(editCopy, &pTable, &jsonOut, &resetRequested) == true);
+  check("SavePanel version++", pTable.version == 6);
+  check("SavePanel jsonOut", !jsonOut.empty());
+  check("SavePanel resetRequested", resetRequested == true);
+  check("SavePanel pTable updated", std::strcmp(pTable.masterIn[0].name, "VRChat Out") == 0);
+  // slots.json round-trip
+  check("SavePanel json round-trip", jsonOut.find("VRChat Out") != std::string::npos);
+
+  // ResetToDefault
+  PanelModel resetModel{}; resetModel.table.masterInCount = 5;
+  check("ResetToDefault", ResetToDefault(resetModel) == true && resetModel.table.masterInCount == 2);
+  check("ResetToDefault version 1", resetModel.table.version == 1);
+
+  // Export/Import
+  WHASlotTable expTable{}; expTable.version = 1; expTable.masterInCount = 1; expTable.masterIn[0].type = SLOT_HW; expTable.masterIn[0].enabled = 1;
+  TruncateCopy(expTable.masterIn[0].name, kNameLen, "ExportTest");
+  expTable.masterOutCount = 1; expTable.masterOut[0].type = SLOT_HW; expTable.masterOut[0].enabled = 1;
+  TruncateCopy(expTable.masterOut[0].name, kNameLen, "Main L");
+  std::string tmpPath = "test_export.json";
+  check("ExportSlots", ExportSlots(expTable, tmpPath) == true);
+  WHASlotTable impTable{}; std::string impErr;
+  check("ImportSlots", ImportSlots(impTable, tmpPath, &impErr) == true && std::strcmp(impTable.masterIn[0].name, "ExportTest") == 0);
+  std::remove(tmpPath.c_str());
+
   std::printf("{\"schema_version\":1,\"operation\":\"panel_test\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");
   return pass ? 0 : 1;
 }

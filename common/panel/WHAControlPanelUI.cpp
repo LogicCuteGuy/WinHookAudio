@@ -1,6 +1,8 @@
 #include "WHAControlPanelUI.h"
+#include "WHASlotsJson.h"
 #include <cstring>
 #include <algorithm>
+#include <cstdio>
 
 namespace wha {
 
@@ -279,6 +281,80 @@ bool SetJitterPcm(PanelModel& model, uint32_t ms) {
 bool SetJitterVorbis(PanelModel& model, uint32_t ms) {
   if (IsGeneralReadOnly(model)) return false;
   model.table.general.jitterVorbis = ms;
+  return true;
+}
+
+// ABOUT + Save contract (13)
+AboutInfo GetAboutInfo(const PanelModel& model) {
+  AboutInfo info;
+  info.version = "1.0.0";
+  info.sysRunning = false;
+  info.clsidCount = 5;
+  info.slotsJsonPath = "%ProgramData%\\WinHookAudio\\slots.json";
+  for (int i = 0; i < 4; ++i) {
+    int count = 0;
+    WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + i);
+    for (uint32_t j = 0; j < model.table.masterInCount; ++j) if (model.table.masterIn[j].type == want) ++count;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count > 4 ? 4 : count);
+    info.bridgeClients[i] = buf;
+  }
+  return info;
+}
+
+bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested) {
+  if (!pTable) return false;
+  // Validate
+  std::string err;
+  if (!ValidateSlots(editCopy.table, &err)) return false;
+  // version++
+  editCopy.table.version = pTable->version + 1;
+  // memcpy SHM
+  *pTable = editCopy.table;
+  // slots.json
+  std::string json = SerializeSlots(*pTable);
+  if (jsonOut) *jsonOut = json;
+  if (resetRequested) *resetRequested = true;
+  return true;
+}
+
+bool ExportSlots(const WHASlotTable& table, const std::string& path) {
+  std::string json = SerializeSlots(table);
+  FILE* f = nullptr;
+  if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) return false;
+  std::fwrite(json.c_str(), 1, json.size(), f);
+  std::fclose(f);
+  return true;
+}
+
+bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error) {
+  FILE* f = nullptr;
+  if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) { if (error) *error = "open failed"; return false; }
+  std::fseek(f, 0, SEEK_END);
+  long len = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  std::string json;
+  json.resize(len);
+  std::fread(json.data(), 1, len, f);
+  std::fclose(f);
+  return DeserializeSlots(json, table, error);
+}
+
+bool ResetToDefault(PanelModel& model) {
+  model.table = WHASlotTable{};
+  model.table.masterInCount = 2;
+  model.table.masterIn[0].type = SLOT_HW; model.table.masterIn[0].enabled = 1;
+  TruncateCopy(model.table.masterIn[0].name, kNameLen, "Mic 1");
+  model.table.masterIn[1].type = SLOT_NONE; model.table.masterIn[1].enabled = 0;
+  TruncateCopy(model.table.masterIn[1].name, kNameLen, "- empty -");
+  model.table.masterOutCount = 2;
+  model.table.masterOut[0].type = SLOT_HW; model.table.masterOut[0].enabled = 1;
+  TruncateCopy(model.table.masterOut[0].name, kNameLen, "Main L");
+  model.table.masterOut[1].type = SLOT_NONE; model.table.masterOut[1].enabled = 0;
+  TruncateCopy(model.table.masterOut[1].name, kNameLen, "- empty -");
+  model.table.general.sampleRate = kMasterClockRateDefault;
+  model.table.general.asioBuffer = kMasterClockBufferDefault;
+  model.table.version = 1;
   return true;
 }
 

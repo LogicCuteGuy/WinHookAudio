@@ -57,6 +57,20 @@ bool SetOutputEnabled(PanelModel& model, uint32_t index, bool enabled);
 bool SetOutputName(PanelModel& model, uint32_t index, const char* name);
 bool SetOutputType(PanelModel& model, uint32_t index, WHASlotType type);
 
+// ABOUT + Save contract (13)
+struct AboutInfo {
+  std::string version;
+  bool sysRunning = false;
+  int clsidCount = 5;
+  std::string slotsJsonPath;
+  std::string bridgeClients[4];
+};
+AboutInfo GetAboutInfo(const PanelModel& model);
+bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested);
+bool ExportSlots(const WHASlotTable& table, const std::string& path);
+bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error);
+bool ResetToDefault(PanelModel& model);
+
 // GENERAL Per-Thing (12)
 bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer);  // requires host reset
 bool SetHwBuffer(PanelModel& model, uint32_t frames);
