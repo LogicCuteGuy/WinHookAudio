@@ -27,7 +27,6 @@ class MasterHolder {
   static DWORD WINAPI threadProc(LPVOID param);
   void run();
   void doTick();
-  void ensureVirtualRings();
 
   WHASlotTable* table_ = nullptr;
   float* masterAudio_ = nullptr;

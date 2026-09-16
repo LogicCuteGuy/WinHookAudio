@@ -18,6 +18,8 @@ MasterHolder::~MasterHolder() { stop(); delete ksAudio_; for (int i = 0; i < 8; 
 
 bool MasterHolder::start() {
   if (running_) return true;
+  // Preallocate virtual rings at start, not per-tick
+  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
   stopRequested_ = false;
   running_ = true;
   DWORD id = 0;
@@ -51,8 +53,6 @@ void MasterHolder::run() {
     ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer);
     ksAudio_->start();
   }
-  // Init virtual rings 8x Stereo
-  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
   while (!stopRequested_) {
@@ -73,15 +73,13 @@ void MasterHolder::run() {
     mmcssHandle_ = nullptr;
   }
 }
-void MasterHolder::tickOnce() { doTick(); }
-
-void MasterHolder::ensureVirtualRings() {
+void MasterHolder::tickOnce() {
   for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+  doTick();
 }
 
 void MasterHolder::doTick() {
   if (!table_ || !masterAudio_) return;
-  ensureVirtualRings();
   // Per-thing FIFOs: for now, just handle Loopback OUT->IN next tick and Bridge sum
   // Loopback: if masterOut[i].loopback && type==VIRTUAL, copy OUT->IN next tick
   // Master audio is float[2][512][4096] ping-pong; for 09 offline, simulate with masterAudio_ as flat

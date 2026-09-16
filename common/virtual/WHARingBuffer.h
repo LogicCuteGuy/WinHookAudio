@@ -17,10 +17,11 @@ class WHARingBuffer {
   bool write(const float* data, uint32_t frames) {
     if (frames == 0 || frames > kRingBufferFrames) return false;
     uint32_t available = kRingBufferFrames - size_;
-    if (frames > available) return false;  // overflow
+    if (frames > available) return false;
     for (uint32_t f = 0; f < frames; ++f) {
       for (uint32_t ch = 0; ch < kVirtualChannels; ++ch) {
-        buffer_[(writePos_ + f) * kVirtualChannels + ch] = data[f * kVirtualChannels + ch];
+        uint32_t pos = (writePos_ + f) % kRingBufferFrames;
+        buffer_[pos * kVirtualChannels + ch] = data[f * kVirtualChannels + ch];
       }
     }
     writePos_ = (writePos_ + frames) % kRingBufferFrames;
@@ -30,10 +31,11 @@ class WHARingBuffer {
 
   bool read(float* out, uint32_t frames) {
     if (frames == 0 || frames > kRingBufferFrames) return false;
-    if (frames > size_) return false;  // underflow
+    if (frames > size_) return false;
     for (uint32_t f = 0; f < frames; ++f) {
       for (uint32_t ch = 0; ch < kVirtualChannels; ++ch) {
-        out[f * kVirtualChannels + ch] = buffer_[(readPos_ + f) * kVirtualChannels + ch];
+        uint32_t pos = (readPos_ + f) % kRingBufferFrames;
+        out[f * kVirtualChannels + ch] = buffer_[pos * kVirtualChannels + ch];
       }
     }
     readPos_ = (readPos_ + frames) % kRingBufferFrames;
