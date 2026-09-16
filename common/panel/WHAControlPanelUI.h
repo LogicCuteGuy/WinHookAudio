@@ -75,11 +75,23 @@ bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* erro
 bool ResetToDefault(PanelModel& model);
 
 // NETWORK 8 tab (16)
-bool SetNetworkTx(PanelModel& model, int index, const WHANetworkStream& stream);
-bool SetNetworkRx(PanelModel& model, int index, const WHANetworkStream& stream);
-WHANetworkStream GetNetworkTx(const PanelModel& model, int index);
-WHANetworkStream GetNetworkRx(const PanelModel& model, int index);
-double NetworkBandwidthMbps(const WHANetworkStream& stream);  // PCM_F32: ch*48000*32/1e6, PCM_I16: ch*48000*16/1e6, VORBIS: ch*quality*500k/1e6 approx
+bool SetNetworkTx(PanelModel& model, uint32_t index, const WHANetworkStream& stream);
+bool SetNetworkRx(PanelModel& model, uint32_t index, const WHANetworkStream& stream);
+WHANetworkStream GetNetworkTx(const PanelModel& model, uint32_t index);
+WHANetworkStream GetNetworkRx(const PanelModel& model, uint32_t index);
+inline double NetworkBandwidthMbps(const WHANetworkStream& stream) noexcept {  // PCM_F32: ch*48000*32/1e6, PCM_I16: ch*48000*16/1e6, VORBIS: ch*quality*500k/1e6 approx
+  constexpr double kSampleRate = 48000.0;
+  constexpr double kBitsF32 = 32.0;
+  constexpr double kBitsI16 = 16.0;
+  constexpr double kVorbisMinKbps = 64.0;
+  constexpr double kVorbisMaxKbps = 500.0;
+  constexpr double kVorbisQualityMin = 0.1;
+  constexpr double kVorbisQualityRange = 0.9;
+  if (stream.codec == WHA_PCM_F32) return stream.channels * kSampleRate * kBitsF32 / 1e6;
+  if (stream.codec == WHA_PCM_I16) return stream.channels * kSampleRate * kBitsI16 / 1e6;
+  double kbpsPerStereo = kVorbisMinKbps + (stream.quality - kVorbisQualityMin) / kVorbisQualityRange * (kVorbisMaxKbps - kVorbisMinKbps);
+  return stream.channels / 2.0 * kbpsPerStereo / 1000.0;
+}
 
 // GENERAL Virtual Cables (18)
 bool SetVirtualCableCount(PanelModel& model, uint32_t count);  // 8 or 64
