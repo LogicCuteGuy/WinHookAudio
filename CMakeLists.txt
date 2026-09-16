@@ -100,6 +100,16 @@ if(BUILD_TESTING)
     add_test(NAME panel-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Panel-Test.ps1" -PanelTest "$<TARGET_FILE:winhookaudio-panel-test>")
     set_tests_properties(panel-offline PROPERTIES TIMEOUT 30)
+    add_executable(winhookaudio-whaa-test tests/whaa-test/main.cpp common/network/WHANetwork.cpp)
+    target_compile_features(winhookaudio-whaa-test PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-whaa-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-whaa-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-whaa-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_include_directories(winhookaudio-whaa-test PRIVATE common common/network)
+    target_link_libraries(winhookaudio-whaa-test PRIVATE wha_common ws2_32)
+    add_test(NAME whaa-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Whaa-Test.ps1" -WhaaTest "$<TARGET_FILE:winhookaudio-whaa-test>")
+    set_tests_properties(whaa-offline PROPERTIES TIMEOUT 30)
 endif()
 
 set(CPACK_GENERATOR ZIP)
