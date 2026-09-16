@@ -27,6 +27,7 @@ class MasterHolder {
   static DWORD WINAPI threadProc(LPVOID param);
   void run();
   void doTick();
+  void ensureVirtualRings();
 
   WHASlotTable* table_ = nullptr;
   float* masterAudio_ = nullptr;
@@ -40,6 +41,7 @@ class MasterHolder {
   HANDLE mmcssHandle_ = nullptr;
   HMODULE avrtModule_ = nullptr;
   class KsAudio* ksAudio_ = nullptr;
+  class WHARingBuffer* virtualRings_[8] = {};
 };
 
 }  // namespace wha

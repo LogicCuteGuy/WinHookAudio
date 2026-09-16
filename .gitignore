@@ -8,3 +8,5 @@
 /third_party/imgui/imgui.h
 /third_party/imgui/imgui.cpp
 /third_party/imgui/backends/
+# WDK payload — keep README, ignore SDK files
+/third_party/wdk/

@@ -1,5 +1,7 @@
 #include "MasterHolder.h"
 #include "KsAudio.h"
+#include "virtual/WHAIoctl.h"
+#include "virtual/WHARingBuffer.h"
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -12,7 +14,7 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
   for (int i = 0; i < 4; ++i) bridges_[i] = bridges[i];
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
 }
-MasterHolder::~MasterHolder() { stop(); delete ksAudio_; }
+MasterHolder::~MasterHolder() { stop(); delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
 
 bool MasterHolder::start() {
   if (running_) return true;
@@ -49,6 +51,8 @@ void MasterHolder::run() {
     ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer);
     ksAudio_->start();
   }
+  // Init virtual rings 8x Stereo
+  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
   while (!stopRequested_) {
@@ -71,8 +75,13 @@ void MasterHolder::run() {
 }
 void MasterHolder::tickOnce() { doTick(); }
 
+void MasterHolder::ensureVirtualRings() {
+  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+}
+
 void MasterHolder::doTick() {
   if (!table_ || !masterAudio_) return;
+  ensureVirtualRings();
   // Per-thing FIFOs: for now, just handle Loopback OUT->IN next tick and Bridge sum
   // Loopback: if masterOut[i].loopback && type==VIRTUAL, copy OUT->IN next tick
   // Master audio is float[2][512][4096] ping-pong; for 09 offline, simulate with masterAudio_ as flat
@@ -142,9 +151,39 @@ void MasterHolder::doTick() {
       for (int ch = 0; ch < 64; ++ch) for (int f = 0; f < frames; ++f) b->mixedIn[b->mixedActive][ch][f] = 0;
     }
   }
+  // Virtual Cable: DeviceIoControl stub — SHM Out -> Ring Write, Ring Read -> SHM In
+  for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
+    if (table_->masterOut[oi].type == SLOT_VIRTUAL) {
+      int cable = table_->masterOut[oi].srcChannel % 8;
+      if (cable < 0) cable = 0;
+      if (virtualRings_[cable]) {
+        int frames = static_cast<int>(table_->general.asioBuffer);
+        if (frames > 4096) frames = 4096;
+        float* outBuf = masterAudio_ + oi * 4096;
+        // Interleave mono to stereo for ring
+        float stereo[256 * 2] = {};
+        for (int f = 0; f < frames && f < 256; ++f) stereo[f * 2] = stereo[f * 2 + 1] = outBuf[f];
+        virtualRings_[cable]->write(stereo, frames);
+      }
+    }
+  }
+  for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+    if (table_->masterIn[ii].type == SLOT_VIRTUAL) {
+      int cable = table_->masterIn[ii].srcChannel % 8;
+      if (cable < 0) cable = 0;
+      if (virtualRings_[cable] && virtualRings_[cable]->size() >= (uint32_t)table_->general.asioBuffer) {
+        int frames = static_cast<int>(table_->general.asioBuffer);
+        if (frames > 4096) frames = 4096;
+        float* inBuf = masterAudio_ + 512 * 4096 + ii * 4096;
+        float stereo[256 * 2] = {};
+        if (virtualRings_[cable]->read(stereo, frames)) {
+          for (int f = 0; f < frames; ++f) inBuf[f] = stereo[f * 2];
+        }
+      }
+    }
+  }
   // KS write: DAW Out -> HW (if HW slots present)
   if (ksAudio_ && ksAudio_->opened()) {
-    // Find first HW OUT slot and write its audio
     for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
       if (table_->masterOut[oi].type == SLOT_HW) {
         int frames = static_cast<int>(table_->general.asioBuffer);
