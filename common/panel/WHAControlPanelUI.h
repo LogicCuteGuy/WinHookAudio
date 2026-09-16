@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include "WHASlotTable.h"
+#include "WHABridgeShared.h"
 
 namespace wha {
 
@@ -65,7 +66,9 @@ struct AboutInfo {
   std::string slotsJsonPath;
   std::string bridgeClients[4];
 };
-AboutInfo GetAboutInfo(const PanelModel& model);
+AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4] = nullptr);
+// SavePanel: version++ + memcpy SHM + SerializeSlots to jsonOut + resetRequested (true only for Master Clock change)
+// Caller does WriteFile(slots.json), FlushViewOfFile, SetEvent(TableChanged), hostCallback(ASIOResetRequest) if resetRequested
 bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested);
 bool ExportSlots(const WHASlotTable& table, const std::string& path);
 bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error);

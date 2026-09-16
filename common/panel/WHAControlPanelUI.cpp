@@ -285,7 +285,7 @@ bool SetJitterVorbis(PanelModel& model, uint32_t ms) {
 }
 
 // ABOUT + Save contract (13)
-AboutInfo GetAboutInfo(const PanelModel& model) {
+AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   AboutInfo info;
   info.version = "1.0.0";
   info.sysRunning = false;
@@ -293,10 +293,19 @@ AboutInfo GetAboutInfo(const PanelModel& model) {
   info.slotsJsonPath = "%ProgramData%\\WinHookAudio\\slots.json";
   for (int i = 0; i < 4; ++i) {
     int count = 0;
-    WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + i);
-    for (uint32_t j = 0; j < model.table.masterInCount; ++j) if (model.table.masterIn[j].type == want) ++count;
+    if (bridges && bridges[i]) {
+      count = bridges[i]->clientCount;
+      if (count > 4) count = 4;
+      if (count < 0) count = 0;
+    } else {
+      WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + i);
+      for (uint32_t j = 0; j < model.table.masterInCount; ++j) if (model.table.masterIn[j].type == want) ++count;
+      for (uint32_t j = 0; j < model.table.masterOutCount; ++j) if (model.table.masterOut[j].type == want) ++count;
+      // Slot count is not client count — cap at 4 for display
+      if (count > 4) count = 4;
+    }
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count > 4 ? 4 : count);
+    std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count);
     info.bridgeClients[i] = buf;
   }
   return info;
@@ -304,17 +313,15 @@ AboutInfo GetAboutInfo(const PanelModel& model) {
 
 bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested) {
   if (!pTable) return false;
-  // Validate
   std::string err;
   if (!ValidateSlots(editCopy.table, &err)) return false;
-  // version++
+  bool masterClockChanged = (editCopy.table.general.sampleRate != pTable->general.sampleRate ||
+                             editCopy.table.general.asioBuffer != pTable->general.asioBuffer);
   editCopy.table.version = pTable->version + 1;
-  // memcpy SHM
   *pTable = editCopy.table;
-  // slots.json
   std::string json = SerializeSlots(*pTable);
   if (jsonOut) *jsonOut = json;
-  if (resetRequested) *resetRequested = true;
+  if (resetRequested) *resetRequested = masterClockChanged;
   return true;
 }
 
@@ -341,7 +348,7 @@ bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* erro
 }
 
 bool ResetToDefault(PanelModel& model) {
-  model.table = WHASlotTable{};
+  model.table = WHASlotTable{};  // WHAGeneral in-class initializers give 64/256/128/512/1024/20/50
   model.table.masterInCount = 2;
   model.table.masterIn[0].type = SLOT_HW; model.table.masterIn[0].enabled = 1;
   TruncateCopy(model.table.masterIn[0].name, kNameLen, "Mic 1");
@@ -352,8 +359,7 @@ bool ResetToDefault(PanelModel& model) {
   TruncateCopy(model.table.masterOut[0].name, kNameLen, "Main L");
   model.table.masterOut[1].type = SLOT_NONE; model.table.masterOut[1].enabled = 0;
   TruncateCopy(model.table.masterOut[1].name, kNameLen, "- empty -");
-  model.table.general.sampleRate = kMasterClockRateDefault;
-  model.table.general.asioBuffer = kMasterClockBufferDefault;
+  // WHAGeneral defaults already correct via WHASlotTable{} in-class initializers
   model.table.version = 1;
   return true;
 }

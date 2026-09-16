@@ -159,7 +159,14 @@ int main() {
   check("SavePanel", SavePanel(editCopy, &pTable, &jsonOut, &resetRequested) == true);
   check("SavePanel version++", pTable.version == 6);
   check("SavePanel jsonOut", !jsonOut.empty());
-  check("SavePanel resetRequested", resetRequested == true);
+  // Master Clock not changed (only type/name), so resetRequested should be false (Per-Thing only)
+  check("SavePanel resetRequested false for non-clock", resetRequested == false);
+  // Now change Master Clock — should request reset
+  editCopy.table.general.sampleRate = 44100;
+  std::string jsonOut2; bool reset2 = false;
+  WHASlotTable pTable2 = pTable;
+  check("SavePanel clock change", SavePanel(editCopy, &pTable2, &jsonOut2, &reset2) == true);
+  check("SavePanel resetRequested true for clock", reset2 == true);
   check("SavePanel pTable updated", std::strcmp(pTable.masterIn[0].name, "VRChat Out") == 0);
   // slots.json round-trip
   check("SavePanel json round-trip", jsonOut.find("VRChat Out") != std::string::npos);
