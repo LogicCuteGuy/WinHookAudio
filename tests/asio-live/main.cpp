@@ -23,6 +23,7 @@
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <shlwapi.h>
+#include <dbghelp.h>
 
 #include <atomic>
 #include <cmath>
@@ -176,6 +177,24 @@ std::string FindEndpoint(EDataFlow flow, const char* name) {
   return found;
 }
 
+// Any unhandled exception in the process (host or driver threads): full minidump to
+// %TEMP%\winhookaudio-asio-live-<pid>.dmp, then the normal crash.
+LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* info) {
+  wchar_t path[MAX_PATH];
+  wchar_t dir[MAX_PATH];
+  GetTempPathW(MAX_PATH, dir);
+  swprintf_s(path, L"%swinhookaudio-asio-live-%lu.dmp", dir, GetCurrentProcessId());
+  HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION mei{GetCurrentThreadId(), info, FALSE};
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+                      static_cast<MINIDUMP_TYPE>(MiniDumpWithFullMemory | MiniDumpWithThreadInfo), &mei, nullptr, nullptr);
+    CloseHandle(file);
+    fwprintf(stderr, L"CRASH: exception 0x%08lX, dump %s\n", info->ExceptionRecord->ExceptionCode, path);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 std::wstring Widen(const char* s) {
   std::wstring w;
   for (; *s; ++s) w += static_cast<wchar_t>(static_cast<unsigned char>(*s));
@@ -185,6 +204,7 @@ std::wstring Widen(const char* s) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  SetUnhandledExceptionFilter(WriteCrashDump);
   std::wstring driver = L"WinHookAudio Master";
   double seconds = 3.0;
   long hwBuffer = -1;
@@ -311,7 +331,12 @@ int main(int argc, char** argv) {
   long inStreaming = 0, outStreaming = 0;
   gAsio->getLatencies(&inStreaming, &outStreaming);
   std::printf("Latencies while streaming: in %ld / out %ld frames\n", inStreaming, outStreaming);
+  LARGE_INTEGER stopFreq, stop0, stop1;
+  QueryPerformanceFrequency(&stopFreq);
+  QueryPerformanceCounter(&stop0);
   check("stop", gAsio->stop() == ASE_OK);
+  QueryPerformanceCounter(&stop1);
+  std::printf("stop() took %.0f ms\n", 1000.0 * static_cast<double>(stop1.QuadPart - stop0.QuadPart) / static_cast<double>(stopFreq.QuadPart));
   const long switches = gSwitches.load();
   Sleep(50);
   check("No bufferSwitch after stop", gSwitches.load() == switches);
@@ -340,17 +365,19 @@ int main(int argc, char** argv) {
                 st.hwStreamLatency, measuredOut, 1000.0 * measuredOut / gRate);
     check("Reported output latency before start = while streaming", outLatency == outStreaming);
     check("Reported output latency within one block of measured", std::abs(outStreaming - measuredOut) <= gBlock);
-    std::printf("HW input: open=%d lastError=0x%08lX reads=%llu starved=%llu trims=%llu glitches=%llu fill %d target %d\n",
+    std::printf("HW input: open=%d lastError=0x%08lX reads=%llu starved=%llu trims=%llu glitches=%llu growths=%llu"
+                " drift %+.1f ppm (%s)\n",
                 st.hwInOpen, static_cast<unsigned long>(st.hwInLastError), st.hwInReads, st.hwInStarved, st.hwInTrims,
-                st.hwInGlitches, st.hwInFill, st.hwInTarget);
+                st.hwInGlitches, st.hwInGrowths, st.hwInDriftPpmMilli / 1000.0, st.hwInDriftEngaged ? "resampling" : "bit-exact");
     if (st.hwInOpen) {
-      // Measured: stream latency + FIFO fill at each read + the tick the block waits in its IN slot.
-      const long measuredIn = st.hwInStreamLatency + st.hwInMeanFill + gBlock;
-      std::printf("Input latency measured: stream %d + fill at read %d + slot %ld = %ld frames (%.1f ms)\n",
-                  st.hwInStreamLatency, st.hwInMeanFill, gBlock, measuredIn, 1000.0 * measuredIn / gRate);
-      check("Reported input latency before start = while streaming", inLatency == inStreaming);
+      // Measured: backlog at each read (age of the frame read, from capture timestamps) + resampler +
+      // the tick the block waits in its IN slot.
+      const long measuredIn = st.hwInMeanFill + 9 + gBlock;
+      std::printf("Input latency measured: backlog at read %d (target %d) + resampler 9 + slot %ld = %ld frames (%.1f ms)\n",
+                  st.hwInMeanFill, st.hwInTarget, gBlock, measuredIn, 1000.0 * measuredIn / gRate);
+      if (st.hwInGrowths == 0) check("Reported input latency before start = while streaming", inLatency == inStreaming);
       check("Reported input latency within one block of measured", std::abs(inStreaming - measuredIn) <= gBlock);
-      check("HW input: no starved block, no trim", st.hwInStarved == 0 && st.hwInTrims == 0);
+      check("HW input: no trim; starves only while the target grew", st.hwInTrims == 0 && st.hwInStarved == st.hwInGrowths);
     }
   }
   check("getSamplePosition = frames before each bufferSwitch", gPositionsOk.load());
