@@ -1,15 +1,18 @@
 #pragma once
 
-// WinHookAudio Master ASIO — minimal IASIO for 08.
-// Vocabulary: Master Driver, Slot, Slot Table, Master Clock.
+// WinHookAudio Master ASIO driver — the IASIO the Master DAW loads (Steinberg ASIO SDK 2.3.4 ABI).
+// Vocabulary: Master Driver, Slot, Slot Table, Master Clock, Worker.
+// The Master Clock (sample rate + ASIO buffer) is set in the Control Panel; the DAW gets exactly that.
+// A Master Clock thread calls bufferSwitch every period and hands audio to/from the Worker via SHM.
 
-#include "ASIOStub.h"
+#include "WHAAsio.h"
 #include "WHASlotTable.h"
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
 
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 namespace wha {
 
@@ -26,58 +29,83 @@ class WinHookMasterASIO : public IASIO {
   ULONG STDMETHODCALLTYPE Release() override;
 
   // IASIO
-  ASIOError init(void* sysHandle) override;
+  ASIOBool init(void* sysHandle) override;
   void getDriverName(char* name) override;
-  int32_t getDriverVersion() override;
-  void getErrorMessage(char* text) override;
+  long getDriverVersion() override;
+  void getErrorMessage(char* string) override;
   ASIOError start() override;
   ASIOError stop() override;
-  ASIOError getChannels(int32_t* numInputChannels, int32_t* numOutputChannels) override;
-  ASIOError getLatencies(int32_t* inputLatency, int32_t* outputLatency) override;
-  ASIOError getBufferSize(int32_t* minSize, int32_t* maxSize, int32_t* preferredSize, int32_t* granularity) override;
-  ASIOError canSampleRate(double sampleRate) override;
-  ASIOError getSampleRate(double* sampleRate) override;
-  ASIOError setSampleRate(double sampleRate) override;
-  ASIOError getClockSources(int64_t* clocks, int32_t* numSources) override;
-  ASIOError setClockSource(int32_t reference) override;
-  ASIOError getSamplePosition(int64_t* sPos, int64_t* tPos) override;
+  ASIOError getChannels(long* numInputChannels, long* numOutputChannels) override;
+  ASIOError getLatencies(long* inputLatency, long* outputLatency) override;
+  ASIOError getBufferSize(long* minSize, long* maxSize, long* preferredSize, long* granularity) override;
+  ASIOError canSampleRate(ASIOSampleRate sampleRate) override;
+  ASIOError getSampleRate(ASIOSampleRate* sampleRate) override;
+  ASIOError setSampleRate(ASIOSampleRate sampleRate) override;
+  ASIOError getClockSources(ASIOClockSource* clocks, long* numSources) override;
+  ASIOError setClockSource(long reference) override;
+  ASIOError getSamplePosition(ASIOSamples* sPos, ASIOTimeStamp* tStamp) override;
   ASIOError getChannelInfo(ASIOChannelInfo* info) override;
-  ASIOError createBuffers(ASIOChannelInfo* infos, int32_t numChannels, int32_t bufferSize, ASIOCallbacks* callbacks) override;
+  ASIOError createBuffers(ASIOBufferInfo* bufferInfos, long numChannels, long bufferSize,
+                          ASIOCallbacks* callbacks) override;
   ASIOError disposeBuffers() override;
   ASIOError controlPanel() override;
-  ASIOError future(int32_t selector, void* opt) override;
+  ASIOError future(long selector, void* opt) override;
   ASIOError outputReady() override;
 
-  // For testing: simulate hostCallback(ASIOResetRequest) trigger
+  // For testing: whether a reset was requested from the DAW
   bool resetRequested() const { return resetRequested_; }
   void clearResetRequest() { resetRequested_ = false; }
+  uint64_t clockTicks() const { return clockTicks_.load(); }
+  uint64_t clockOverruns() const { return clockOverruns_.load(); }
 
  private:
-  void requestReset();  // hostCallback(ASIOResetRequest): DAW re-queries channels/clock
+  struct Binding {  // one DAW channel's double buffer, created by createBuffers
+    bool isInput;
+    long channel;
+    float* buffers[2];
+  };
+
+  void requestReset();      // hostCallback(ASIOResetRequest): DAW re-queries channels/clock
   void snapshotDawView();   // record what the DAW has just queried
   void onTableChanged();    // Worker thread: reset if the DAW-visible table drifted from the snapshot
+  static DWORD WINAPI clockProc(LPVOID self);
+  void runClock();
+  void clockTick();
 
-  ULONG refCount_ = 1;
+  std::atomic<ULONG> refCount_{1};
   bool initialized_ = false;
   bool running_ = false;
   WHASlotTable* slotTable_ = nullptr;
   HANDLE slotTableMapping_ = nullptr;
   HANDLE masterAudioMapping_ = nullptr;
-  float* masterAudio_ = nullptr;  // 16MB ping-pong
+  float* masterAudio_ = nullptr;  // OUT slot n at n*4096, IN slot n at (512+n)*4096
   HANDLE bridgeMappings_[4] = {};
   WHABridgeShared* bridgeShared_[4] = {};
   HANDLE masterTick_ = nullptr;
   HANDLE tableChanged_ = nullptr;
   HANDLE bridgeTicks_[4][4] = {};
   ASIOCallbacks callbacks_ = {};
-  int32_t bufferSize_ = 128;
+  long bufferSize_ = 128;
+  double sampleRate_ = 48000.0;
   std::atomic<bool> resetRequested_{false};  // set from DAW thread or Control Panel thread
-  char errorText_[128] = {};
+  char errorText_[124] = {};
   class MasterHolder* holder_ = nullptr;
   ControlPanelWindow* panel_ = nullptr;  // Popup Type 1, created on first controlPanel()
   std::mutex dawViewMutex_;
   WHASlotTable dawView_{};      // table as last seen by the DAW (getChannels)
   bool resetPending_ = false;   // sent ASIOResetRequest, DAW has not re-queried yet
+
+  // Buffers + Master Clock
+  bool buffersCreated_ = false;
+  std::vector<float> dawBuffers_;
+  std::vector<Binding> bindings_;
+  HANDLE clockThread_ = nullptr;
+  std::atomic<bool> clockStop_{false};
+  long bufferIndex_ = 0;
+  std::atomic<uint64_t> samplePosition_{0};  // frames at the last bufferSwitch
+  std::atomic<uint64_t> sampleTimeNs_{0};    // system time of the last bufferSwitch
+  std::atomic<uint64_t> clockTicks_{0};
+  std::atomic<uint64_t> clockOverruns_{0};   // periods the clock thread started late (> 1 period)
 };
 
 }  // namespace wha

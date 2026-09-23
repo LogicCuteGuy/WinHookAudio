@@ -29,7 +29,7 @@ Use exact terms: **Master DAW** (not Main/host DAW), **Bridge Driver** (not Slav
 
 - `asio-master/` — Master driver DLL (IASIO stub, MasterHolder, KsAudio)
 - `asio-bridge/` — Bridge driver DLL
-- `common/` — Shared ABI (`wha_common` interface, `WHABridgeShared.h`, `ASIOStub.h`)
+- `common/` — Shared ABI (`wha_common` interface, `WHABridgeShared.h`, `WHAAsio.h` — ASIO SDK 2.3.4 or exact offline mirror)
 - `src/probe/` — `winhookaudio-probe` (MMDevice/KS/ASIO registry enumeration)
 - `src/abi-check/` — ABI stability check
 - `tests/` — `host-sample`, `worker-test`, `panel-test`, `ks-test` + `Probe-Cli.ps1`/`Abi-Check.ps1`/`Host-Sample.ps1`

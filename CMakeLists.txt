@@ -43,6 +43,18 @@ else()
     message(STATUS "WHAA SRC: stub (third_party/r8brain not vendored)")
 endif()
 
+# ASIO SDK 2.3.4 (ADR 0007): drivers compile against the real Steinberg headers when vendored,
+# otherwise against the exact offline mirror in common/WHAAsio.h.
+add_library(wha_asio INTERFACE)
+set(WHA_ASIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio CACHE PATH "Vendored Steinberg ASIO SDK")
+if(EXISTS ${WHA_ASIO_DIR}/common/asio.h AND EXISTS ${WHA_ASIO_DIR}/common/iasiodrv.h)
+    target_include_directories(wha_asio SYSTEM INTERFACE ${WHA_ASIO_DIR}/common)
+    target_compile_definitions(wha_asio INTERFACE WHA_HAVE_ASIO_SDK=1)
+    message(STATUS "ASIO: Steinberg SDK headers")
+else()
+    message(STATUS "ASIO: offline mirror (third_party/asio not vendored)")
+endif()
+
 # Control Panel Popup Type 1 (ADR 0008): ImGui 1.90 Win32 + DX11 when vendored, no popup otherwise.
 set(WHA_IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui CACHE PATH "Vendored Dear ImGui 1.90")
 if(EXISTS ${WHA_IMGUI_DIR}/imgui.h AND EXISTS ${WHA_IMGUI_DIR}/backends/imgui_impl_dx11.cpp)
@@ -85,22 +97,22 @@ target_compile_options(winhookaudio-abi-check PRIVATE /W4 /WX /permissive- /utf-
 target_link_libraries(winhookaudio-abi-check PRIVATE wha_common)
 
 # 08 Master minimal — offline DLLs (no SDK required, stub IASIO)
-add_library(winhookaudio-master SHARED asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-master/DllMain.cpp ${WHA_NETWORK_SOURCES})
+add_library(winhookaudio-master SHARED asio-master/WinHookAudioMasterASIO64.def asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-master/DllMain.cpp ${WHA_NETWORK_SOURCES})
 target_compile_features(winhookaudio-master PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-master PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-master PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-master PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-master PRIVATE common)
-target_link_libraries(winhookaudio-master PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
+target_link_libraries(winhookaudio-master PRIVATE ole32 uuid avrt wha_asio wha_common ws2_32 wha_codecs)
 set_target_properties(winhookaudio-master PROPERTIES OUTPUT_NAME "WinHookAudioMasterASIO64")
 
-add_library(winhookaudio-bridge SHARED asio-bridge/WinHookBridgeASIO.cpp asio-bridge/DllMain.cpp)
+add_library(winhookaudio-bridge SHARED asio-bridge/WinHookAudioBridgeASIO64.def asio-bridge/WinHookBridgeASIO.cpp asio-bridge/DllMain.cpp)
 target_compile_features(winhookaudio-bridge PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-bridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-bridge PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-bridge PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-bridge PRIVATE common)
-target_link_libraries(winhookaudio-bridge PRIVATE ole32 uuid wha_common)
+target_link_libraries(winhookaudio-bridge PRIVATE ole32 uuid avrt wha_asio wha_common)
 set_target_properties(winhookaudio-bridge PROPERTIES OUTPUT_NAME "WinHookAudioBridgeASIO64")
 
 if(TARGET wha_imgui)
@@ -119,7 +131,7 @@ set_property(TARGET winhookaudio-host-sample PROPERTY MSVC_RUNTIME_LIBRARY "Mult
 target_compile_definitions(winhookaudio-host-sample PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-host-sample PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-host-sample PRIVATE common asio-master asio-bridge)
-target_link_libraries(winhookaudio-host-sample PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
+target_link_libraries(winhookaudio-host-sample PRIVATE ole32 uuid avrt wha_asio wha_common ws2_32 wha_codecs)
 
 install(TARGETS winhookaudio-probe RUNTIME DESTINATION bin)
 install(FILES docs/probe-vm.md DESTINATION . RENAME README.md)
@@ -137,6 +149,17 @@ if(BUILD_TESTING)
     add_test(NAME host-sample-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Host-Sample.ps1" -HostSample "$<TARGET_FILE:winhookaudio-host-sample>")
     set_tests_properties(host-sample-offline PROPERTIES TIMEOUT 30)
+    add_executable(winhookaudio-asio-dll-host tests/asio-dll-host/main.cpp)
+    target_compile_features(winhookaudio-asio-dll-host PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-asio-dll-host PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-asio-dll-host PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-asio-dll-host PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_link_libraries(winhookaudio-asio-dll-host PRIVATE ole32 uuid wha_asio wha_common)
+    add_dependencies(winhookaudio-asio-dll-host winhookaudio-master winhookaudio-bridge)
+    add_test(NAME asio-dll-host-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Asio-Dll-Host.ps1" -DllHost "$<TARGET_FILE:winhookaudio-asio-dll-host>"
+        -Master "$<TARGET_FILE:winhookaudio-master>" -Bridge "$<TARGET_FILE:winhookaudio-bridge>")
+    set_tests_properties(asio-dll-host-offline PROPERTIES TIMEOUT 30)
     add_executable(winhookaudio-worker-test tests/worker-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
     target_compile_features(winhookaudio-worker-test PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-worker-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

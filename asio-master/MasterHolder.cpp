@@ -149,13 +149,29 @@ void MasterHolder::doTick() {
         }
       }
       b->mixedActive = nextActive;
-      for (int ci = 0; ci < 4; ++ci) {
-        if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
-      }
       for (int ci = 0; ci < 4; ++ci) b->ready[ci] = 0;
     } else {
       for (int ch = 0; ch < 64; ++ch) for (int f = 0; f < frames; ++f) b->mixedIn[b->mixedActive][ch][f] = 0;
     }
+    // k-th Master IN slot of type BRIDGE(bi) <- summed client output k;
+    // k-th Master OUT slot of type BRIDGE(bi) -> input k of every client (broadcast).
+    const WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + bi);
+    int k = 0;
+    for (uint32_t ii = 0; ii < table_->masterInCount && k < static_cast<int>(kBridgeChannels); ++ii) {
+      if (table_->masterIn[ii].type != want) continue;
+      std::memcpy(masterAudio_ + (512 + ii) * 4096, b->mixedIn[b->mixedActive][k++], frames * sizeof(float));
+    }
+    k = 0;
+    for (uint32_t oi = 0; oi < table_->masterOutCount && k < static_cast<int>(kBridgeChannels); ++oi) {
+      if (table_->masterOut[oi].type != want) continue;
+      for (int ci = 0; ci < static_cast<int>(kBridgeClients); ++ci)
+        std::memcpy(b->clientOut[ci][0][k], masterAudio_ + oi * 4096, frames * sizeof(float));
+      ++k;
+    }
+    // The Master Clock drives every Bridge client each tick (after clientOut is fresh), whether or not
+    // a client was ready: a client that missed one tick must not wait for its fallback timeout.
+    for (int ci = 0; ci < 4; ++ci)
+      if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
   }
   // Virtual Cable: DeviceIoControl stub — SHM Out -> Ring Write, Ring Read -> SHM In
   for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
