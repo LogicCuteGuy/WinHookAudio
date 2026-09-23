@@ -55,14 +55,16 @@ bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate,
   hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&out.client);
   if (FAILED(hr)) { device->Release(); return Fail(out, "Activate", hr); }
 
-  // Period: 0 = device minimum; a smaller request than the device allows is rejected, not stretched.
+  // Period: 0 = device minimum. A request below the minimum gets the minimum: the requested period
+  // is a latency wish (the datasheet's HW 64 suits interfaces that allow it), and failing instead
+  // left the HW slots silent on common devices (HD Audio minimum 2.67-3 ms).
   REFERENCE_TIME defaultPeriod = 0, minPeriod = 0;
   out.client->GetDevicePeriod(&defaultPeriod, &minPeriod);
   // Round up: 128 frames @ 48k = 26666.67 hns must compare equal to a 26667 hns device minimum.
   REFERENCE_TIME period = periodFrames > 0
                               ? (static_cast<REFERENCE_TIME>(periodFrames) * 10000000 + sampleRate - 1) / sampleRate
                               : minPeriod;
-  if (period < minPeriod) { device->Release(); return Fail(out, "period below device minimum", AUDCLNT_E_INVALID_DEVICE_PERIOD); }
+  if (period < minPeriod) period = minPeriod;
   const REFERENCE_TIME blockTime = static_cast<REFERENCE_TIME>(blockFrames) * 10000000 / sampleRate;
   REFERENCE_TIME periods = kMinBufferPeriods;
   while (periods * period < 4 * blockTime) ++periods;

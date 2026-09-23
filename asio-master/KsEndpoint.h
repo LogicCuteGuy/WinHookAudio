@@ -25,7 +25,7 @@ struct KsOpenResult {
 };
 
 // Open the endpoint exclusively, timer-driven. endpointId: IMMDevice ID, empty/null = the Windows
-// default device of that flow. periodFrames: 0 = device minimum; below the minimum fails. The
+// default device of that flow. periodFrames: 0 or below the device minimum = the minimum. The
 // buffer is whole periods, at least 4 of them and at least 4 blockFrames.
 bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate, int32_t periodFrames,
                      int32_t blockFrames, KsOpenResult& out);

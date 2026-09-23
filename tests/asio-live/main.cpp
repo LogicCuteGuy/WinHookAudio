@@ -10,7 +10,8 @@
 //
 // usage: asio-live [--driver "WinHookAudio Master"] [--seconds 3] [--silent] [--hw-buffer frames]
 //                  [--render "name"] [--capture "name"] [--loop]
-//   --hw-buffer: HW period (GENERAL "Hardware (KS Exclusive)").
+//   --hw-buffer: HW period (GENERAL "Hardware (KS Exclusive)"); below the device minimum, or 0, gets
+//     the minimum (0 in a fresh table is the default, 64).
 //   --render / --capture: HW endpoints by friendly-name substring (default: Windows defaults).
 //     These three are set before the driver fills in its defaults, so only when no other process
 //     holds the Slot Table.
