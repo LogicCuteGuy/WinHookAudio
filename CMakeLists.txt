@@ -160,6 +160,15 @@ if(BUILD_TESTING)
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Asio-Dll-Host.ps1" -DllHost "$<TARGET_FILE:winhookaudio-asio-dll-host>"
         -Master "$<TARGET_FILE:winhookaudio-master>" -Bridge "$<TARGET_FILE:winhookaudio-bridge>")
     set_tests_properties(asio-dll-host-offline PROPERTIES TIMEOUT 30)
+    # Live host: opens the registered driver like a DAW on real hardware. Not a ctest (needs
+    # regsvr32 + a real render endpoint); run build/Release/winhookaudio-asio-live.exe by hand.
+    add_executable(winhookaudio-asio-live tests/asio-live/main.cpp)
+    target_compile_features(winhookaudio-asio-live PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-asio-live PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-asio-live PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-asio-live PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_link_libraries(winhookaudio-asio-live PRIVATE ole32 uuid wha_asio wha_common)
+    add_dependencies(winhookaudio-asio-live winhookaudio-master)
     add_executable(winhookaudio-worker-test tests/worker-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
     target_compile_features(winhookaudio-worker-test PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-worker-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
