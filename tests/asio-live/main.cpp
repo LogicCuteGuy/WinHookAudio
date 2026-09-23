@@ -52,13 +52,16 @@ std::atomic<long> gSwitches{0};
 std::atomic<bool> gPositionsOk{true};
 std::atomic<bool> gResetRequested{false};
 uint64_t gSent = 0, gExpectedPos = 0;
+// Rate from the callback at gSettle on: a HW output takes ~10 ms to start draining, which is
+// start-up latency, not clock rate.
+long gSettle = 0;
 LARGE_INTEGER gFirstSwitch{}, gLastSwitch{};
 std::vector<float> gInPeak;
 
 void BufferSwitch(long index, ASIOBool) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
-  if (gSwitches.load() == 0) gFirstSwitch = now;
+  if (gSwitches.load() == gSettle) gFirstSwitch = now;
   gLastSwitch = now;
   ASIOSamples pos{};
   ASIOTimeStamp ts{};
@@ -183,6 +186,7 @@ int main(int argc, char** argv) {
   gAsio->getBufferSize(&minSize, &maxSize, &preferred, &granularity);
   gAsio->getSampleRate(&gRate);
   gBlock = preferred;
+  gSettle = gBlock > 0 ? static_cast<long>(0.5 * gRate / gBlock) : 0;
   std::printf("Channels: %ld in / %ld out, buffer %ld, rate %.0f\n", gInputs, gOutputs, gBlock, gRate);
   check("Channels, buffer and rate reported", gInputs > 0 && gOutputs > 0 && gBlock > 0 && gRate > 0);
   for (long i = 0; i < gInputs + gOutputs; ++i) {
@@ -208,7 +212,7 @@ int main(int argc, char** argv) {
   check("createBuffers", gAsio->createBuffers(gBufs.data(), gInputs + gOutputs, gBlock, &cb) == ASE_OK);
   long inLatency = 0, outLatency = 0;
   gAsio->getLatencies(&inLatency, &outLatency);
-  std::printf("Latencies: in %ld / out %ld frames\n", inLatency, outLatency);
+  std::printf("Latencies before start: in %ld / out %ld frames\n", inLatency, outLatency);
 
   std::printf("Streaming %.1f s%s...\n", seconds, gTone ? " (1 kHz tone, -20 dBFS, output 1)" : " (silence)");
   check("start", gAsio->start() == ASE_OK);
@@ -220,6 +224,9 @@ int main(int argc, char** argv) {
   Sleep(static_cast<DWORD>(seconds * 500));
   WHAMasterStats st{};
   const bool haveStats = getStats && getStats(&st) == 0;  // before stop: counters live with the instance
+  long inStreaming = 0, outStreaming = 0;
+  gAsio->getLatencies(&inStreaming, &outStreaming);
+  std::printf("Latencies while streaming: in %ld / out %ld frames\n", inStreaming, outStreaming);
   check("stop", gAsio->stop() == ASE_OK);
   const long switches = gSwitches.load();
   Sleep(50);
@@ -229,9 +236,11 @@ int main(int argc, char** argv) {
   LARGE_INTEGER freq;
   QueryPerformanceFrequency(&freq);
   const double span = static_cast<double>(gLastSwitch.QuadPart - gFirstSwitch.QuadPart) / static_cast<double>(freq.QuadPart);
-  const double measured = switches > 1 ? static_cast<double>(switches - 1) * gBlock / span : 0;
-  std::printf("bufferSwitch: %ld in %.3f s = %.1f frames/s (%.3f%% off)\n", switches, span, measured, 100.0 * (measured - gRate) / gRate);
-  check("Master Clock rate within 0.1%", switches > 1 && std::abs(measured - gRate) < gRate * 0.001);
+  const long counted = switches - 1 - gSettle;
+  const double measured = counted > 0 ? static_cast<double>(counted) * gBlock / span : 0;
+  std::printf("bufferSwitch: %ld total; after the first %ld: %.3f s = %.1f frames/s (%.3f%% off)\n", switches, gSettle, span,
+              measured, 100.0 * (measured - gRate) / gRate);
+  check("Master Clock rate within 0.1%", counted > 0 && std::abs(measured - gRate) < gRate * 0.001);
   check("WHAGetMasterStats exported and streaming", haveStats);
   if (haveStats) {
     std::printf("Stats: clock=%s ticks=%llu workerOverruns=%llu clockOverruns=%llu\n",
@@ -241,6 +250,12 @@ int main(int argc, char** argv) {
                 st.hwMinFill, st.hwMaxFill, st.hwCapacity);
     check("Master Clock paced by the HW output", st.clockSource == CLOCK_HARDWARE);
     check("HW output: no underrun, no dropped block", st.hwOpen && st.hwUnderruns == 0 && st.hwDrops == 0);
+    // Measured: fill queued ahead of each new block + the device's stream latency.
+    const long measuredOut = st.hwFillAtTick + st.hwStreamLatency;
+    std::printf("Output latency measured: fill at tick %d + stream %d = %ld frames (%.1f ms)\n", st.hwFillAtTick,
+                st.hwStreamLatency, measuredOut, 1000.0 * measuredOut / gRate);
+    check("Reported output latency before start = while streaming", outLatency == outStreaming);
+    check("Reported output latency within one block of measured", std::abs(outStreaming - measuredOut) <= gBlock);
   }
   check("getSamplePosition = frames before each bufferSwitch", gPositionsOk.load());
   for (long i = 0; i < gInputs; ++i) std::printf("Input %ld peak: %.4f\n", i + 1, gInPeak[i]);
