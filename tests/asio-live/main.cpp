@@ -4,10 +4,13 @@
 //
 // Checks what can be measured without ears: bufferSwitch cadence between callbacks, sample
 // position, and that the HW output really holds the default render endpoint exclusively while
-// streaming (a second client gets AUDCLNT_E_DEVICE_IN_USE) and releases it after stop.
+// streaming (a second client gets AUDCLNT_E_DEVICE_IN_USE) and releases it after stop; and, via the
+// DLL's WHAGetMasterStats, that the hardware paced the Master Clock with no underrun or dropped block.
 // Output 1 carries a quiet 1 kHz tone; whether it is audible is still for a human to confirm.
 //
-// usage: asio-live [--driver "WinHookAudio Master"] [--seconds 3] [--silent]
+// usage: asio-live [--driver "WinHookAudio Master"] [--seconds 3] [--silent] [--hw-buffer frames]
+//   --hw-buffer: HW output period (GENERAL "Hardware (KS Exclusive)"); only when no other process
+//                holds the Slot Table, since it is set before the driver fills in its defaults.
 
 #include <windows.h>
 #include <audioclient.h>
@@ -22,7 +25,10 @@
 #include <vector>
 
 #include "WHAAsio.h"
+#include "WHAMasterStats.h"
 #include "WHARegister.h"
+#include "WHASharedMemory.h"
+#include "WHASlotTable.h"
 
 using namespace wha;
 
@@ -114,10 +120,26 @@ std::wstring Widen(const char* s) {
 int main(int argc, char** argv) {
   std::wstring driver = L"WinHookAudio Master";
   double seconds = 3.0;
+  long hwBuffer = -1;
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--driver") && i + 1 < argc) driver = Widen(argv[++i]);
     else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
     else if (!std::strcmp(argv[i], "--silent")) gTone = false;
+    else if (!std::strcmp(argv[i], "--hw-buffer") && i + 1 < argc) hwBuffer = std::atol(argv[++i]);
+  }
+
+  // Create the Slot Table before the driver does: it keeps our hwBuffer and fills in the rest
+  // (its defaults apply while version == 0). Held open until exit.
+  HANDLE tableMap = nullptr;
+  if (hwBuffer >= 0) {
+    tableMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(shm::kSlotTableSize),
+                                  shm::kSlotTableName + 7);
+    const bool fresh = tableMap && GetLastError() != ERROR_ALREADY_EXISTS;
+    auto* table = tableMap ? static_cast<WHASlotTable*>(MapViewOfFile(tableMap, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize)) : nullptr;
+    check("--hw-buffer: Slot Table not held by another process", fresh && table);
+    if (!fresh || !table) return 1;
+    table->general.hwBuffer = static_cast<uint32_t>(hwBuffer);
+    std::printf("HW buffer (period) requested: %ld frames\n", hwBuffer);
   }
 
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // DAWs create ASIO drivers on an STA thread
@@ -144,6 +166,7 @@ int main(int argc, char** argv) {
   HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, clsid, reinterpret_cast<void**>(&gAsio));
   check("CoCreateInstance from registry", SUCCEEDED(hr) && gAsio);
   if (!gAsio) return 1;
+  auto getStats = reinterpret_cast<WHAGetMasterStatsFn>(GetProcAddress(GetModuleHandleW(dllPath), "WHAGetMasterStats"));
   char text[128] = {};
   const bool inited = gAsio->init(GetConsoleWindow()) == ASIOTrue;
   check("init -> ASIOTrue", inited);
@@ -195,6 +218,8 @@ int main(int argc, char** argv) {
               during == AUDCLNT_E_DEVICE_IN_USE ? " (AUDCLNT_E_DEVICE_IN_USE)" : "");
   check("HW output holds default render endpoint exclusively", during == AUDCLNT_E_DEVICE_IN_USE);
   Sleep(static_cast<DWORD>(seconds * 500));
+  WHAMasterStats st{};
+  const bool haveStats = getStats && getStats(&st) == 0;  // before stop: counters live with the instance
   check("stop", gAsio->stop() == ASE_OK);
   const long switches = gSwitches.load();
   Sleep(50);
@@ -206,7 +231,17 @@ int main(int argc, char** argv) {
   const double span = static_cast<double>(gLastSwitch.QuadPart - gFirstSwitch.QuadPart) / static_cast<double>(freq.QuadPart);
   const double measured = switches > 1 ? static_cast<double>(switches - 1) * gBlock / span : 0;
   std::printf("bufferSwitch: %ld in %.3f s = %.1f frames/s (%.3f%% off)\n", switches, span, measured, 100.0 * (measured - gRate) / gRate);
-  check("Master Clock rate within 0.5%", switches > 1 && std::abs(measured - gRate) < gRate * 0.005);
+  check("Master Clock rate within 0.1%", switches > 1 && std::abs(measured - gRate) < gRate * 0.001);
+  check("WHAGetMasterStats exported and streaming", haveStats);
+  if (haveStats) {
+    std::printf("Stats: clock=%s ticks=%llu workerOverruns=%llu clockOverruns=%llu\n",
+                st.clockSource == CLOCK_HARDWARE ? "hardware" : "internal", st.ticks, st.workerOverruns, st.clockOverruns);
+    std::printf("       hwOpen=%d lastError=0x%08lX writes=%llu underruns=%llu drops=%llu fill %d..%d of %d frames\n",
+                st.hwOpen, static_cast<unsigned long>(st.hwLastError), st.hwWrites, st.hwUnderruns, st.hwDrops,
+                st.hwMinFill, st.hwMaxFill, st.hwCapacity);
+    check("Master Clock paced by the HW output", st.clockSource == CLOCK_HARDWARE);
+    check("HW output: no underrun, no dropped block", st.hwOpen && st.hwUnderruns == 0 && st.hwDrops == 0);
+  }
   check("getSamplePosition = frames before each bufferSwitch", gPositionsOk.load());
   for (long i = 0; i < gInputs; ++i) std::printf("Input %ld peak: %.4f\n", i + 1, gInPeak[i]);
 
@@ -216,9 +251,11 @@ int main(int argc, char** argv) {
   const HRESULT after = ProbeDefaultRender();
   check("Default render endpoint released after stop", after == S_OK);
   CoUninitialize();
+  if (tableMap) CloseHandle(tableMap);
 
   std::printf("{\"schema_version\":1,\"operation\":\"asio_live\",\"switches\":%ld,\"rate\":%.1f,\"hw_exclusive_held\":%s,"
-              "\"audible\":\"unverified\",\"pass\":%s}\n",
-              switches, measured, during == AUDCLNT_E_DEVICE_IN_USE ? "true" : "false", gPass ? "true" : "false");
+              "\"hw_clock\":%s,\"hw_underruns\":%llu,\"audible\":\"unverified\",\"pass\":%s}\n",
+              switches, measured, during == AUDCLNT_E_DEVICE_IN_USE ? "true" : "false",
+              haveStats && st.clockSource == CLOCK_HARDWARE ? "true" : "false", st.hwUnderruns, gPass ? "true" : "false");
   return gPass ? 0 : 1;
 }

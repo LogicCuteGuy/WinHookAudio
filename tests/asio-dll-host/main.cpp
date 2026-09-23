@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "WHAAsio.h"
+#include "WHAMasterStats.h"
 #include "WHARegister.h"
 #include "WHASharedMemory.h"
 #include "WHASlotTable.h"
@@ -57,10 +58,13 @@ std::atomic<long> gMasterSwitches{0};
 uint64_t gSent = 0;
 bool gPositionsOk = true;
 uint64_t gExpectedPos = 0;
+LARGE_INTEGER gFirstSwitch{}, gLastSwitch{};  // rate between callbacks: start/stop edges do not count
 
 float Sine(uint64_t n) { return static_cast<float>(0.5 * std::sin(2 * kPi * 1000.0 * static_cast<double>(n) / kRate)); }
 
 void MasterSwitch(long index, ASIOBool) {
+  QueryPerformanceCounter(&gLastSwitch);
+  if (gMasterSwitches.load() == 0) gFirstSwitch = gLastSwitch;
   ASIOSamples pos{};
   ASIOTimeStamp ts{};
   if (gMaster->getSamplePosition(&pos, &ts) != ASE_OK || FromAsio64(pos.hi, pos.lo) != gExpectedPos) gPositionsOk = false;
@@ -255,6 +259,9 @@ int main(int argc, char** argv) {
   check("Save mid-stream signals TableChanged", changed && SetEvent(changed));
   if (changed) CloseHandle(changed);
   Sleep(400);
+  WHAMasterStats stats{};
+  auto getStats = reinterpret_cast<WHAGetMasterStatsFn>(GetProcAddress(master.dll, "WHAGetMasterStats"));
+  check("WHAGetMasterStats while streaming", getStats && getStats(&stats) == 0);
   check("Master stop", m->stop() == ASE_OK);
   QueryPerformanceCounter(&t1);
   if (b) b->stop();
@@ -263,9 +270,13 @@ int main(int argc, char** argv) {
   check("No bufferSwitch after stop", gMasterSwitches.load() == switches);
 
   const double seconds = static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(f.QuadPart);
-  const double measuredRate = switches * kBlock / seconds;
-  std::printf("Master Clock: %ld bufferSwitch in %.3f s = %.0f frames/s; Bridge: %ld\n", switches, seconds, measuredRate,
-              gBridgeSwitches.load());
+  const double span = static_cast<double>(gLastSwitch.QuadPart - gFirstSwitch.QuadPart) / static_cast<double>(f.QuadPart);
+  const double measuredRate = switches > 1 ? (switches - 1) * kBlock / span : 0;
+  std::printf("Master Clock: %ld bufferSwitch in %.3f s (%.3f s between callbacks) = %.0f frames/s; Bridge: %ld\n",
+              switches, seconds, span, measuredRate, gBridgeSwitches.load());
+  std::printf("Master Clock source %s, clockOverruns %llu, workerOverruns %llu\n",
+              stats.clockSource == CLOCK_HARDWARE ? "hardware" : "internal", stats.clockOverruns, stats.workerOverruns);
+  check("Master Clock on the internal timeline (no HW slot)", stats.clockSource == CLOCK_INTERNAL);
   check("Master Clock rate within 1% of 48000", std::abs(measuredRate - kRate) < kRate * 0.01);
   check("getSamplePosition = frames before each bufferSwitch", gPositionsOk);
 
