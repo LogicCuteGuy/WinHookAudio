@@ -22,10 +22,23 @@ class MasterHolder {
   bool start();
   void stop();
   bool running() const { return running_; }
-  // Master Clock side: wait (bounded) until the Worker has routed the last Master_Tick, so the next
-  // bufferSwitch reads this tick's IN slots and no OUT slot is overwritten before it was routed.
-  bool waitWorker(DWORD timeoutMs) const {
-    return !running_ || WaitForSingleObject(workerDone_, timeoutMs) == WAIT_OBJECT_0;
+  // Master Clock side: wait (bounded) until the Worker has routed Master Clock tick `tick` (the
+  // clock's tick count after that tick), so the next bufferSwitch reads its IN slots, no OUT slot is
+  // overwritten before it was routed, and its HW output block is written. The event only wakes the
+  // wait; the count decides. (Waiting for the event alone went one tick out of step for good after a
+  // single timeout: the Worker's late signal for that tick then passed for the next one.)
+  bool waitWorker(uint64_t tick, DWORD timeoutMs) const {
+    if (!running_) return true;
+    LARGE_INTEGER freq, start, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+    while (routed_.load() < tick) {
+      QueryPerformanceCounter(&now);
+      const double elapsedMs = 1000.0 * static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(freq.QuadPart);
+      if (elapsedMs >= timeoutMs) return false;
+      WaitForSingleObject(workerDone_, static_cast<DWORD>(timeoutMs - elapsedMs) + 1);
+    }
+    return true;
   }
 
   // The open, started HW output that paces the Master Clock; nullptr while none (internal timeline).
@@ -44,7 +57,10 @@ class MasterHolder {
 
   // The Master Clock's tick count: the Worker compares it with its own to find ticks it missed (an
   // auto-reset Master_Tick coalesces them) and keeps the HW input in step.
-  void setTickCounter(const std::atomic<uint64_t>* ticks) { clockTicks_ = ticks; }
+  void setTickCounter(const std::atomic<uint64_t>* ticks) {
+    clockTicks_ = ticks;
+    routed_ = ticks ? ticks->load() : 0;  // ticks before this Worker (an earlier start) count as routed
+  }
 
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
@@ -61,7 +77,8 @@ class MasterHolder {
   WHABridgeShared* bridges_[4] = {};
   HANDLE masterTick_ = nullptr;
   HANDLE tableChanged_ = nullptr;
-  HANDLE workerDone_ = nullptr;  // auto-reset, set after each Master_Tick doTick
+  HANDLE workerDone_ = nullptr;  // auto-reset, set after each Master_Tick doTick (wakes waitWorker)
+  std::atomic<uint64_t> routed_{0};  // the Master Clock tick count the Worker has routed up to
   HANDLE bridgeTicks_[4][4] = {};
   HANDLE thread_ = nullptr;
   bool running_ = false;

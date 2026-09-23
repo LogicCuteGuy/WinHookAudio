@@ -44,7 +44,8 @@ class KsAudio {
   // Called from the clock thread while the Worker may be in write(): WASAPI clients are not safe for
   // concurrent calls (overlapping GetCurrentPadding and GetBuffer/ReleaseBuffer crashed in AUDIOKSE
   // when a tick overran), so every call on the client takes clientLock_.
-  long padding() const;
+  // written: optional, frames written so far, read under the same lock (a consistent pair).
+  long padding(int64_t* written = nullptr) const;
   int32_t capacity() const { return capacityFrames_; }
   // HW Master Clock: tick once the device has drained to this fill (2 blocks of room above it).
   // start() prefills silence up to it, so streaming begins at the steady-state fill.
@@ -54,6 +55,8 @@ class KsAudio {
 
   // Counters for WHAMasterStats (any thread).
   uint64_t writes() const { return writes_.load(); }
+  // Frames queued to the device since start(), prefill included: minus padding() = frames it consumed.
+  int64_t framesWritten() const { return framesWritten_.load(); }
   uint64_t underruns() const { return underruns_.load(); }
   uint64_t drops() const { return drops_.load(); }
   int32_t minFill() const { return minFill_.load(); }
@@ -79,6 +82,7 @@ class KsAudio {
   HRESULT lastError_ = S_OK;
   const char* lastStep_ = "";
   std::atomic<uint64_t> writes_{0};
+  std::atomic<int64_t> framesWritten_{0};
   std::atomic<uint64_t> underruns_{0};
   std::atomic<uint64_t> drops_{0};
   std::atomic<int32_t> minFill_{-1};

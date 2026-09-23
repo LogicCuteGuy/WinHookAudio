@@ -43,6 +43,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   streamLatencyFrames_ = 0;
   endpointId_.clear();
   writes_ = 0;
+  framesWritten_ = 0;
   underruns_ = 0;
   drops_ = 0;
   minFill_ = -1;
@@ -88,7 +89,9 @@ bool KsAudio::start() {
   // Master Clock starts at its steady state instead of bursting to fill the buffer.
   BYTE* buffer = nullptr;
   const UINT32 prefill = static_cast<UINT32>(targetFill() > 0 ? targetFill() : bufferFrames_);
-  if (SUCCEEDED(renderClient_->GetBuffer(prefill, &buffer))) renderClient_->ReleaseBuffer(prefill, AUDCLNT_BUFFERFLAGS_SILENT);
+  if (SUCCEEDED(renderClient_->GetBuffer(prefill, &buffer)) &&
+      SUCCEEDED(renderClient_->ReleaseBuffer(prefill, AUDCLNT_BUFFERFLAGS_SILENT)))
+    framesWritten_.fetch_add(prefill);
   HRESULT hr = audioClient_->Start();
   return SUCCEEDED(hr);
 }
@@ -120,12 +123,16 @@ bool KsAudio::write(const float* data, int frames, int channels) {
     }
   }
   hr = renderClient_->ReleaseBuffer(frames, 0);
-  if (SUCCEEDED(hr)) writes_.fetch_add(1);
+  if (SUCCEEDED(hr)) {
+    writes_.fetch_add(1);
+    framesWritten_.fetch_add(frames);
+  }
   return SUCCEEDED(hr);
 }
 
-long KsAudio::padding() const {
+long KsAudio::padding(int64_t* written) const {
   ClientLock lock(clientLock_);
+  if (written) *written = framesWritten_.load();  // write() and start() change it under this lock
   if (!audioClient_) return -1;
   UINT32 queued = 0;
   return SUCCEEDED(audioClient_->GetCurrentPadding(&queued)) ? static_cast<long>(queued) : -1;

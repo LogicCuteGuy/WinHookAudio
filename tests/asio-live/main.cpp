@@ -74,17 +74,31 @@ std::vector<float> gIn1;  // input 1, every frame (--loop)
 std::atomic<long> gSwitches{0};
 std::atomic<bool> gPositionsOk{true};
 std::atomic<bool> gResetRequested{false};
+std::atomic<long> gLatencyChanges{0};  // kAsioLatenciesChanged received
 uint64_t gSent = 0, gExpectedPos = 0;
 // Rate from the callback at gSettle on: a HW output takes ~10 ms to start draining, which is
 // start-up latency, not clock rate.
 long gSettle = 0;
 LARGE_INTEGER gFirstSwitch{}, gLastSwitch{};
+// Callback spacing after settle, in block periods: a DAW needs evenly spaced callbacks (a burst of
+// back-to-back blocks must all be computed at once).
+long gBurst = 0;     // callbacks < 0.25 period after the previous one
+long gLate = 0;      // callbacks > 2 periods after the previous one
+double gMaxGap = 0;  // longest gap, periods
 std::vector<float> gInPeak;
 
 void BufferSwitch(long index, ASIOBool) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   if (gSwitches.load() == gSettle) gFirstSwitch = now;
+  if (gSwitches.load() > gSettle && gRate > 0) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    const double periods = static_cast<double>(now.QuadPart - gLastSwitch.QuadPart) / static_cast<double>(f.QuadPart) * gRate / gBlock;
+    if (periods < 0.25) ++gBurst;
+    if (periods > 2.0) ++gLate;
+    if (periods > gMaxGap) gMaxGap = periods;
+  }
   gLastSwitch = now;
   ASIOSamples pos{};
   ASIOTimeStamp ts{};
@@ -112,7 +126,9 @@ ASIOTime* BufferSwitchTimeInfo(ASIOTime* params, long index, ASIOBool direct) {
 void SampleRateDidChange(ASIOSampleRate) {}
 long AsioMessage(long selector, long value, void*, double*) {
   switch (selector) {
-    case kAsioSelectorSupported: return value == kAsioResetRequest || value == kAsioEngineVersion ? 1 : 0;
+    case kAsioSelectorSupported:
+      return value == kAsioResetRequest || value == kAsioEngineVersion || value == kAsioLatenciesChanged ? 1 : 0;
+    case kAsioLatenciesChanged: gLatencyChanges.fetch_add(1); return 1;
     case kAsioEngineVersion: return 2;
     case kAsioResetRequest: gResetRequested = true; return 1;
     default: return 0;
@@ -355,6 +371,8 @@ int main(int argc, char** argv) {
   const double measured = counted > 0 ? static_cast<double>(counted) * gBlock / span : 0;
   std::printf("bufferSwitch: %ld total; after the first %ld: %.3f s = %.1f frames/s (%.3f%% off)\n", switches, gSettle, span,
               measured, 100.0 * (measured - gRate) / gRate);
+  std::printf("Callback spacing: %ld back-to-back (< 0.25 block), %ld late (> 2 blocks), longest gap %.1f blocks\n", gBurst,
+              gLate, gMaxGap);
   check("Master Clock rate within 0.1%", counted > 0 && std::abs(measured - gRate) < gRate * 0.001);
   check("WHAGetMasterStats exported and streaming", haveStats);
   if (haveStats) {
@@ -384,7 +402,10 @@ int main(int argc, char** argv) {
     const long measuredOut = st.hwFillAtTick + st.hwStreamLatency;
     std::printf("Output latency measured: fill at tick %d + stream %d = %ld frames (%.1f ms)\n", st.hwFillAtTick,
                 st.hwStreamLatency, measuredOut, 1000.0 * measuredOut / gRate);
-    check("Reported output latency before start = while streaming", outLatency == outStreaming);
+    std::printf("HW pacing: device reports in %d-frame chunks, %llu hurried ticks, %ld latency changes told\n", st.hwChunk,
+                static_cast<unsigned long long>(st.hwHurries), gLatencyChanges.load());
+    check("Reported output latency before start = while streaming (or the DAW was told it changed)",
+          outLatency == outStreaming || gLatencyChanges.load() > 0);
     check("Reported output latency within one block of measured", std::abs(outStreaming - measuredOut) <= gBlock);
     std::printf("HW input: open=%d lastError=0x%08lX reads=%llu starved=%llu trims=%llu glitches=%llu growths=%llu"
                 " drift %+.1f ppm (%s)\n",

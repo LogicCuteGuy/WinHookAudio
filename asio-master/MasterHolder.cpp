@@ -105,6 +105,7 @@ void MasterHolder::run() {
         haveTicks_ = true;
       }
       doTick();
+      routed_ = clockTicks_ ? ticksSeen_ : routed_.load() + 1;
       if (workerDone_) SetEvent(workerDone_);  // Master_Tick routed
     }
   }

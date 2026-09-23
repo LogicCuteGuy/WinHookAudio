@@ -375,6 +375,11 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
                   DeviceLabel(devices ? &devices->render : nullptr, st->hwRenderId).c_str(), HwFormatText(st->hwFormat),
                   PeriodText(st->hwPeriod, st->hwRequestedPeriod, rate).c_str(), FramesMs(st->hwLatency, rate));
     lines.push_back({HwStatusLevel::Ok, buf});
+    if (st->hwChunk > 0) {
+      std::snprintf(buf, sizeof(buf), "Output device plays in %d-frame chunks (%.1f ms): the DAW is still called evenly",
+                    st->hwChunk, FramesMs(st->hwChunk, rate));
+      lines.push_back({HwStatusLevel::Info, buf});
+    }
     if (st->hwUnderruns || st->hwDrops) {
       std::snprintf(buf, sizeof(buf), "Output: %llu underruns, %llu dropped blocks (audible gaps; a larger HW buffer helps)",
                     static_cast<unsigned long long>(st->hwUnderruns), static_cast<unsigned long long>(st->hwDrops));
@@ -393,12 +398,29 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
                   FramesMs(st->hwInLatency, rate), st->hwInDriftPpmMilli / 1000.0,
                   st->hwInDriftEngaged ? " (resampling)" : "");
     lines.push_back({HwStatusLevel::Ok, buf});
+    // Every way HW input audio can break, since the DAW started: the backlog ran empty (a gap, then
+    // the buffer grows), overflowed (frames thrown away), the device flagged a gap, or the Worker
+    // missed Master Clock ticks (their frames dropped to stay in step).
+    if (st->hwInStarved || st->hwInTrims || st->hwInGlitches || st->hwInSkipped) {
+      std::snprintf(buf, sizeof(buf),
+                    "Input dropouts: %llu ran empty (buffer grew %llu times), %llu overflowed, %llu device gaps, "
+                    "%.1f ms skipped",
+                    static_cast<unsigned long long>(st->hwInStarved), static_cast<unsigned long long>(st->hwInGrowths),
+                    static_cast<unsigned long long>(st->hwInTrims), static_cast<unsigned long long>(st->hwInGlitches),
+                    FramesMs(static_cast<int32_t>(st->hwInSkipped), rate));
+      lines.push_back({HwStatusLevel::Warning, buf});
+    }
   } else if (st->hwInLastError) {
     lines.push_back(HwFailedLine("Input", st->hwInLastError, "HW IN slots are silent."));
   } else {
     lines.push_back({HwStatusLevel::Info, "Input: not open (no HW IN slot when the DAW started)."});
   }
 
+  if (st->workerOverruns) {
+    std::snprintf(buf, sizeof(buf), "Worker late %llu times (the PC could not keep up; a larger ASIO buffer helps)",
+                  static_cast<unsigned long long>(st->workerOverruns));
+    lines.push_back({HwStatusLevel::Warning, buf});
+  }
   lines.push_back({HwStatusLevel::Info, st->clockSource == CLOCK_HARDWARE
                                             ? "Master Clock: HW output (the device paces the DAW)."
                                             : "Master Clock: internal timer (no HW output open)."});

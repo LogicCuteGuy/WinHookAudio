@@ -31,8 +31,11 @@ static_assert(static_cast<int>(KsSampleFormat::Float32) == HW_FORMAT_FLOAT32 &&
 // rate stays exact); after a longer one, resync instead of bursting.
 constexpr double kMaxCatchUpPeriods = 8;
 
-// A block handed over at a HW Master Clock tick is queued behind the target fill, then crosses the device.
-long HwOutputLatency(const KsAudio& hw) { return hw.targetFill() + hw.streamLatency(); }
+// A block handed over at a HW Master Clock tick is queued behind the device's fill at the tick, then
+// crosses the device. The fill: the pacer's expected fill while streaming, else the first threshold.
+long HwOutputLatency(const KsAudio& hw, int32_t pacedFill = -1) {
+  return (pacedFill >= 0 ? pacedFill : hw.targetFill()) + hw.streamLatency();
+}
 // A captured frame's age when read (the backlog target, from capture timestamps, plus the
 // resampler), then one tick in its IN slot.
 long HwInputLatency(const KsCapture& hw, long block) { return hw.latency() + block; }
@@ -183,6 +186,11 @@ ASIOError WinHookMasterASIO::start() {
   samplePosition_ = 0;
   hwFillSum_ = 0;
   hwFillTicks_ = 0;
+  pacedHw_ = nullptr;
+  hwOutReportFill_ = -1;
+  hwOutLatencyChanged_ = false;
+  hwChunk_ = 0;
+  hwHurries_ = 0;
   sampleTimeNs_ = NowNs();
   clockStop_ = false;
   clockThread_ = CreateThread(nullptr, 0, clockProc, this, 0, nullptr);
@@ -221,7 +229,9 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
     out->hwOpen = 1;
     out->hwPeriod = hw->periodFrames();
     out->hwFormat = static_cast<int32_t>(hw->format());
-    out->hwLatency = static_cast<int32_t>(HwOutputLatency(*hw));
+    out->hwLatency = static_cast<int32_t>(HwOutputLatency(*hw, hwOutReportFill_.load()));
+    out->hwChunk = hwChunk_.load();
+    out->hwHurries = hwHurries_.load();
     TruncateCopy(out->hwRenderId, kStatsEndpointIdLen, hw->endpointId().c_str());
     out->hwWrites = hw->writes();
     out->hwUnderruns = hw->underruns();
@@ -293,7 +303,7 @@ ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatenc
   for (uint32_t i = 0; i < slotTable_->masterOutCount; ++i) hwOut = hwOut || slotTable_->masterOut[i].type == SLOT_HW;
   long output = bufferSize_, input = bufferSize_;
   if (KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr) {
-    output = HwOutputLatency(*hw);
+    output = HwOutputLatency(*hw, hwOutReportFill_.load());
   } else if (hwOut) {
     KsAudio probe;
     if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwRenderId))
@@ -427,6 +437,12 @@ void WinHookMasterASIO::runClock() {
 
   LARGE_INTEGER freq, now;
   QueryPerformanceFrequency(&freq);
+  // Development trace (WINHOOKAUDIO_CLOCK_TRACE=<csv path>): every look at the HW output, written at
+  // stop. Preallocated: no allocation on this thread while streaming.
+  struct TraceRow { double sec; int64_t written; int32_t fill; double wait; int32_t tick; };
+  std::vector<TraceRow> trace;
+  char tracePath[MAX_PATH] = {};
+  if (GetEnvironmentVariableA("WINHOOKAUDIO_CLOCK_TRACE", tracePath, MAX_PATH) > 0) trace.reserve(2000000);
   const double qpcPerFrame = static_cast<double>(freq.QuadPart) / sampleRate_;
   const double periodQpc = static_cast<double>(bufferSize_) * qpcPerFrame;
   const DWORD periodMs = static_cast<DWORD>(std::ceil(1000.0 * static_cast<double>(bufferSize_) / sampleRate_));
@@ -441,20 +457,48 @@ void WinHookMasterASIO::runClock() {
   while (!clockStop_.load()) {
     // Bounded wait for the Worker to route (and write to HW) the last tick; never block the DAW longer
     // than one period. Before the fill check, or the fill would not yet include that block.
-    if (holder_ && !holder_->waitWorker(periodMs)) workerOverruns_.fetch_add(1);
+    if (holder_ && !holder_->waitWorker(clockTicks_.load(), periodMs)) workerOverruns_.fetch_add(1);
 
+    // HW Master Clock: tick when the pacer says, evenly spaced at the device's rate (HwClockPacer);
+    // look at the device at least every half block to see how it reports its position.
     KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr;
-    const long target = hw ? hw->targetFill() : -1;
-    long fill = target >= 0 ? hw->padding() : -1;
-    while (fill > target && !clockStop_.load()) {
-      sleepQpc(static_cast<double>(fill - target) * qpcPerFrame);
-      fill = hw->padding();
+    long fill = -1;
+    if (hw && hw != pacedHw_) {
+      pacer_.reset(sampleRate_, static_cast<int>(bufferSize_), hw->capacity());
+      pacedHw_ = hw;
+    }
+    while (hw && !clockStop_.load()) {
+      int64_t written = 0;
+      fill = hw->padding(&written);  // one snapshot: a Worker write between two reads looks like play
+      if (fill < 0) break;
+      QueryPerformanceCounter(&now);
+      const double nowSec = static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart);
+      pacer_.observe(nowSec, written, static_cast<int32_t>(fill));
+      const double wait = pacer_.untilTick(nowSec);
+      if (trace.capacity() && trace.size() < trace.capacity())
+        trace.push_back({nowSec, written, static_cast<int32_t>(fill), wait, wait <= 0 ? 1 : 0});
+      if (wait <= 0) break;
+      const double pollQpc = 0.5 * periodQpc;
+      const double waitQpc = wait * static_cast<double>(freq.QuadPart);
+      sleepQpc(waitQpc < pollQpc ? waitQpc : pollQpc);
     }
     if (clockStop_.load()) break;
     if (fill >= 0) {
       clockSource_ = CLOCK_HARDWARE;
       hwFillSum_.fetch_add(static_cast<uint64_t>(fill));
       hwFillTicks_.fetch_add(1);
+      hwChunk_ = pacer_.chunk();
+      hwHurries_ = pacer_.hurries();
+      // Output latency follows the pacer's fill (it drops by about half a chunk on a chunky device);
+      // tell the DAW when it moved by a block or more from what it was told.
+      const int32_t expected = pacer_.expectedFill();
+      const int32_t reported = hwOutReportFill_.load() >= 0 ? hwOutReportFill_.load() : hw->targetFill();
+      if (expected - reported >= bufferSize_ || reported - expected >= bufferSize_) {
+        hwOutReportFill_ = expected;
+        hwOutLatencyChanged_ = true;
+      } else if (hwOutReportFill_.load() < 0) {
+        hwOutReportFill_ = reported;
+      }
       clockTick();
       QueryPerformanceCounter(&now);
       due = static_cast<double>(now.QuadPart) + periodQpc;  // internal timeline resumes from here if the HW goes
@@ -470,6 +514,15 @@ void WinHookMasterASIO::runClock() {
     clockSource_ = CLOCK_INTERNAL;
     clockTick();
     due += periodQpc;
+  }
+  if (!trace.empty()) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, tracePath, "w") == 0 && f) {
+      std::fprintf(f, "sec,written,fill,wait,tick,chunk\n");
+      for (const TraceRow& r : trace)
+        std::fprintf(f, "%.6f,%lld,%d,%.6f,%d,%d\n", r.sec, static_cast<long long>(r.written), r.fill, r.wait, r.tick, pacer_.chunk());
+      std::fclose(f);
+    }
   }
   if (timer) CloseHandle(timer);
   if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
@@ -495,11 +548,13 @@ void WinHookMasterASIO::clockTick() {
   samplePosition_ += static_cast<uint64_t>(bufferSize_);
   clockTicks_.fetch_add(1);
   // The HW input grew its backlog target after a starve: the DAW re-queries getLatencies.
-  if (KsCapture* in = holder_ ? holder_->hwCapture() : nullptr) {
-    if (in->takeLatencyChanged() && callbacks_.asioMessage &&
-        callbacks_.asioMessage(kAsioSelectorSupported, kAsioLatenciesChanged, nullptr, nullptr) == 1)
-      callbacks_.asioMessage(kAsioLatenciesChanged, 0, nullptr, nullptr);
-  }
+  // The HW output's pacing moved its fill: the DAW re-queries getLatencies too.
+  KsCapture* in = holder_ ? holder_->hwCapture() : nullptr;
+  const bool inChanged = in && in->takeLatencyChanged();
+  const bool outChanged = hwOutLatencyChanged_.exchange(false);
+  if ((inChanged || outChanged) && callbacks_.asioMessage &&
+      callbacks_.asioMessage(kAsioSelectorSupported, kAsioLatenciesChanged, nullptr, nullptr) == 1)
+    callbacks_.asioMessage(kAsioLatenciesChanged, 0, nullptr, nullptr);
   if (masterTick_) SetEvent(masterTick_);
 }
 

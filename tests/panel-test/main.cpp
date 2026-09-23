@@ -368,6 +368,18 @@ int main() {
     WHAMasterStats glitchy = st;
     glitchy.hwUnderruns = 3;
     check("HW status: underruns warn", has(HwStatusLines(&glitchy, saved, &devs), HwStatusLevel::Warning, "3 underruns"));
+    check("HW status: no input dropout line while clean", !has(lines, HwStatusLevel::Warning, "Input dropouts"));
+    WHAMasterStats dropping = st;
+    dropping.hwInStarved = 4;
+    dropping.hwInGrowths = 4;
+    dropping.hwInTrims = 1;
+    dropping.hwInSkipped = 480;  // 10 ms at 48 kHz
+    dropping.workerOverruns = 2;
+    lines = HwStatusLines(&dropping, saved, &devs);
+    dump(lines);
+    check("HW status: input dropouts counted", has(lines, HwStatusLevel::Warning, "4 ran empty (buffer grew 4 times), 1 overflowed") &&
+                                                   has(lines, HwStatusLevel::Warning, "10.0 ms skipped"));
+    check("HW status: Worker late warns", has(lines, HwStatusLevel::Warning, "Worker late 2 times"));
   }
 
   // ABOUT + Save contract (13)

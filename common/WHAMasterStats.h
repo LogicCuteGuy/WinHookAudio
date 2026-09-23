@@ -69,6 +69,9 @@ struct WHAMasterStats {
   int32_t hwInPeriod;
   int32_t hwInFormat;
   int32_t hwInLatency;        // input latency reported to the DAW, frames
+  // HW Master Clock pacing (HwClockPacer): ticks evenly spaced at the device's rate.
+  int32_t hwChunk;            // frames the device's position reports jump at once (0 = smooth)
+  uint64_t hwHurries;         // ticks taken at once because the device was nearly empty
 };
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.

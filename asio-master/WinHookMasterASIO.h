@@ -10,6 +10,7 @@
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
 #include "WHAMasterStats.h"
+#include "HwClockPacer.h"
 
 #include <atomic>
 #include <mutex>
@@ -120,6 +121,13 @@ class WinHookMasterASIO : public IASIO {
   std::atomic<int32_t> clockSource_{CLOCK_INTERNAL};  // WHAClockSource of the last tick
   std::atomic<uint64_t> hwFillSum_{0};    // device fill summed over HW Master Clock ticks
   std::atomic<uint64_t> hwFillTicks_{0};
+  // HW Master Clock pacing (clock thread), see HwClockPacer.
+  HwClockPacer pacer_;
+  const class KsAudio* pacedHw_ = nullptr;      // the device pacer_ was reset for
+  std::atomic<int32_t> hwOutReportFill_{-1};    // device fill the output latency is reported from (-1: targetFill)
+  std::atomic<bool> hwOutLatencyChanged_{false};  // the DAW must re-query getLatencies
+  std::atomic<int32_t> hwChunk_{0};
+  std::atomic<uint64_t> hwHurries_{0};
 };
 
 }  // namespace wha
