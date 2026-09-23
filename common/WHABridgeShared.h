@@ -14,7 +14,7 @@
 namespace wha {
 constexpr uint32_t kBridgeClients = 4;
 constexpr uint32_t kBridgeChannels = 64;
-constexpr uint32_t kBridgeFrames = 4096;
+constexpr uint32_t kBridgeFrames = 1024;  // = largest valid ASIO/Bridge buffer (IsValidMasterClock)
 constexpr uint32_t kBridgeBuffers = 2;
 #define WHA_BRIDGE_CLIENTS wha::kBridgeClients
 #define WHA_BRIDGE_CHANNELS wha::kBridgeChannels
@@ -78,14 +78,14 @@ inline float MixBridgeClients(const float* samples, const int32_t* ready, int nC
 // Compile-time layout invariants.
 static_assert(WHA_BRIDGE_CLIENTS == 4, "Four clients per Bridge");
 static_assert(WHA_BRIDGE_CHANNELS == 64, "64 channels per Bridge");
-static_assert(WHA_BRIDGE_FRAMES == 4096, "4096 frames per Bridge buffer");
+static_assert(WHA_BRIDGE_FRAMES == 1024, "1024 frames per Bridge buffer");
 static_assert(sizeof(WHABridgeShared::clientIn) == WHA_BRIDGE_CLIENTS * WHA_BRIDGE_BUFFERS * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
               "clientIn size");
 static_assert(sizeof(WHABridgeShared::clientOut) == WHA_BRIDGE_CLIENTS * WHA_BRIDGE_BUFFERS * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
               "clientOut size");
-static_assert(sizeof(WHABridgeShared) > 8 * 1024 * 1024, "Bridge shared at least 8MB");
+static_assert(sizeof(WHABridgeShared) > 4 * 1024 * 1024, "Bridge shared ~4.5MB");
 static_assert(kBridgeClients == 4, "kBridgeClients 4");
 static_assert(kBridgeChannels == 64, "kBridgeChannels 64");
-static_assert(kBridgeFrames == 4096, "kBridgeFrames 4096");
+static_assert(kBridgeFrames == 1024, "kBridgeFrames 1024");
 
 }  // namespace wha

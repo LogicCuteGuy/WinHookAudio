@@ -4,7 +4,11 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <thread>
 #include <cstring>
 #include <string>
 
@@ -21,6 +25,15 @@ bool gPass = true;
 void check(const char* name, bool ok) {
   std::printf("%s: %s\n", name, ok ? "PASS" : "FAIL");
   if (!ok) gPass = false;
+}
+
+bool WaitFor(const std::function<bool()>& pred, DWORD ms) {
+  const ULONGLONG end = GetTickCount64() + ms;
+  while (GetTickCount64() < end) {
+    if (pred()) return true;
+    Sleep(10);
+  }
+  return pred();
 }
 
 WHASlotTable MakeTable512() {
@@ -193,6 +206,29 @@ void PopupSmoke() {
   Sleep(200);
   popup.Close();
   check("Close joins popup thread", !popup.IsOpen() && popup.FramesRendered() > 0);
+
+  // DAW unloads the driver while the Export dialog is open: Close() must cancel it, not wait for the user.
+  host.testFrameHook = [](PanelViewResult& r, int frame) {
+    if (frame == 3) r.exportSlots = true;
+  };
+  check("Popup opens for dialog test", popup.Open(host));
+  WaitFor([&] { return popup.FramesRendered() >= 3; }, 5000);
+  Sleep(300);
+  const int stalled = popup.FramesRendered();
+  Sleep(300);
+  check("Export dialog blocks the popup loop", popup.FramesRendered() == stalled && popup.IsOpen());
+  std::atomic<bool> closed{false};
+  std::thread closer([&] {
+    popup.Close();
+    closed = true;
+  });
+  const bool done = WaitFor([&] { return closed.load(); }, 5000);
+  check("Close cancels the open dialog within 5 s", done);
+  if (!done) {
+    std::printf("{\"schema_version\":1,\"operation\":\"panel_gui_test\",\"stream_verified\":false,\"pass\":false}\n");
+    std::_Exit(1);  // Close() is stuck; don't hang ctest
+  }
+  closer.join();
 }
 
 }  // namespace

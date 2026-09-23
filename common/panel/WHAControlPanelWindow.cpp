@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 #include "WHAControlPanelView.h"
 #include "WHASharedMemory.h"
@@ -21,10 +22,6 @@ namespace {
 
 constexpr int kClientWidth = 1180;
 constexpr int kClientHeight = 720;
-
-bool SlotListChanged(const WHASlot* a, uint32_t countA, const WHASlot* b, uint32_t countB) {
-  return countA != countB || std::memcmp(a, b, sizeof(WHASlot) * countA) != 0;
-}
 
 bool WriteFileReplace(const std::string& path, const std::string& data, DWORD* error) {
   const std::string tmp = path + ".tmp";
@@ -96,9 +93,7 @@ bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string
     return false;
   }
   const WHASlotTable& after = *host.table;
-  const bool channelsChanged =
-      SlotListChanged(before.masterIn, before.masterInCount, after.masterIn, after.masterInCount) ||
-      SlotListChanged(before.masterOut, before.masterOutCount, after.masterOut, after.masterOutCount);
+  const bool dawChanged = DawVisibleChanged(before, after);
 
   char msg[256];
   std::snprintf(msg, sizeof(msg), "Saved v%u", after.version);
@@ -117,7 +112,7 @@ bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string
   }
   FlushViewOfFile(host.table, sizeof(WHASlotTable));  // no-op error when the table is not a mapped view
   if (host.tableChanged) SetEvent(host.tableChanged);
-  const bool reset = clockChanged || channelsChanged;
+  const bool reset = clockChanged || dawChanged;
   if (reset) result += "; DAW reset requested";
   if (host.onSaved) host.onSaved(reset);
   report(result);
@@ -168,7 +163,7 @@ bool ControlPanelWindow::Open(const ControlPanelHost& host) {
   frames_ = 0;
   usedWarp_ = false;
   lastError_.clear();
-  thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+  thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, &threadId_);
   return thread_ != nullptr;
 }
 
@@ -176,7 +171,18 @@ void ControlPanelWindow::Close() {
   if (!thread_) return;
   quit_ = true;
   if (HWND h = hwnd_.load()) PostMessageW(h, WM_NULL, 0, 0);  // wake the loop
-  WaitForSingleObject(thread_, INFINITE);
+  // A modal Export/Import dialog blocks the popup loop: cancel it (and any later one) until the thread ends.
+  while (WaitForSingleObject(thread_, 50) == WAIT_TIMEOUT) {
+    EnumThreadWindows(
+        threadId_,
+        [](HWND w, LPARAM) -> BOOL {
+          wchar_t cls[16] = {};
+          GetClassNameW(w, cls, 16);
+          if (std::wcscmp(cls, L"#32770") == 0) PostMessageW(w, WM_COMMAND, IDCANCEL, 0);
+          return TRUE;
+        },
+        0);
+  }
   CloseHandle(thread_);
   thread_ = nullptr;
 }
@@ -313,13 +319,14 @@ void ControlPanelWindow::Run() {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     state.dirty = std::memcmp(&edit.table, &baseline, sizeof(WHASlotTable)) != 0;
-    const PanelViewResult r = DrawControlPanel(edit, state, host_.bridges);
+    PanelViewResult r = DrawControlPanel(edit, state, host_.bridges);
     ImGui::Render();
     gpu.context->OMSetRenderTargets(1, &gpu.rtv, nullptr);
     gpu.context->ClearRenderTargetView(gpu.rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     gpu.swapChain->Present(1, 0);  // vsync keeps the popup off the audio cores' budget
     const int frame = ++frames_;
+    if (host_.testFrameHook) host_.testFrameHook(r, frame);
 
     if (r.save && CommitPanelSave(edit, host_, &state.status)) baseline = edit.table;
     if (r.revert) {

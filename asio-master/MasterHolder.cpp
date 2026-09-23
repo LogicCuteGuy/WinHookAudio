@@ -62,7 +62,10 @@ void MasterHolder::run() {
   while (!stopRequested_) {
     DWORD wait = (nHandles > 0) ? WaitForMultipleObjects(nHandles, handles, FALSE, INFINITE) : WaitForSingleObject(masterTick_, INFINITE);
     if (stopRequested_) break;
-    if (wait == WAIT_OBJECT_0 + 1 && network_) network_->requestReconfigure();  // TableChanged
+    if (wait == WAIT_OBJECT_0 + 1) {  // TableChanged
+      if (network_) network_->requestReconfigure();
+      if (onTableChanged_) onTableChanged_();
+    }
     if (wait == WAIT_OBJECT_0 || wait == WAIT_OBJECT_0 + 1) {
       if (stopRequested_) break;
       doTick();
@@ -113,7 +116,7 @@ void MasterHolder::doTick() {
     auto* b = bridges_[bi];
     if (!b) continue;
     int frames = static_cast<int>(table_->general.asioBuffer);
-    if (frames > 4096) frames = 4096;
+    if (frames > static_cast<int>(kBridgeFrames)) frames = static_cast<int>(kBridgeFrames);
     if (frames <= 0) frames = 128;
     // Stack sum for max 64*128 frames (avoid heap per tick)
     float sum[64 * 128] = {};

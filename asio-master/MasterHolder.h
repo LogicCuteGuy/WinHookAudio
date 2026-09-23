@@ -4,6 +4,8 @@
 // Vocabulary: Worker, Master Clock, Loopback, Shared Bridge.
 
 #include <windows.h>
+
+#include <functional>
 #include "WHASlotTable.h"
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
@@ -22,6 +24,8 @@ class MasterHolder {
 
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
+  // Called on the Worker thread whenever TableChanged fires (any process may have saved).
+  void setTableChangedHandler(std::function<void()> handler) { onTableChanged_ = std::move(handler); }
 
  private:
   static DWORD WINAPI threadProc(LPVOID param);
@@ -41,7 +45,8 @@ class MasterHolder {
   HMODULE avrtModule_ = nullptr;
   class KsAudio* ksAudio_ = nullptr;
   class WHARingBuffer* virtualRings_[8] = {};
-  class WHANetworkEngine* network_ = nullptr;  // WHAA Tx/Rx; its own thread does sockets + codecs
+  class WHANetworkEngine* network_ = nullptr;
+  std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs
 };
 
 }  // namespace wha

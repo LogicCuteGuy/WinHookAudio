@@ -154,6 +154,21 @@ constexpr bool IsValidMasterClock(uint32_t rate, uint32_t buffer) {
   return rateOk && bufferOk;
 }
 
+// What the Master DAW sees through getChannels/getChannelInfo/getSampleRate/getBufferSize.
+// A change here needs hostCallback(ASIOResetRequest); Per-Thing buffers and routing fields do not.
+inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
+  if (a.masterInCount != b.masterInCount || a.masterOutCount != b.masterOutCount) return true;
+  if (a.general.sampleRate != b.general.sampleRate || a.general.asioBuffer != b.general.asioBuffer) return true;
+  auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
+    return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0;
+  };
+  for (uint32_t i = 0; i < a.masterInCount && i < kMax; ++i)
+    if (slotDiffers(a.masterIn[i], b.masterIn[i])) return true;
+  for (uint32_t i = 0; i < a.masterOutCount && i < kMax; ++i)
+    if (slotDiffers(a.masterOut[i], b.masterOut[i])) return true;
+  return false;
+}
+
 inline void SetSlotName(WHASlot& slot, const char* text) {
   TruncateCopy(slot.name, WHA_NAME_LEN, text);
 }

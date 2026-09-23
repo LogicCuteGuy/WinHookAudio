@@ -9,6 +9,7 @@
 #include "WHABridgeShared.h"
 
 #include <atomic>
+#include <mutex>
 
 namespace wha {
 
@@ -53,6 +54,8 @@ class WinHookMasterASIO : public IASIO {
 
  private:
   void requestReset();  // hostCallback(ASIOResetRequest): DAW re-queries channels/clock
+  void snapshotDawView();   // record what the DAW has just queried
+  void onTableChanged();    // Worker thread: reset if the DAW-visible table drifted from the snapshot
 
   ULONG refCount_ = 1;
   bool initialized_ = false;
@@ -72,6 +75,9 @@ class WinHookMasterASIO : public IASIO {
   char errorText_[128] = {};
   class MasterHolder* holder_ = nullptr;
   ControlPanelWindow* panel_ = nullptr;  // Popup Type 1, created on first controlPanel()
+  std::mutex dawViewMutex_;
+  WHASlotTable dawView_{};      // table as last seen by the DAW (getChannels)
+  bool resetPending_ = false;   // sent ASIOResetRequest, DAW has not re-queried yet
 };
 
 }  // namespace wha

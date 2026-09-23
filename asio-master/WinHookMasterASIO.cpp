@@ -76,6 +76,7 @@ ASIOError WinHookMasterASIO::init(void* sysHandle) {
     slotTable_->version = 1;
   }
   bufferSize_ = static_cast<int32_t>(slotTable_->general.asioBuffer);
+  snapshotDawView();
   // Master audio 16MB
   masterAudioMapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                            static_cast<DWORD>(shm::kMasterAudioSize), shm::kMasterAudioName + 7);
@@ -100,6 +101,7 @@ ASIOError WinHookMasterASIO::start() {
   if (!initialized_) return ASE_NotPresent;
   if (!holder_) {
     holder_ = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
+    holder_->setTableChangedHandler([this] { onTableChanged(); });
     holder_->start();
   }
   running_ = true;
@@ -112,6 +114,7 @@ ASIOError WinHookMasterASIO::stop() {
 }
 ASIOError WinHookMasterASIO::getChannels(int32_t* numInputChannels, int32_t* numOutputChannels) {
   if (!initialized_ || !slotTable_) return ASE_NotPresent;
+  snapshotDawView();
   if (numInputChannels) *numInputChannels = static_cast<int32_t>(slotTable_->masterInCount);
   if (numOutputChannels) *numOutputChannels = static_cast<int32_t>(slotTable_->masterOutCount);
   return ASE_OK;
@@ -180,8 +183,28 @@ ASIOError WinHookMasterASIO::createBuffers(ASIOChannelInfo* infos, int32_t numCh
 }
 ASIOError WinHookMasterASIO::disposeBuffers() { return ASE_OK; }
 void WinHookMasterASIO::requestReset() {
+  {
+    std::lock_guard<std::mutex> lock(dawViewMutex_);
+    if (resetPending_) return;  // one request until the DAW re-queries getChannels
+    resetPending_ = true;
+  }
   resetRequested_ = true;
   if (callbacks_.asioMessage) callbacks_.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+}
+
+void WinHookMasterASIO::snapshotDawView() {
+  std::lock_guard<std::mutex> lock(dawViewMutex_);
+  dawView_ = *slotTable_;
+  resetPending_ = false;
+}
+
+void WinHookMasterASIO::onTableChanged() {
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(dawViewMutex_);
+    changed = DawVisibleChanged(*slotTable_, dawView_);
+  }
+  if (changed) requestReset();  // e.g. a Bridge popup in another process saved new slots
 }
 
 ASIOError WinHookMasterASIO::controlPanel() {

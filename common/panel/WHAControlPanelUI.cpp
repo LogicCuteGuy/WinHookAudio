@@ -291,21 +291,18 @@ AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   info.sysRunning = false;
   info.clsidCount = 5;
   info.slotsJsonPath = "%ProgramData%\\WinHookAudio\\slots.json";
+  (void)model;
   for (int i = 0; i < 4; ++i) {
-    int count = 0;
+    char buf[32];
     if (bridges && bridges[i]) {
-      count = bridges[i]->clientCount;
+      int count = bridges[i]->clientCount;
       if (count > 4) count = 4;
       if (count < 0) count = 0;
+      std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count);
     } else {
-      WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + i);
-      for (uint32_t j = 0; j < model.table.masterInCount; ++j) if (model.table.masterIn[j].type == want) ++count;
-      for (uint32_t j = 0; j < model.table.masterOutCount; ++j) if (model.table.masterOut[j].type == want) ++count;
-      // Slot count is not client count — cap at 4 for display
-      if (count > 4) count = 4;
+      // No Shared Bridge mapped in this process: client count is unknown (slot count is not client count).
+      std::snprintf(buf, sizeof(buf), "Bridge%d: -/4", i + 1);
     }
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count);
     info.bridgeClients[i] = buf;
   }
   return info;

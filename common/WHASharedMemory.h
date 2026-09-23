@@ -7,6 +7,8 @@
 
 #include <cstddef>
 
+#include "WHABridgeShared.h"
+
 namespace wha::shm {
 
 // Control plane — Slot Table
@@ -68,8 +70,8 @@ static_assert(kSlotTableSize >= 49000 && kSlotTableSize < 81920 + 8192,
               "SlotTable SHM size class");
 static_assert(kMasterAudioSize == 16 * 1024 * 1024, "Master audio 16MB");
 static_assert(kBridgeSharedSize == 8 * 1024 * 1024, "Bridge shared 8MB per bridge");
-// Note: WHABridgeShared is ~18MB (clientIn 8MB + clientOut 8MB + mixedIn 2MB) and does not fit
-// in kBridgeSharedSize 8MB. This is a known mismatch to be fixed by sizing SHM to
-// sizeof(WHABridgeShared) or reducing Bridge dimensions. See scrutinize finding.
+// WHABridgeShared (4 clients x 2 x 64ch x 1024 frames in/out + mixedIn, ~4.5MB) must fit its 8MB view:
+// with 4096 frames it was ~18MB and the Worker wrote mixedIn past the mapping on every tick.
+static_assert(sizeof(WHABridgeShared) <= kBridgeSharedSize, "WHABridgeShared must fit its SHM view");
 
 }  // namespace wha::shm

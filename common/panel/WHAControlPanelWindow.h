@@ -12,6 +12,7 @@
 #include <string>
 
 #include "WHAControlPanelUI.h"
+#include "WHAControlPanelView.h"
 
 namespace wha {
 
@@ -26,6 +27,7 @@ struct ControlPanelHost {
   // Offline smoke test hooks
   bool hidden = false;
   int autoCloseAfterFrames = 0;              // > 0: render N frames, then close
+  std::function<void(PanelViewResult&, int frame)> testFrameHook;  // inject clicks (tests only)
 };
 
 // Save: validate -> *table = edit (version++) -> slots.json -> FlushViewOfFile -> SetEvent(TableChanged)
@@ -45,7 +47,8 @@ class ControlPanelWindow {
 
   // Starts the popup thread, or brings the open popup to the front.
   bool Open(const ControlPanelHost& host);
-  // Asks the popup to close (discarding unsaved edits) and joins its thread.
+  // Asks the popup to close (discarding unsaved edits) and joins its thread;
+  // cancels an open Export/Import dialog so a DAW unloading the driver never waits on the user.
   void Close();
   bool IsOpen() const;
   // Waits for the popup thread to end on its own (e.g. autoCloseAfterFrames).
@@ -62,6 +65,7 @@ class ControlPanelWindow {
 
   ControlPanelHost host_;
   HANDLE thread_ = nullptr;
+  DWORD threadId_ = 0;
   std::atomic<HWND> hwnd_{nullptr};
   std::atomic<bool> quit_{false};
   std::atomic<int> frames_{0};
