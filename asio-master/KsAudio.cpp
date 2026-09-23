@@ -2,38 +2,10 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
-#include <functiondiscoverykeys_devpkey.h>
-#include <ksmedia.h>
 
 #include <cstdio>
 
 namespace wha {
-
-namespace {
-
-constexpr int kDeviceChannels = 2;
-constexpr int kBufferPeriods = 4;   // device buffer = 4 periods: headroom for Master Clock vs device clock
-
-WAVEFORMATEXTENSIBLE MakeFormat(int32_t sampleRate, KsAudio::SampleFormat format) {
-  const bool isFloat = format == KsAudio::SampleFormat::Float32;
-  const WORD bits = format == KsAudio::SampleFormat::Pcm16 ? 16 : 32;
-  WAVEFORMATEXTENSIBLE x{};
-  x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  x.Format.nChannels = kDeviceChannels;
-  x.Format.nSamplesPerSec = static_cast<DWORD>(sampleRate);
-  x.Format.wBitsPerSample = bits;
-  x.Format.nBlockAlign = static_cast<WORD>(kDeviceChannels * bits / 8);
-  x.Format.nAvgBytesPerSec = x.Format.nSamplesPerSec * x.Format.nBlockAlign;
-  x.Format.cbSize = 22;
-  x.Samples.wValidBitsPerSample = format == KsAudio::SampleFormat::Pcm24In32 ? 24 : bits;
-  x.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
-  x.SubFormat = isFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
-  return x;
-}
-
-float Clamp(float v) { return v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v); }
-
-}  // namespace
 
 KsAudio::KsAudio() = default;
 KsAudio::~KsAudio() { close(); }
@@ -48,7 +20,7 @@ bool KsAudio::fail(const char* step, HRESULT hr) {
   return false;
 }
 
-bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames) {
+bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames, const char* endpointId) {
   close();
   sampleRate_ = sampleRate;
   bufferFrames_ = bufferFrames;
@@ -63,73 +35,18 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   minFill_ = -1;
   maxFill_ = 0;
 
-  HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  comInitialized_ = SUCCEEDED(hr);
-
-  IMMDeviceEnumerator* enumerator = nullptr;
-  hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator);
-  if (FAILED(hr)) return fail("MMDeviceEnumerator", hr);
-
-  IMMDevice* device = nullptr;
-  hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-  enumerator->Release();
-  if (FAILED(hr)) return fail("GetDefaultAudioEndpoint", hr);
-
-  hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient_);
-  if (FAILED(hr)) { device->Release(); return fail("Activate", hr); }
-
-  // Period: 0 = device minimum; a smaller request than the device allows is rejected, not stretched.
-  REFERENCE_TIME defaultPeriod = 0, minPeriod = 0;
-  audioClient_->GetDevicePeriod(&defaultPeriod, &minPeriod);
-  // Round up: 128 frames @ 48k = 26666.67 hns must compare equal to a 26667 hns device minimum.
-  REFERENCE_TIME period = bufferFrames > 0
-                              ? (static_cast<REFERENCE_TIME>(bufferFrames) * 10000000 + sampleRate - 1) / sampleRate
-                              : minPeriod;
-  if (period < minPeriod) { device->Release(); return fail("period below device minimum", AUDCLNT_E_INVALID_DEVICE_PERIOD); }
-  // Buffer: whole periods, at least kBufferPeriods and at least 4 write() blocks.
-  const REFERENCE_TIME blockTime = static_cast<REFERENCE_TIME>(blockFrames) * 10000000 / sampleRate;
-  REFERENCE_TIME periods = kBufferPeriods;
-  while (periods * period < 4 * blockTime) ++periods;
-
-  // Exclusive formats differ per device (HD Audio often has no float): take the first one it accepts.
-  const SampleFormat candidates[] = {SampleFormat::Float32, SampleFormat::Pcm24In32, SampleFormat::Pcm16};
-  WAVEFORMATEXTENSIBLE fmt{};
-  bool found = false;
-  for (SampleFormat c : candidates) {
-    fmt = MakeFormat(sampleRate, c);
-    if (audioClient_->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &fmt.Format, nullptr) == S_OK) {
-      format_ = c;
-      found = true;
-      break;
-    }
-  }
-  if (!found) { device->Release(); return fail("no exclusive format (float32/pcm24in32/pcm16)", AUDCLNT_E_UNSUPPORTED_FORMAT); }
-
-  // Exclusive only — no shared fallback (busy pin must surface as failure). Timer-driven, so the
-  // buffer may be longer than the period.
-  hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, 0, period * periods, period, &fmt.Format, nullptr);
-  if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {  // re-open with the device-aligned period
-    UINT32 aligned = 0;
-    audioClient_->GetBufferSize(&aligned);
-    period = static_cast<REFERENCE_TIME>(10000000.0 * aligned / static_cast<double>(periods) / sampleRate + 0.5);
-    audioClient_->Release();
-    audioClient_ = nullptr;
-    hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient_);
-    if (SUCCEEDED(hr)) hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, 0, period * periods, period, &fmt.Format, nullptr);
-  }
-  device->Release();
-  if (FAILED(hr)) return fail("Initialize exclusive", hr);
+  comInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+  KsOpenResult r;
+  if (!KsOpenExclusive(eRender, endpointId, sampleRate, bufferFrames, blockFrames, r)) return fail(r.step, r.error);
+  audioClient_ = r.client;
+  format_ = r.format;
   exclusive_ = true;
-  bufferFrames_ = static_cast<int32_t>(period * sampleRate / 10000000);
-  UINT32 capacity = 0;
-  audioClient_->GetBufferSize(&capacity);
-  capacityFrames_ = static_cast<int32_t>(capacity);
+  bufferFrames_ = r.periodFrames;
+  capacityFrames_ = r.capacityFrames;
+  streamLatencyFrames_ = r.streamLatencyFrames;
   blockFrames_ = blockFrames > 0 ? blockFrames : bufferFrames_;
-  REFERENCE_TIME streamLatency = 0;
-  audioClient_->GetStreamLatency(&streamLatency);
-  streamLatencyFrames_ = static_cast<int32_t>(streamLatency * sampleRate / 10000000);
 
-  hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
+  HRESULT hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
   if (FAILED(hr)) return fail("GetService IAudioRenderClient", hr);
 
   hr = audioClient_->GetService(__uuidof(IAudioClock), (void**)&audioClock_);
@@ -180,16 +97,8 @@ bool KsAudio::write(const float* data, int frames, int channels) {
   HRESULT hr = renderClient_->GetBuffer(frames, &buffer);
   if (FAILED(hr)) return false;
   for (int f = 0; f < frames; ++f) {
-    for (int ch = 0; ch < kDeviceChannels; ++ch) {
-      const float v = ch < channels ? data[ch * frames + f] : 0.0f;
-      const int i = f * kDeviceChannels + ch;
-      switch (format_) {
-        case SampleFormat::Float32: reinterpret_cast<float*>(buffer)[i] = v; break;
-        case SampleFormat::Pcm24In32:
-          reinterpret_cast<int32_t*>(buffer)[i] = static_cast<int32_t>(Clamp(v) * 8388607.0f) * 256;
-          break;
-        case SampleFormat::Pcm16: reinterpret_cast<int16_t*>(buffer)[i] = static_cast<int16_t>(Clamp(v) * 32767.0f); break;
-      }
+    for (int ch = 0; ch < kKsDeviceChannels; ++ch) {
+      KsToDevice(format_, ch < channels ? data[ch * frames + f] : 0.0f, buffer, f * kKsDeviceChannels + ch);
     }
   }
   hr = renderClient_->ReleaseBuffer(frames, 0);

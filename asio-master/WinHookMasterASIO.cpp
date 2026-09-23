@@ -1,6 +1,7 @@
 #include "WinHookMasterASIO.h"
 #include "MasterHolder.h"
 #include "KsAudio.h"
+#include "KsCapture.h"
 #if WHA_HAVE_IMGUI
 #include "WHAControlPanelWindow.h"
 #endif
@@ -24,6 +25,9 @@ constexpr double kMaxCatchUpPeriods = 8;
 
 // A block handed over at a HW Master Clock tick is queued behind the target fill, then crosses the device.
 long HwOutputLatency(const KsAudio& hw) { return hw.targetFill() + hw.streamLatency(); }
+// A captured frame crosses the device, waits in the FIFO (its mean fill at a read), then sits in its
+// IN slot for one tick.
+long HwInputLatency(const KsCapture& hw, long block) { return hw.streamLatency() + hw.expectedFill() + block; }
 
 std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
 
@@ -182,6 +186,18 @@ void WinHookMasterASIO::stats(WHAMasterStats* out) const {
     const uint64_t ticks = hwFillTicks_.load();
     out->hwFillAtTick = ticks ? static_cast<int32_t>(hwFillSum_.load() / ticks) : -1;
   }
+  out->hwInLastError = holder_->hwCaptureError();
+  if (KsCapture* in = holder_->hwCapture()) {
+    out->hwInOpen = 1;
+    out->hwInReads = in->reads();
+    out->hwInStarved = in->starved();
+    out->hwInTrims = in->trims();
+    out->hwInGlitches = in->glitches();
+    out->hwInFill = in->fill();
+    out->hwInTarget = in->targetFill();
+    out->hwInMeanFill = in->meanFill();
+    out->hwInStreamLatency = in->streamLatency();
+  }
 }
 
 ASIOError WinHookMasterASIO::stop() {
@@ -207,20 +223,28 @@ ASIOError WinHookMasterASIO::getChannels(long* numInputChannels, long* numOutput
 ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatency) {
   if (!initialized_) return ASE_NotPresent;
   // Frames from the sample position at bufferSwitch. Inputs and Worker-routed outputs: one block
-  // (routed on the tick after the DAW wrote them). A HW output adds the device queue it paces.
-  long output = bufferSize_;
+  // (routed on the tick after the DAW wrote them). HW slots add the device queues. Not streaming
+  // yet: open the devices briefly for their real buffers and stream latencies.
+  const auto& g = slotTable_->general;
+  bool hwIn = false, hwOut = false;
+  for (uint32_t i = 0; i < slotTable_->masterInCount; ++i) hwIn = hwIn || slotTable_->masterIn[i].type == SLOT_HW;
+  for (uint32_t i = 0; i < slotTable_->masterOutCount; ++i) hwOut = hwOut || slotTable_->masterOut[i].type == SLOT_HW;
+  long output = bufferSize_, input = bufferSize_;
   if (KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr) {
     output = HwOutputLatency(*hw);
-  } else {
-    bool hwOut = false;
-    for (uint32_t i = 0; i < slotTable_->masterOutCount; ++i) hwOut = hwOut || slotTable_->masterOut[i].type == SLOT_HW;
-    if (hwOut) {  // not streaming yet: open the device briefly for its real buffer and stream latency
-      KsAudio probe;
-      if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(slotTable_->general.hwBuffer), bufferSize_))
-        output = HwOutputLatency(probe);
-    }
+  } else if (hwOut) {
+    KsAudio probe;
+    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwRenderId))
+      output = HwOutputLatency(probe);
   }
-  if (inputLatency) *inputLatency = bufferSize_;
+  if (KsCapture* hw = holder_ ? holder_->hwCapture() : nullptr) {
+    input = HwInputLatency(*hw, bufferSize_);
+  } else if (hwIn) {
+    KsCapture probe;
+    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwCaptureId))
+      input = HwInputLatency(probe, bufferSize_);
+  }
+  if (inputLatency) *inputLatency = input;
   if (outputLatency) *outputLatency = output;
   return ASE_OK;
 }

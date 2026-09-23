@@ -1,5 +1,6 @@
 #include "MasterHolder.h"
 #include "KsAudio.h"
+#include "KsCapture.h"
 #include "network/WHANetworkEngine.h"
 #include "virtual/WHAIoctl.h"
 #include "virtual/WHARingBuffer.h"
@@ -16,7 +17,7 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
   workerDone_ = CreateEventA(nullptr, FALSE, TRUE, nullptr);  // signaled: the first tick has nothing to wait for
 }
-MasterHolder::~MasterHolder() { stop(); if (workerDone_) CloseHandle(workerDone_); delete network_; delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
+MasterHolder::~MasterHolder() { stop(); if (workerDone_) CloseHandle(workerDone_); delete network_; delete ksAudio_; delete ksCapture_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
 
 bool MasterHolder::start() {
   if (running_) return true;
@@ -52,15 +53,23 @@ void MasterHolder::run() {
   }
   // Open KS exclusive for HW slots (deferred if no HW)
   if (!ksAudio_) ksAudio_ = new KsAudio();
-  bool ksOpened = false;
-  for (uint32_t i = 0; i < table_->masterInCount; ++i) if (table_->masterIn[i].type == SLOT_HW) { ksOpened = true; break; }
-  for (uint32_t i = 0; i < table_->masterOutCount; ++i) if (table_->masterOut[i].type == SLOT_HW) { ksOpened = true; break; }
-  if (ksOpened) {
+  if (!ksCapture_) ksCapture_ = new KsCapture();
+  bool hwIn = false, hwOut = false;
+  for (uint32_t i = 0; i < table_->masterInCount; ++i) hwIn = hwIn || table_->masterIn[i].type == SLOT_HW;
+  for (uint32_t i = 0; i < table_->masterOutCount; ++i) hwOut = hwOut || table_->masterOut[i].type == SLOT_HW;
+  const auto& g = table_->general;
+  if (hwIn || hwOut) {
     // Opened and started, the HW output becomes the Master Clock (see WinHookMasterASIO::runClock).
-    if (ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer, table_->general.asioBuffer) && ksAudio_->start())
+    if (ksAudio_->open(g.sampleRate, g.hwBuffer, g.asioBuffer, g.hwRenderId) && ksAudio_->start())
       hwMaster_ = ksAudio_;
     else
       hwOpenError_ = static_cast<int32_t>(ksAudio_->lastError());
+  }
+  if (hwIn) {
+    if (ksCapture_->open(g.sampleRate, g.hwBuffer, g.asioBuffer, g.hwCaptureId) && ksCapture_->start())
+      hwCapture_ = ksCapture_;
+    else
+      hwCaptureError_ = static_cast<int32_t>(ksCapture_->lastError());
   }
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
@@ -78,7 +87,9 @@ void MasterHolder::run() {
     }
   }
   hwMaster_ = nullptr;  // the Master Clock is already stopped; never hand out a closing device
+  hwCapture_ = nullptr;
   if (ksAudio_) { ksAudio_->stop(); ksAudio_->close(); }
+  if (ksCapture_) { ksCapture_->stop(); ksCapture_->close(); }
   if (mmcssHandle_ && avrtModule_) {
     using AvRevertMmThreadCharacteristics = BOOL(WINAPI*)(HANDLE);
     auto pfn = reinterpret_cast<AvRevertMmThreadCharacteristics>(GetProcAddress(avrtModule_, "AvRevertMmThreadCharacteristics"));
@@ -217,16 +228,31 @@ void MasterHolder::doTick() {
     if (frames > 4096) frames = 4096;
     network_->processTick(masterAudio_, masterAudio_ + 512 * 4096, 4096, frames);
   }
-  // KS write: DAW Out -> HW (if HW slots present)
+  int hwFrames = static_cast<int>(table_->general.asioBuffer);
+  if (hwFrames > 4096) hwFrames = 4096;
+  // KS write: every HW OUT slot summed into its source device channel ("Ch N" = srcChannel N-1).
   if (ksAudio_ && ksAudio_->opened()) {
+    std::memset(hwOut_, 0, sizeof(float) * kKsDeviceChannels * static_cast<size_t>(hwFrames));
     for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
-      if (table_->masterOut[oi].type == SLOT_HW) {
-        int frames = static_cast<int>(table_->general.asioBuffer);
-        if (frames > 4096) frames = 4096;
-        float* outBuf = masterAudio_ + oi * 4096;
-        ksAudio_->write(outBuf, frames, 1);
-        break;
-      }
+      const auto& slot = table_->masterOut[oi];
+      if (slot.type != SLOT_HW || slot.srcChannel < 0 || slot.srcChannel >= kKsDeviceChannels) continue;
+      const float* outBuf = masterAudio_ + oi * 4096;
+      float* dst = hwOut_ + static_cast<size_t>(slot.srcChannel) * hwFrames;
+      for (int f = 0; f < hwFrames; ++f) dst[f] += outBuf[f];
+    }
+    ksAudio_->write(hwOut_, hwFrames, kKsDeviceChannels);
+  }
+  // KS read: HW -> each HW IN slot from its source device channel; the DAW gets it next tick.
+  if (ksCapture_ && ksCapture_->opened()) {
+    ksCapture_->read(hwIn_, hwFrames, kKsDeviceChannels);
+    for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+      const auto& slot = table_->masterIn[ii];
+      if (slot.type != SLOT_HW) continue;
+      float* inBuf = masterAudio_ + 512 * 4096 + ii * 4096;
+      if (slot.srcChannel >= 0 && slot.srcChannel < kKsDeviceChannels)
+        std::memcpy(inBuf, hwIn_ + static_cast<size_t>(slot.srcChannel) * hwFrames, sizeof(float) * hwFrames);
+      else
+        std::memset(inBuf, 0, sizeof(float) * hwFrames);
     }
   }
 }

@@ -8,11 +8,13 @@
 #include <windows.h>
 #include <audioclient.h>
 
+#include "KsEndpoint.h"
+
 namespace wha {
 
 class KsAudio {
  public:
-  enum class SampleFormat { Float32, Pcm24In32, Pcm16 };  // exclusive format negotiated by open()
+  using SampleFormat = KsSampleFormat;  // exclusive format negotiated by open()
 
   KsAudio();
   ~KsAudio();
@@ -20,8 +22,8 @@ class KsAudio {
   // Caller must CoInitializeEx before open() if COM not already initialized.
   // open() does not CoUninitialize while IAudioClient is held.
   // bufferFrames = device period (0: device minimum); blockFrames = frames per write(), so the
-  // device buffer holds at least 4 blocks.
-  bool open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames = 0);
+  // device buffer holds at least 4 blocks. endpointId: IMMDevice ID, empty = Windows default render.
+  bool open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames = 0, const char* endpointId = nullptr);
   bool isExclusive() const { return exclusive_; }
   void close();
   bool start();
