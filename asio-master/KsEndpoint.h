@@ -4,6 +4,7 @@
 // HW input (KsCapture). Vocabulary: Slot, Master Clock.
 
 #include <cstdint>
+#include <string>
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -20,6 +21,7 @@ struct KsOpenResult {
   int32_t periodFrames = 0;
   int32_t capacityFrames = 0;       // device buffer
   int32_t streamLatencyFrames = 0;  // IAudioClient::GetStreamLatency
+  std::string endpointId;           // IMMDevice ID actually opened (UTF-8), also for the default device
   HRESULT error = S_OK;             // why it failed
   const char* step = "";
 };

@@ -68,19 +68,21 @@ void MasterHolder::run() {
   bool hwIn = false, hwOut = false;
   for (uint32_t i = 0; i < table_->masterInCount; ++i) hwIn = hwIn || table_->masterIn[i].type == SLOT_HW;
   for (uint32_t i = 0; i < table_->masterOutCount; ++i) hwOut = hwOut || table_->masterOut[i].type == SLOT_HW;
-  const auto& g = table_->general;
+  hwRequest_ = table_->general;  // one snapshot: what is opened is what the panel shows as requested
+  hwRequestValid_.store(true, std::memory_order_release);
+  const WHAGeneral& g = hwRequest_;
   if (hwIn || hwOut) {
     // Opened and started, the HW output becomes the Master Clock (see WinHookMasterASIO::runClock).
     if (ksAudio_->open(g.sampleRate, g.hwBuffer, g.asioBuffer, g.hwRenderId) && ksAudio_->start())
       hwMaster_ = ksAudio_;
     else
-      hwOpenError_ = static_cast<int32_t>(ksAudio_->lastError());
+      hwOpenError_ = FAILED(ksAudio_->lastError()) ? static_cast<int32_t>(ksAudio_->lastError()) : E_FAIL;  // open ok, Start failed
   }
   if (hwIn) {
     if (ksCapture_->open(g.sampleRate, g.hwBuffer, g.asioBuffer, g.hwCaptureId) && ksCapture_->start())
       hwCapture_ = ksCapture_;
     else
-      hwCaptureError_ = static_cast<int32_t>(ksCapture_->lastError());
+      hwCaptureError_ = FAILED(ksCapture_->lastError()) ? static_cast<int32_t>(ksCapture_->lastError()) : E_FAIL;  // open ok, Start failed
   }
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);

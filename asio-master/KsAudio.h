@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <windows.h>
 #include <audioclient.h>
 
@@ -32,6 +33,9 @@ class KsAudio {
   double latencyMs() const;
   bool opened() const { return opened_; }
   SampleFormat format() const { return format_; }
+  // After open(): the device period actually used (frames) and the endpoint ID opened.
+  int32_t periodFrames() const { return bufferFrames_; }
+  const std::string& endpointId() const { return endpointId_; }
   // Why the last open() failed (S_OK / "" after success).
   HRESULT lastError() const { return lastError_; }
   const char* lastStep() const { return lastStep_; }
@@ -71,6 +75,7 @@ class KsAudio {
   bool exclusive_ = false;
   bool comInitialized_ = false;
   SampleFormat format_ = SampleFormat::Float32;
+  std::string endpointId_;
   HRESULT lastError_ = S_OK;
   const char* lastStep_ = "";
   std::atomic<uint64_t> writes_{0};

@@ -59,10 +59,10 @@ class WinHookMasterASIO : public IASIO {
   uint64_t clockTicks() const { return clockTicks_.load(); }
   uint64_t clockOverruns() const { return clockOverruns_.load(); }
   uint64_t workerOverruns() const { return workerOverruns_.load(); }
-  // WHAGetMasterStats: the instance between start() and stop(), and its counters. Call from the
-  // thread that calls start()/stop().
+  // WHAGetMasterStats: the instance between start() and stop(), and its counters. stats() is safe
+  // from any thread (the Control Panel polls it); false while not started.
   static WinHookMasterASIO* streaming();
-  void stats(WHAMasterStats* out) const;
+  bool stats(WHAMasterStats* out) const;
 
  private:
   struct Binding {  // one DAW channel's double buffer, created by createBuffers
@@ -96,6 +96,7 @@ class WinHookMasterASIO : public IASIO {
   std::atomic<bool> resetRequested_{false};  // set from DAW thread or Control Panel thread
   char errorText_[124] = {};
   class MasterHolder* holder_ = nullptr;
+  mutable std::mutex holderMutex_;  // holder_ lifetime vs stats() on another thread
   ControlPanelWindow* panel_ = nullptr;  // Popup Type 1, created on first controlPanel()
   std::mutex dawViewMutex_;
   WHASlotTable dawView_{};      // table as last seen by the DAW (getChannels)

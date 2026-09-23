@@ -13,6 +13,16 @@ enum WHAClockSource : int32_t {
   CLOCK_HARDWARE = 1,  // paced by the HW output's buffer drain
 };
 
+// Exclusive sample format a HW device accepted (KsSampleFormat order).
+enum WHAHwFormat : int32_t {
+  HW_FORMAT_NONE = -1,
+  HW_FORMAT_FLOAT32 = 0,
+  HW_FORMAT_PCM24IN32 = 1,  // 24 valid bits in a 32-bit container
+  HW_FORMAT_PCM16 = 2,
+};
+
+constexpr int kStatsEndpointIdLen = 64;  // = kEndpointIdLen (WHASlotTable.h)
+
 struct WHAMasterStats {
   uint64_t ticks;           // Master Clock bufferSwitch count
   uint64_t clockOverruns;   // internal timeline resyncs (stall > 8 periods; shorter ones catch up)
@@ -43,6 +53,22 @@ struct WHAMasterStats {
   int32_t hwInDriftEngaged;   // drift resampling active
   uint64_t hwInGrowths;       // backlog target grew after a starve (delivery jitter)
   uint64_t hwInSkipped;       // frames dropped for Master Clock ticks the Worker missed
+  // Requested versus actual (Control Panel GENERAL). Requested = the Slot Table's GENERAL when the
+  // Worker opened the HW; a later Save applies only after the DAW resets the driver.
+  int32_t sampleRate;         // Master Clock
+  int32_t asioBuffer;         // Master Clock block, frames
+  int32_t hwRequestValid;     // the hwRequested* fields below are filled
+  int32_t hwRequestedPeriod;  // GENERAL hwBuffer at open (0 = Auto: device minimum)
+  char hwRequestedRenderId[kStatsEndpointIdLen];   // "" = Windows default device
+  char hwRequestedCaptureId[kStatsEndpointIdLen];
+  char hwRenderId[kStatsEndpointIdLen];            // endpoint actually open ("" while none)
+  char hwCaptureId[kStatsEndpointIdLen];
+  int32_t hwPeriod;           // actual device period, frames
+  int32_t hwFormat;           // WHAHwFormat
+  int32_t hwLatency;          // output latency reported to the DAW, frames
+  int32_t hwInPeriod;
+  int32_t hwInFormat;
+  int32_t hwInLatency;        // input latency reported to the DAW, frames
 };
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.

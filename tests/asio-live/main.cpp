@@ -9,7 +9,7 @@
 // Output 1 carries a quiet 1 kHz tone; whether it is audible is still for a human to confirm.
 //
 // usage: asio-live [--driver "WinHookAudio Master"] [--seconds 3] [--silent] [--hw-buffer frames]
-//                  [--render "name"] [--capture "name"] [--loop]
+//                  [--render "name"] [--capture "name"] [--loop] [--panel]
 //   --hw-buffer: HW period (GENERAL "Hardware (KS Exclusive)"); below the device minimum, or 0, gets
 //     the minimum (0 in a fresh table is the default, 64).
 //   --render / --capture: HW endpoints by friendly-name substring (default: Windows defaults).
@@ -18,6 +18,8 @@
 //   --loop: output 1 carries deterministic noise; expects it back on input 1 through a physical or
 //     virtual loopback (e.g. --render "CABLE Input" --capture "CABLE Output"), and checks the
 //     round-trip delay against the reported latencies and the signal quality.
+//   --panel: open the driver's Control Panel while streaming (GENERAL shows requested vs actual);
+//     for a look by eye or screenshot, with --seconds long enough.
 
 #include <windows.h>
 #include <audioclient.h>
@@ -208,6 +210,7 @@ int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(WriteCrashDump);
   std::wstring driver = L"WinHookAudio Master";
   double seconds = 3.0;
+  bool panel = false;
   long hwBuffer = -1;
   const char* renderName = nullptr;
   const char* captureName = nullptr;
@@ -219,6 +222,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--render") && i + 1 < argc) renderName = argv[++i];
     else if (!std::strcmp(argv[i], "--capture") && i + 1 < argc) captureName = argv[++i];
     else if (!std::strcmp(argv[i], "--loop")) gLoop = true;
+    else if (!std::strcmp(argv[i], "--panel")) panel = true;
   }
 
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // DAWs create ASIO drivers on an STA thread
@@ -321,6 +325,7 @@ int main(int argc, char** argv) {
   std::printf("Streaming %.1f s%s...\n", seconds,
               !gTone ? " (silence)" : gLoop ? " (noise, -20 dBFS, output 1 -> expected on input 1)" : " (1 kHz tone, -20 dBFS, output 1)");
   check("start", gAsio->start() == ASE_OK);
+  if (panel) check("controlPanel opens while streaming", gAsio->controlPanel() == ASE_OK);
   Sleep(static_cast<DWORD>(seconds * 500));
   const HRESULT during = ProbeRender();
   std::printf("HW render endpoint while streaming: 0x%08lX%s\n", static_cast<unsigned long>(during),
@@ -358,6 +363,21 @@ int main(int argc, char** argv) {
     std::printf("       hwOpen=%d lastError=0x%08lX writes=%llu underruns=%llu drops=%llu fill %d..%d of %d frames\n",
                 st.hwOpen, static_cast<unsigned long>(st.hwLastError), st.hwWrites, st.hwUnderruns, st.hwDrops,
                 st.hwMinFill, st.hwMaxFill, st.hwCapacity);
+    // Requested versus actual, as the Control Panel shows it.
+    std::printf("Requested: period %d frames, render \"%s\", capture \"%s\"\n", st.hwRequestedPeriod, st.hwRequestedRenderId,
+                st.hwRequestedCaptureId);
+    std::printf("Actual:    out period %d format %d latency %d, render %s\n", st.hwPeriod, st.hwFormat, st.hwLatency, st.hwRenderId);
+    std::printf("           in  period %d format %d latency %d, capture %s\n", st.hwInPeriod, st.hwInFormat, st.hwInLatency,
+                st.hwCaptureId);
+    check("Stats: requested HW settings recorded", st.hwRequestValid == 1 && (hwBuffer < 0 || st.hwRequestedPeriod == hwBuffer));
+    check("Stats: actual output period >= requested, format known",
+          st.hwOpen && st.hwPeriod > 0 && st.hwPeriod >= st.hwRequestedPeriod && st.hwFormat != HW_FORMAT_NONE);
+    check("Stats: output latency = what the DAW is told", st.hwLatency == outStreaming);
+    check("Stats: actual render endpoint = the one requested (or the default's ID)",
+          gRenderId.empty() ? st.hwRenderId[0] != 0 : gRenderId == st.hwRenderId);
+    if (st.hwInOpen)
+      check("Stats: input period/format/latency", st.hwInPeriod > 0 && st.hwInFormat != HW_FORMAT_NONE &&
+                                                      st.hwInLatency == inStreaming && st.hwCaptureId[0] != 0);
     check("Master Clock paced by the HW output", st.clockSource == CLOCK_HARDWARE);
     check("HW output: no underrun, no dropped block", st.hwOpen && st.hwUnderruns == 0 && st.hwDrops == 0);
     // Measured: fill queued ahead of each new block + the device's stream latency.

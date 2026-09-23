@@ -24,6 +24,8 @@ struct ControlPanelHost {
   int bridgeIndex = -1;                      // Bridge popup: 0..3, locks lists to BRIDGE(n+1)
   std::function<void(bool resetRequested)> onSaved;  // driver: asioMessage(kAsioResetRequest)
   std::string slotsJsonPath;                 // empty = %ProgramData%\WinHookAudio\slots.json
+  // Master: the streaming driver's counters for GENERAL "actual" (false = not started). Any thread.
+  std::function<bool(WHAMasterStats&)> readStats;
   // Offline smoke test hooks
   bool hidden = false;
   int autoCloseAfterFrames = 0;              // > 0: render N frames, then close

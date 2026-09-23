@@ -35,6 +35,12 @@ class MasterHolder {
   // The open, started HW input; nullptr while none.
   class KsCapture* hwCapture() const { return hwCapture_.load(); }
   int32_t hwCaptureError() const { return hwCaptureError_.load(); }
+  // GENERAL as the Worker read it to open the HW (requested period and devices); false before that.
+  bool hwRequest(WHAGeneral& out) const {
+    if (!hwRequestValid_.load(std::memory_order_acquire)) return false;
+    out = hwRequest_;
+    return true;
+  }
 
   // The Master Clock's tick count: the Worker compares it with its own to find ticks it missed (an
   // auto-reset Master_Tick coalesces them) and keeps the HW input in step.
@@ -71,6 +77,8 @@ class MasterHolder {
   class KsCapture* ksCapture_ = nullptr;
   std::atomic<class KsCapture*> hwCapture_{nullptr};
   std::atomic<int32_t> hwCaptureError_{0};
+  WHAGeneral hwRequest_{};  // written once by the Worker before hwRequestValid_
+  std::atomic<bool> hwRequestValid_{false};
   float hwOut_[2 * 4096] = {};  // planar device-channel scratch (Worker thread)
   float hwIn_[2 * 4096] = {};
   class WHARingBuffer* virtualRings_[8] = {};

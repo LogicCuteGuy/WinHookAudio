@@ -184,6 +184,97 @@ int main() {
                                                      std::strcmp(back.general.hwRenderId, cable) == 0 && back.general.hwCaptureId[0] == 0);
   }
 
+  // GENERAL HW status: requested versus actual, from the streaming Master's WHAMasterStats.
+  {
+    auto has = [](const std::vector<HwStatusLine>& lines, HwStatusLevel level, const char* text) {
+      for (const HwStatusLine& l : lines)
+        if (l.level == level && l.text.find(text) != std::string::npos) return true;
+      return false;
+    };
+    auto dump = [](const std::vector<HwStatusLine>& lines) {
+      for (const HwStatusLine& l : lines) std::printf("  [%d] %s\n", static_cast<int>(l.level), l.text.c_str());
+    };
+    const char* spk = "{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000001}";
+    const char* mic = "{0.0.1.00000000}.{aaaaaaaa-0000-0000-0000-000000000002}";
+    PanelDevices devs;
+    devs.render.push_back({spk, "Speakers"});
+    devs.capture.push_back({mic, "Microphone"});
+    WHAGeneral saved{};
+    saved.hwBuffer = 64;
+
+    std::vector<HwStatusLine> lines = HwStatusLines(nullptr, saved, &devs);
+    check("HW status: not streaming", lines.size() == 1 && has(lines, HwStatusLevel::Info, "Not streaming"));
+
+    WHAMasterStats st{};
+    st.sampleRate = 48000;
+    st.asioBuffer = 128;
+    st.clockSource = CLOCK_HARDWARE;
+    st.hwRequestValid = 1;
+    st.hwRequestedPeriod = 64;
+    st.hwOpen = 1;
+    st.hwPeriod = 128;  // device minimum 2.67 ms
+    st.hwFormat = HW_FORMAT_PCM24IN32;
+    st.hwLatency = 480;
+    TruncateCopy(st.hwRenderId, kStatsEndpointIdLen, spk);  // opened the Windows default: Speakers
+    st.hwInOpen = 1;
+    st.hwInPeriod = 128;
+    st.hwInFormat = HW_FORMAT_PCM16;
+    st.hwInLatency = 777;
+    st.hwInDriftPpmMilli = -12500;
+    st.hwInDriftEngaged = 1;
+    TruncateCopy(st.hwCaptureId, kStatsEndpointIdLen, mic);
+    lines = HwStatusLines(&st, saved, &devs);
+    dump(lines);
+    check("HW status: output device name, actual period, requested", has(lines, HwStatusLevel::Ok, "Output: Speakers") &&
+                                                                         has(lines, HwStatusLevel::Ok, "period 128 frames (2.67 ms") &&
+                                                                         has(lines, HwStatusLevel::Ok, "requested 64: device minimum"));
+    check("HW status: output format + latency", has(lines, HwStatusLevel::Ok, "24-bit") && has(lines, HwStatusLevel::Ok, "latency 10.0 ms"));
+    check("HW status: input name, format, drift", has(lines, HwStatusLevel::Ok, "Input: Microphone") &&
+                                                      has(lines, HwStatusLevel::Ok, "16-bit") && has(lines, HwStatusLevel::Ok, "-12.5 ppm"));
+    check("HW status: HW Master Clock", has(lines, HwStatusLevel::Info, "Master Clock: HW output"));
+    check("HW status: nothing pending", !has(lines, HwStatusLevel::Warning, "DAW resets"));
+
+    WHAMasterStats autoSt = st;
+    autoSt.hwRequestedPeriod = 0;
+    WHAGeneral savedAuto = saved;
+    savedAuto.hwBuffer = 0;
+    check("HW status: Auto period", has(HwStatusLines(&autoSt, savedAuto, &devs), HwStatusLevel::Ok, "Auto"));
+
+    WHAGeneral changed = saved;
+    changed.hwBuffer = 256;
+    check("HW status: saved period not applied yet", has(HwStatusLines(&st, changed, &devs), HwStatusLevel::Warning, "DAW resets"));
+    changed = saved;
+    TruncateCopy(changed.hwRenderId, kEndpointIdLen, spk);  // default -> Speakers explicitly: still pending
+    check("HW status: saved device not applied yet", has(HwStatusLines(&st, changed, &devs), HwStatusLevel::Warning, "DAW resets"));
+
+    WHAMasterStats busy = st;
+    busy.hwOpen = 0;
+    busy.hwRenderId[0] = 0;
+    busy.hwLastError = static_cast<int32_t>(0x8889000A);  // AUDCLNT_E_DEVICE_IN_USE
+    busy.clockSource = CLOCK_INTERNAL;
+    lines = HwStatusLines(&busy, saved, &devs);
+    dump(lines);
+    check("HW status: output busy is an error with the reason", has(lines, HwStatusLevel::Error, "in use by another application") &&
+                                                                    has(lines, HwStatusLevel::Error, "0x8889000A"));
+    check("HW status: internal Master Clock", has(lines, HwStatusLevel::Info, "internal"));
+
+    WHAMasterStats unknown = st;
+    TruncateCopy(unknown.hwRenderId, kStatsEndpointIdLen, "{gone}");
+    check("HW status: unlisted device shows its ID", has(HwStatusLines(&unknown, saved, &devs), HwStatusLevel::Ok, "{gone}"));
+
+    WHAMasterStats none{};
+    none.sampleRate = 48000;
+    none.asioBuffer = 128;
+    none.hwRequestValid = 1;
+    none.hwRequestedPeriod = 64;
+    lines = HwStatusLines(&none, saved, &devs);
+    check("HW status: no HW slot", has(lines, HwStatusLevel::Info, "Output: not open") && has(lines, HwStatusLevel::Info, "Input: not open"));
+
+    WHAMasterStats glitchy = st;
+    glitchy.hwUnderruns = 3;
+    check("HW status: underruns warn", has(HwStatusLines(&glitchy, saved, &devs), HwStatusLevel::Warning, "3 underruns"));
+  }
+
   // ABOUT + Save contract (13)
   PanelModel aboutModel{};
   aboutModel.table.masterInCount = 2;

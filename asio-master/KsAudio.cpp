@@ -41,6 +41,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   lastStep_ = "";
   capacityFrames_ = 0;
   streamLatencyFrames_ = 0;
+  endpointId_.clear();
   writes_ = 0;
   underruns_ = 0;
   drops_ = 0;
@@ -56,6 +57,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   bufferFrames_ = r.periodFrames;
   capacityFrames_ = r.capacityFrames;
   streamLatencyFrames_ = r.streamLatencyFrames;
+  endpointId_ = r.endpointId;
   blockFrames_ = blockFrames > 0 ? blockFrames : bufferFrames_;
 
   HRESULT hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);

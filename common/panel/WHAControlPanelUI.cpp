@@ -1,5 +1,10 @@
 #include "WHAControlPanelUI.h"
 #include "WHASlotsJson.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <audioclient.h>
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
@@ -257,6 +262,115 @@ const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id)
   for (const PanelEndpoint& e : list)
     if (e.id == id) return e.name.c_str();
   return nullptr;
+}
+
+const char* HwErrorText(int32_t hr) {
+  switch (static_cast<HRESULT>(hr)) {
+    case AUDCLNT_E_DEVICE_IN_USE: return "in use by another application (exclusive)";
+    case AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED: return "exclusive mode not allowed (Sound settings > device Properties > Advanced)";
+    case AUDCLNT_E_UNSUPPORTED_FORMAT: return "no stereo float32/24-bit/16-bit format at this sample rate";
+    case AUDCLNT_E_INVALID_DEVICE_PERIOD: return "period not supported by the device";
+    case AUDCLNT_E_BUFFER_SIZE_ERROR: return "buffer size not supported by the device";
+    case AUDCLNT_E_DEVICE_INVALIDATED: return "device removed or disabled";
+    case AUDCLNT_E_ENDPOINT_CREATE_FAILED: return "device could not be opened";
+    case AUDCLNT_E_CPUUSAGE_EXCEEDED: return "audio engine CPU limit exceeded";
+    case HRESULT_FROM_WIN32(ERROR_NOT_FOUND): return "device not found (unplugged or disabled?)";
+    case E_ACCESSDENIED: return "access denied";
+    case E_FAIL: return "failed to start";
+    default: return "";
+  }
+}
+
+namespace {
+
+const char* HwFormatText(int32_t format) {
+  switch (format) {
+    case HW_FORMAT_FLOAT32: return "float32";
+    case HW_FORMAT_PCM24IN32: return "24-bit";
+    case HW_FORMAT_PCM16: return "16-bit";
+    default: return "?";
+  }
+}
+
+double FramesMs(int32_t frames, int32_t rate) { return rate > 0 ? 1000.0 * frames / rate : 0.0; }
+
+// "Speakers" for a listed ID, else the ID itself (the device may be gone from the list).
+std::string DeviceLabel(const std::vector<PanelEndpoint>* list, const char* id) {
+  const char* name = list ? EndpointName(*list, id) : nullptr;
+  return name ? name : (id && *id ? id : "device");
+}
+
+// "period 128 frames (2.67 ms; requested 64: device minimum)"
+std::string PeriodText(int32_t actual, int32_t requested, int32_t rate) {
+  char buf[128];
+  const int n = std::snprintf(buf, sizeof(buf), "period %d frames (%.2f ms", actual, FramesMs(actual, rate));
+  std::string s(buf, n > 0 ? static_cast<size_t>(n) : 0);
+  if (requested == 0) s += "; Auto";
+  else if (actual > requested) s += "; requested " + std::to_string(requested) + ": device minimum";
+  else if (actual != requested) s += "; requested " + std::to_string(requested) + ": device-aligned";
+  return s + ")";
+}
+
+HwStatusLine HwFailedLine(const char* direction, int32_t hr, const char* consequence) {
+  char buf[256];
+  const char* why = HwErrorText(hr);
+  std::snprintf(buf, sizeof(buf), "%s: FAILED - %s (0x%08X). %s", direction, *why ? why : "open error",
+                static_cast<unsigned>(hr), consequence);
+  return {HwStatusLevel::Error, buf};
+}
+
+}  // namespace
+
+std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGeneral& saved, const PanelDevices* devices) {
+  std::vector<HwStatusLine> lines;
+  if (!st) {
+    lines.push_back({HwStatusLevel::Info, "Not streaming: HW devices open when the DAW starts the driver."});
+    return lines;
+  }
+  const int32_t rate = st->sampleRate;
+  char buf[512];
+
+  if (st->hwOpen) {
+    std::snprintf(buf, sizeof(buf), "Output: %s - exclusive %s, %s, latency %.1f ms",
+                  DeviceLabel(devices ? &devices->render : nullptr, st->hwRenderId).c_str(), HwFormatText(st->hwFormat),
+                  PeriodText(st->hwPeriod, st->hwRequestedPeriod, rate).c_str(), FramesMs(st->hwLatency, rate));
+    lines.push_back({HwStatusLevel::Ok, buf});
+    if (st->hwUnderruns || st->hwDrops) {
+      std::snprintf(buf, sizeof(buf), "Output: %llu underruns, %llu dropped blocks (audible gaps; a larger HW buffer helps)",
+                    static_cast<unsigned long long>(st->hwUnderruns), static_cast<unsigned long long>(st->hwDrops));
+      lines.push_back({HwStatusLevel::Warning, buf});
+    }
+  } else if (st->hwLastError) {
+    lines.push_back(HwFailedLine("Output", st->hwLastError, "HW OUT slots are silent."));
+  } else {
+    lines.push_back({HwStatusLevel::Info, "Output: not open (no HW slot when the DAW started)."});
+  }
+
+  if (st->hwInOpen) {
+    std::snprintf(buf, sizeof(buf), "Input: %s - exclusive %s, %s, latency %.1f ms, clock %+.1f ppm%s",
+                  DeviceLabel(devices ? &devices->capture : nullptr, st->hwCaptureId).c_str(),
+                  HwFormatText(st->hwInFormat), PeriodText(st->hwInPeriod, st->hwRequestedPeriod, rate).c_str(),
+                  FramesMs(st->hwInLatency, rate), st->hwInDriftPpmMilli / 1000.0,
+                  st->hwInDriftEngaged ? " (resampling)" : "");
+    lines.push_back({HwStatusLevel::Ok, buf});
+  } else if (st->hwInLastError) {
+    lines.push_back(HwFailedLine("Input", st->hwInLastError, "HW IN slots are silent."));
+  } else {
+    lines.push_back({HwStatusLevel::Info, "Input: not open (no HW IN slot when the DAW started)."});
+  }
+
+  lines.push_back({HwStatusLevel::Info, st->clockSource == CLOCK_HARDWARE
+                                            ? "Master Clock: HW output (the device paces the DAW)."
+                                            : "Master Clock: internal timer (no HW output open)."});
+
+  if (st->hwRequestValid &&
+      (static_cast<uint32_t>(st->hwRequestedPeriod) != saved.hwBuffer ||
+       std::strncmp(st->hwRequestedRenderId, saved.hwRenderId, kEndpointIdLen) != 0 ||
+       std::strncmp(st->hwRequestedCaptureId, saved.hwCaptureId, kEndpointIdLen) != 0))
+    lines.push_back({HwStatusLevel::Warning,
+                     "Saved HW settings are not in use yet: they apply when the DAW resets the driver "
+                     "(restart audio in the DAW if it does not)."});
+  return lines;
 }
 
 bool SetHwBuffer(PanelModel& model, uint32_t frames) {

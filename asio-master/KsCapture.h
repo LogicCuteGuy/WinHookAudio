@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <windows.h>
 #include <audioclient.h>
@@ -41,6 +42,8 @@ class KsCapture {
   }
 
   KsSampleFormat format() const { return format_; }
+  int32_t periodFrames() const { return periodFrames_; }       // after open(): actual device period
+  const std::string& endpointId() const { return endpointId_; }  // after open(): endpoint opened
   HRESULT lastError() const { return lastError_; }
   const char* lastStep() const { return lastStep_; }
   int32_t streamLatency() const { return streamLatencyFrames_; }
@@ -63,6 +66,8 @@ class KsCapture {
   HRESULT lastError_ = S_OK;
   const char* lastStep_ = "";
   int32_t streamLatencyFrames_ = 0;
+  int32_t periodFrames_ = 0;
+  std::string endpointId_;
   double rate_ = 48000.0;
   double qpcFreq_ = 1.0;
   HwInputFifo fifo_;

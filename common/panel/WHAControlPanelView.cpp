@@ -379,6 +379,19 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
   if (ImGui::SmallButton("Refresh devices")) result.refreshDevices = true;
   ImGui::SameLine();
   ImGui::TextDisabled("Exclusive: other apps cannot use them while the DAW streams. Changing asks the DAW to reset on Save.");
+  if (state.hwStatus) {
+    ImGui::TextUnformatted("Actual:");
+    for (const HwStatusLine& line : *state.hwStatus) {
+      const ImVec4 color = line.level == HwStatusLevel::Error     ? ImVec4(1.0f, 0.42f, 0.42f, 1.0f)
+                           : line.level == HwStatusLevel::Warning ? ImVec4(1.0f, 0.8f, 0.35f, 1.0f)
+                           : line.level == HwStatusLevel::Ok      ? ImVec4(0.5f, 0.85f, 0.55f, 1.0f)
+                                                                  : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+      ImGui::PushStyleColor(ImGuiCol_Text, color);
+      ImGui::Bullet();
+      ImGui::TextWrapped("%s", line.text.c_str());
+      ImGui::PopStyleColor();
+    }
+  }
 
   ImGui::SeparatorText("3. PER-THING WORKER BUFFERS");
   uint32_t v = g.hwBuffer;

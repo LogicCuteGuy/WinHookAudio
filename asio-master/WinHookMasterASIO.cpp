@@ -20,6 +20,11 @@ namespace wha {
 namespace {
 
 constexpr size_t kSlotFrames = 4096;  // Master audio SHM stride per slot
+static_assert(kStatsEndpointIdLen == kEndpointIdLen, "WHAMasterStats endpoint IDs hold a Slot Table ID");
+static_assert(static_cast<int>(KsSampleFormat::Float32) == HW_FORMAT_FLOAT32 &&
+                  static_cast<int>(KsSampleFormat::Pcm24In32) == HW_FORMAT_PCM24IN32 &&
+                  static_cast<int>(KsSampleFormat::Pcm16) == HW_FORMAT_PCM16,
+              "WHAHwFormat mirrors KsSampleFormat");
 // Internal timeline: after a stall shorter than this, tick back-to-back to catch up (the average
 // rate stays exact); after a longer one, resync instead of bursting.
 constexpr double kMaxCatchUpPeriods = 8;
@@ -130,9 +135,13 @@ ASIOError WinHookMasterASIO::start() {
   if (!buffersCreated_) return ASE_InvalidMode;  // SDK: createBuffers before start
   if (running_) return ASE_OK;
   if (!holder_) {
-    holder_ = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
-    holder_->setTableChangedHandler([this] { onTableChanged(); });
-    holder_->setTickCounter(&clockTicks_);
+    auto* holder = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
+    holder->setTableChangedHandler([this] { onTableChanged(); });
+    holder->setTickCounter(&clockTicks_);
+    {
+      std::lock_guard<std::mutex> lock(holderMutex_);
+      holder_ = holder;
+    }
     holder_->start();
   }
   bufferIndex_ = 0;
@@ -153,17 +162,32 @@ ASIOError WinHookMasterASIO::start() {
 
 WinHookMasterASIO* WinHookMasterASIO::streaming() { return gStreaming.load(); }
 
-void WinHookMasterASIO::stats(WHAMasterStats* out) const {
+bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
   *out = WHAMasterStats{};
   out->ticks = clockTicks_.load();
   out->clockOverruns = clockOverruns_.load();
   out->workerOverruns = workerOverruns_.load();
   out->clockSource = clockSource_.load();
+  out->sampleRate = static_cast<int32_t>(sampleRate_);
+  out->asioBuffer = static_cast<int32_t>(bufferSize_);
   out->hwMinFill = -1;
-  if (!holder_) return;
+  out->hwFormat = out->hwInFormat = HW_FORMAT_NONE;
+  std::lock_guard<std::mutex> lock(holderMutex_);
+  if (!holder_) return false;
+  WHAGeneral request{};
+  if (holder_->hwRequest(request)) {
+    out->hwRequestValid = 1;
+    out->hwRequestedPeriod = static_cast<int32_t>(request.hwBuffer);
+    TruncateCopy(out->hwRequestedRenderId, kStatsEndpointIdLen, request.hwRenderId);
+    TruncateCopy(out->hwRequestedCaptureId, kStatsEndpointIdLen, request.hwCaptureId);
+  }
   out->hwLastError = holder_->hwOpenError();
   if (KsAudio* hw = holder_->hwMaster()) {
     out->hwOpen = 1;
+    out->hwPeriod = hw->periodFrames();
+    out->hwFormat = static_cast<int32_t>(hw->format());
+    out->hwLatency = static_cast<int32_t>(HwOutputLatency(*hw));
+    TruncateCopy(out->hwRenderId, kStatsEndpointIdLen, hw->endpointId().c_str());
     out->hwWrites = hw->writes();
     out->hwUnderruns = hw->underruns();
     out->hwDrops = hw->drops();
@@ -178,6 +202,10 @@ void WinHookMasterASIO::stats(WHAMasterStats* out) const {
   if (KsCapture* in = holder_->hwCapture()) {
     const HwInputFifo& f = in->fifo();
     out->hwInOpen = 1;
+    out->hwInPeriod = in->periodFrames();
+    out->hwInFormat = static_cast<int32_t>(in->format());
+    out->hwInLatency = static_cast<int32_t>(HwInputLatency(*in, bufferSize_));
+    TruncateCopy(out->hwCaptureId, kStatsEndpointIdLen, in->endpointId().c_str());
     out->hwInReads = f.reads();
     out->hwInStarved = f.starved();
     out->hwInTrims = f.trims();
@@ -191,6 +219,7 @@ void WinHookMasterASIO::stats(WHAMasterStats* out) const {
     out->hwInGrowths = f.growths();
     out->hwInSkipped = f.skipped();
   }
+  return true;
 }
 
 ASIOError WinHookMasterASIO::stop() {
@@ -201,7 +230,12 @@ ASIOError WinHookMasterASIO::stop() {
     CloseHandle(clockThread_);
     clockThread_ = nullptr;
   }
-  if (holder_) { holder_->stop(); delete holder_; holder_ = nullptr; }
+  if (holder_) {
+    std::lock_guard<std::mutex> lock(holderMutex_);  // a stats() caller finishes first
+    holder_->stop();
+    delete holder_;
+    holder_ = nullptr;
+  }
   running_ = false;
   return ASE_OK;
 }
@@ -474,6 +508,7 @@ ASIOError WinHookMasterASIO::controlPanel() {
   host.onSaved = [this](bool reset) {
     if (reset) requestReset();
   };
+  host.readStats = [this](WHAMasterStats& s) { return stats(&s); };
   return panel_->Open(host) ? ASE_OK : ASE_NotPresent;
 #else
   return ASE_NotPresent;  // offline build without ImGui: no popup

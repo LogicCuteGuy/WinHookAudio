@@ -9,6 +9,7 @@
 #include <vector>
 #include "WHASlotTable.h"
 #include "WHABridgeShared.h"
+#include "WHAMasterStats.h"
 
 namespace wha {
 
@@ -125,6 +126,18 @@ bool SetHwRenderDevice(PanelModel& model, const char* id);   // requires host re
 bool SetHwCaptureDevice(PanelModel& model, const char* id);  // requires host reset
 // Friendly name for an ID among `list`; nullptr if the device is not present.
 const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id);
+
+// GENERAL HW status: requested versus actual. `stats` is the streaming Master's (nullptr: the DAW has
+// not started the driver); `saved` is the Slot Table's GENERAL now. HW settings are read when the
+// DAW starts the driver, so a Save that changed them shows as pending until the DAW resets it.
+enum class HwStatusLevel { Info, Ok, Warning, Error };
+struct HwStatusLine {
+  HwStatusLevel level;
+  std::string text;
+};
+std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* stats, const WHAGeneral& saved, const PanelDevices* devices);
+// Why a HW open failed, in words ("" for an unknown HRESULT).
+const char* HwErrorText(int32_t hr);
 
 // Helpers
 const char* SlotDisplayName(const WHASlot& slot);  // "- empty -" for SLOT_NONE else name

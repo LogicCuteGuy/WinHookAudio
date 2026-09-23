@@ -34,6 +34,8 @@ bool KsCapture::open(int32_t sampleRate, int32_t periodFrames, int32_t blockFram
   audioClient_ = r.client;
   format_ = r.format;
   streamLatencyFrames_ = r.streamLatencyFrames;
+  periodFrames_ = r.periodFrames;
+  endpointId_ = r.endpointId;
   const int block = blockFrames > 0 ? blockFrames : r.periodFrames;
   fifo_.reset(rate_, kKsDeviceChannels, block, r.periodFrames);
   packet_.assign(static_cast<size_t>(r.capacityFrames) * kKsDeviceChannels, 0.0f);

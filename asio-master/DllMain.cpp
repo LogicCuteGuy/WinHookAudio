@@ -46,6 +46,5 @@ extern "C" HRESULT __stdcall DllUnregisterServer() { return UnregisterAsioDriver
 extern "C" int __stdcall WHAGetMasterStats(WHAMasterStats* out) {
   WinHookMasterASIO* master = WinHookMasterASIO::streaming();
   if (!master || !out) return -1;
-  master->stats(out);
-  return 0;
+  return master->stats(out) ? 0 : -1;
 }

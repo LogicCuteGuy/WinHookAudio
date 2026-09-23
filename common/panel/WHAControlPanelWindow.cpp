@@ -347,6 +347,8 @@ void ControlPanelWindow::Run() {
   state.bridgeIndex = host_.isMaster ? -1 : host_.bridgeIndex;
   PanelDevices devices = EnumerateEndpoints();
   state.devices = &devices;
+  std::vector<HwStatusLine> hwStatus;
+  ULONGLONG hwStatusAt = 0;
   const float clear[4] = {0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f};
 
   bool running = true;
@@ -367,6 +369,13 @@ void ControlPanelWindow::Run() {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     state.dirty = std::memcmp(&edit.table, &baseline, sizeof(WHASlotTable)) != 0;
+    if (host_.readStats && GetTickCount64() - hwStatusAt >= 250) {  // requested vs actual, 4x a second
+      hwStatusAt = GetTickCount64();
+      WHAMasterStats stats{};
+      const bool streaming = host_.readStats(stats);
+      hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices);
+      state.hwStatus = &hwStatus;
+    }
     PanelViewResult r = DrawControlPanel(edit, state, host_.bridges);
     ImGui::Render();
     gpu.context->OMSetRenderTargets(1, &gpu.rtv, nullptr);

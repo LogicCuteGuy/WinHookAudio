@@ -52,6 +52,14 @@ bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate,
   enumerator->Release();
   if (FAILED(hr)) return Fail(out, endpointId && *endpointId ? "GetDevice (endpoint id)" : "GetDefaultAudioEndpoint", hr);
 
+  LPWSTR openedId = nullptr;
+  if (SUCCEEDED(device->GetId(&openedId)) && openedId) {
+    char utf8[256] = {};
+    WideCharToMultiByte(CP_UTF8, 0, openedId, -1, utf8, sizeof(utf8), nullptr, nullptr);
+    out.endpointId = utf8;
+    CoTaskMemFree(openedId);
+  }
+
   hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&out.client);
   if (FAILED(hr)) { device->Release(); return Fail(out, "Activate", hr); }
 

@@ -23,6 +23,7 @@ struct PanelViewState {
   int requestTab = -1;      // PanelTab to select on the next frame, then reset to -1
   int activeTab = -1;       // PanelTab drawn last frame
   const PanelDevices* devices = nullptr;  // HW endpoints for GENERAL, enumerated by the host
+  const std::vector<HwStatusLine>* hwStatus = nullptr;  // GENERAL "actual" lines (HwStatusLines), by the host
 };
 
 enum PanelTab : int { kTabInputs = 0, kTabOutputs, kTabNetwork, kTabGeneral, kTabAbout };
