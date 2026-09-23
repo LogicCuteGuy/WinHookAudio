@@ -38,6 +38,11 @@ class KsAudio {
   // Safe from another thread than write().
   long padding() const;
   int32_t capacity() const { return capacityFrames_; }
+  // HW Master Clock: tick once the device has drained to this fill (2 blocks of room above it).
+  // start() prefills silence up to it, so streaming begins at the steady-state fill.
+  int32_t targetFill() const { return capacityFrames_ - 2 * blockFrames_; }
+  // Device stream latency (IAudioClient::GetStreamLatency), frames; valid after open().
+  int32_t streamLatency() const { return streamLatencyFrames_; }
 
   // Counters for WHAMasterStats (any thread).
   uint64_t writes() const { return writes_.load(); }
@@ -55,6 +60,8 @@ class KsAudio {
   int32_t sampleRate_ = 48000;
   int32_t bufferFrames_ = 64;
   int32_t capacityFrames_ = 0;
+  int32_t blockFrames_ = 0;
+  int32_t streamLatencyFrames_ = 0;
   bool opened_ = false;
   bool exclusive_ = false;
   bool comInitialized_ = false;

@@ -114,6 +114,8 @@ class WinHookMasterASIO : public IASIO {
   std::atomic<uint64_t> clockOverruns_{0};   // internal timeline resyncs (stall > kMaxCatchUpPeriods)
   std::atomic<uint64_t> workerOverruns_{0};  // ticks the Worker had not routed within one period
   std::atomic<int32_t> clockSource_{CLOCK_INTERNAL};  // WHAClockSource of the last tick
+  std::atomic<uint64_t> hwFillSum_{0};    // device fill summed over HW Master Clock ticks
+  std::atomic<uint64_t> hwFillTicks_{0};
 };
 
 }  // namespace wha

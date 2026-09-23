@@ -13,7 +13,6 @@ namespace {
 
 constexpr int kDeviceChannels = 2;
 constexpr int kBufferPeriods = 4;   // device buffer = 4 periods: headroom for Master Clock vs device clock
-constexpr int kPrefillPeriods = 2;  // silence queued before Start
 
 WAVEFORMATEXTENSIBLE MakeFormat(int32_t sampleRate, KsAudio::SampleFormat format) {
   const bool isFloat = format == KsAudio::SampleFormat::Float32;
@@ -57,6 +56,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   lastError_ = S_OK;
   lastStep_ = "";
   capacityFrames_ = 0;
+  streamLatencyFrames_ = 0;
   writes_ = 0;
   underruns_ = 0;
   drops_ = 0;
@@ -124,6 +124,10 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
   UINT32 capacity = 0;
   audioClient_->GetBufferSize(&capacity);
   capacityFrames_ = static_cast<int32_t>(capacity);
+  blockFrames_ = blockFrames > 0 ? blockFrames : bufferFrames_;
+  REFERENCE_TIME streamLatency = 0;
+  audioClient_->GetStreamLatency(&streamLatency);
+  streamLatencyFrames_ = static_cast<int32_t>(streamLatency * sampleRate / 10000000);
 
   hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
   if (FAILED(hr)) return fail("GetService IAudioRenderClient", hr);
@@ -147,9 +151,10 @@ void KsAudio::close() {
 
 bool KsAudio::start() {
   if (!audioClient_ || !renderClient_) return false;
-  // Queue silence so the first Worker writes land ahead of the device, not in an underrun.
+  // Queue silence up to the target fill: the first Worker writes land ahead of the device, and the
+  // Master Clock starts at its steady state instead of bursting to fill the buffer.
   BYTE* buffer = nullptr;
-  const UINT32 prefill = static_cast<UINT32>(bufferFrames_ * kPrefillPeriods);
+  const UINT32 prefill = static_cast<UINT32>(targetFill() > 0 ? targetFill() : bufferFrames_);
   if (SUCCEEDED(renderClient_->GetBuffer(prefill, &buffer))) renderClient_->ReleaseBuffer(prefill, AUDCLNT_BUFFERFLAGS_SILENT);
   HRESULT hr = audioClient_->Start();
   return SUCCEEDED(hr);

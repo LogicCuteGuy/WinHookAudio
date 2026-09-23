@@ -26,6 +26,8 @@ struct WHAMasterStats {
   int32_t hwCapacity;       // device buffer, frames
   int32_t hwMinFill;        // lowest device fill seen at a write, frames (-1: no writes)
   int32_t hwMaxFill;        // highest device fill seen at a write, frames
+  int32_t hwFillAtTick;     // mean device fill when the HW Master Clock ticked, frames
+  int32_t hwStreamLatency;  // device stream latency, frames
 };
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.

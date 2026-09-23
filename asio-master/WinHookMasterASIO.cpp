@@ -22,6 +22,9 @@ constexpr size_t kSlotFrames = 4096;  // Master audio SHM stride per slot
 // rate stays exact); after a longer one, resync instead of bursting.
 constexpr double kMaxCatchUpPeriods = 8;
 
+// A block handed over at a HW Master Clock tick is queued behind the target fill, then crosses the device.
+long HwOutputLatency(const KsAudio& hw) { return hw.targetFill() + hw.streamLatency(); }
+
 std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
 
 uint64_t NowNs() {
@@ -142,6 +145,8 @@ ASIOError WinHookMasterASIO::start() {
   }
   bufferIndex_ = 0;
   samplePosition_ = 0;
+  hwFillSum_ = 0;
+  hwFillTicks_ = 0;
   sampleTimeNs_ = NowNs();
   clockStop_ = false;
   clockThread_ = CreateThread(nullptr, 0, clockProc, this, 0, nullptr);
@@ -173,6 +178,9 @@ void WinHookMasterASIO::stats(WHAMasterStats* out) const {
     out->hwCapacity = hw->capacity();
     out->hwMinFill = hw->minFill();
     out->hwMaxFill = hw->maxFill();
+    out->hwStreamLatency = hw->streamLatency();
+    const uint64_t ticks = hwFillTicks_.load();
+    out->hwFillAtTick = ticks ? static_cast<int32_t>(hwFillSum_.load() / ticks) : -1;
   }
 }
 
@@ -198,9 +206,22 @@ ASIOError WinHookMasterASIO::getChannels(long* numInputChannels, long* numOutput
 }
 ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatency) {
   if (!initialized_) return ASE_NotPresent;
-  // One ASIO buffer each way; routed paths (Worker, Network) add their own buffering on top.
+  // Frames from the sample position at bufferSwitch. Inputs and Worker-routed outputs: one block
+  // (routed on the tick after the DAW wrote them). A HW output adds the device queue it paces.
+  long output = bufferSize_;
+  if (KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr) {
+    output = HwOutputLatency(*hw);
+  } else {
+    bool hwOut = false;
+    for (uint32_t i = 0; i < slotTable_->masterOutCount; ++i) hwOut = hwOut || slotTable_->masterOut[i].type == SLOT_HW;
+    if (hwOut) {  // not streaming yet: open the device briefly for its real buffer and stream latency
+      KsAudio probe;
+      if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(slotTable_->general.hwBuffer), bufferSize_))
+        output = HwOutputLatency(probe);
+    }
+  }
   if (inputLatency) *inputLatency = bufferSize_;
-  if (outputLatency) *outputLatency = bufferSize_;
+  if (outputLatency) *outputLatency = output;
   return ASE_OK;
 }
 ASIOError WinHookMasterASIO::getBufferSize(long* minSize, long* maxSize, long* preferredSize, long* granularity) {
@@ -339,7 +360,7 @@ void WinHookMasterASIO::runClock() {
     if (holder_ && !holder_->waitWorker(periodMs)) workerOverruns_.fetch_add(1);
 
     KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr;
-    const long target = hw ? hw->capacity() - 2 * bufferSize_ : -1;  // 2 blocks of room above the target
+    const long target = hw ? hw->targetFill() : -1;
     long fill = target >= 0 ? hw->padding() : -1;
     while (fill > target && !clockStop_.load()) {
       sleepQpc(static_cast<double>(fill - target) * qpcPerFrame);
@@ -348,6 +369,8 @@ void WinHookMasterASIO::runClock() {
     if (clockStop_.load()) break;
     if (fill >= 0) {
       clockSource_ = CLOCK_HARDWARE;
+      hwFillSum_.fetch_add(static_cast<uint64_t>(fill));
+      hwFillTicks_.fetch_add(1);
       clockTick();
       QueryPerformanceCounter(&now);
       due = static_cast<double>(now.QuadPart) + periodQpc;  // internal timeline resumes from here if the HW goes
