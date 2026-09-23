@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "WHAAsio.h"
+#include "WHARegister.h"
 #include "WHASharedMemory.h"
 #include "WHASlotTable.h"
 
@@ -95,6 +96,59 @@ void BridgeSwitch(long index, ASIOBool) {
 }
 long BridgeMessage(long, long, void*, double*) { return 0; }
 
+std::wstring ReadHklmString(const std::wstring& key, const wchar_t* value) {
+  wchar_t buf[MAX_PATH] = {};
+  DWORD bytes = sizeof(buf);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, key.c_str(), value, RRF_RT_REG_SZ, nullptr, buf, &bytes) != ERROR_SUCCESS) return L"";
+  return buf;
+}
+bool HklmKeyExists(const std::wstring& key) {
+  HKEY k = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+  RegCloseKey(k);
+  return true;
+}
+
+// regsvr32 path: DllRegisterServer/DllUnregisterServer with HKLM redirected to a scratch HKCU key,
+// so it runs without elevation and never touches the real registry.
+void RegistrationChecks(const char* label, HMODULE dll, const AsioRegistration* regs, int count) {
+  const wchar_t* sandboxPath = L"Software\\WinHookAudioRegTest";
+  RegDeleteTreeW(HKEY_CURRENT_USER, sandboxPath);
+  HKEY sandbox = nullptr;
+  RegCreateKeyExW(HKEY_CURRENT_USER, sandboxPath, 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &sandbox, nullptr);
+  const bool redirected = sandbox && RegOverridePredefKey(HKEY_LOCAL_MACHINE, sandbox) == ERROR_SUCCESS;
+  char name[96];
+  std::snprintf(name, sizeof(name), "%s: HKLM redirected to HKCU sandbox", label);
+  check(name, redirected);
+  if (!redirected) return;
+  using ServerFn = HRESULT(__stdcall*)();
+  auto reg = reinterpret_cast<ServerFn>(GetProcAddress(dll, "DllRegisterServer"));
+  auto unreg = reinterpret_cast<ServerFn>(GetProcAddress(dll, "DllUnregisterServer"));
+  wchar_t modulePath[MAX_PATH] = {};
+  GetModuleFileNameW(dll, modulePath, MAX_PATH);
+
+  std::snprintf(name, sizeof(name), "%s: DllRegisterServer S_OK", label);
+  check(name, reg && reg() == S_OK);
+  bool ok = true;
+  for (int i = 0; i < count; ++i) {
+    const std::wstring clsidKey = ClsidKey(*regs[i].clsid);
+    ok = ok && _wcsicmp(ReadHklmString(clsidKey + L"\\InprocServer32", nullptr).c_str(), modulePath) == 0;
+    ok = ok && ReadHklmString(clsidKey + L"\\InprocServer32", L"ThreadingModel") == L"Apartment";
+    ok = ok && ReadHklmString(AsioKey(regs[i].name), L"CLSID") == GuidString(*regs[i].clsid);
+    ok = ok && !ReadHklmString(AsioKey(regs[i].name), L"Description").empty();
+  }
+  std::snprintf(name, sizeof(name), "%s: CLSID InprocServer32 = this DLL, Apartment, SOFTWARE\\ASIO entries", label);
+  check(name, ok);
+  std::snprintf(name, sizeof(name), "%s: DllUnregisterServer removes every key", label);
+  bool gone = unreg && unreg() == S_OK;
+  for (int i = 0; i < count; ++i) gone = gone && !HklmKeyExists(ClsidKey(*regs[i].clsid)) && !HklmKeyExists(AsioKey(regs[i].name));
+  check(name, gone);
+
+  RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+  RegCloseKey(sandbox);
+  RegDeleteTreeW(HKEY_CURRENT_USER, sandboxPath);
+}
+
 WHASlot Slot(WHASlotType type, int32_t src, bool loopback, const char* name) {
   WHASlot s{};
   s.type = type;
@@ -137,6 +191,8 @@ int main(int argc, char** argv) {
   check("Master DLL exports DllGetClassObject -> IASIO", master.asio != nullptr);
   if (!master.asio) return 1;
   gMaster = master.asio;
+  const AsioRegistration masterReg[] = {{&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master (512)"}};
+  RegistrationChecks("Master", master.dll, masterReg, 1);
   IASIO* m = master.asio;
   check("Master init -> ASIOTrue", m->init(GetDesktopWindow()) == ASIOTrue);
   char name[32] = {};
@@ -165,6 +221,13 @@ int main(int argc, char** argv) {
   Loaded bridge = LoadDriver(argv[2], CLSID_WinHookBridge1);
   check("Bridge DLL exports DllGetClassObject -> IASIO", bridge.asio != nullptr);
   IASIO* b = bridge.asio;
+  if (bridge.dll) {
+    const AsioRegistration bridgeRegs[] = {{&CLSID_WinHookBridge1, L"WinHookAudio Bridge 1", L"x"},
+                                           {&CLSID_WinHookBridge2, L"WinHookAudio Bridge 2", L"x"},
+                                           {&CLSID_WinHookBridge3, L"WinHookAudio Bridge 3", L"x"},
+                                           {&CLSID_WinHookBridge4, L"WinHookAudio Bridge 4", L"x"}};
+    RegistrationChecks("Bridge", bridge.dll, bridgeRegs, 4);
+  }
   if (b) {
     check("Bridge init -> ASIOTrue", b->init(GetDesktopWindow()) == ASIOTrue);
     long bIn = 0, bOut = 0;

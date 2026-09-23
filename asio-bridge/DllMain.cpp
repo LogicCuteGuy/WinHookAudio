@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "WinHookBridgeASIO.h"
+#include "WHARegister.h"
 using namespace wha;
 static HMODULE g_hModule=nullptr;
 BOOL APIENTRY DllMain(HMODULE h,DWORD r,LPVOID){ if(r==DLL_PROCESS_ATTACH) g_hModule=h; return TRUE; }
@@ -29,5 +30,12 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID rclsid,REFIID riid,void*
   return CLASS_E_CLASSNOTAVAILABLE;
 }
 extern "C" HRESULT __stdcall DllCanUnloadNow(){ return S_FALSE; }
-extern "C" HRESULT __stdcall DllRegisterServer(){ return S_OK; }
-extern "C" HRESULT __stdcall DllUnregisterServer(){ return S_OK; }
+static const AsioRegistration kRegistrations[] = {
+    {&CLSID_WinHookBridge1, L"WinHookAudio Bridge 1", L"WinHookAudio Bridge 1"},
+    {&CLSID_WinHookBridge2, L"WinHookAudio Bridge 2", L"WinHookAudio Bridge 2"},
+    {&CLSID_WinHookBridge3, L"WinHookAudio Bridge 3", L"WinHookAudio Bridge 3"},
+    {&CLSID_WinHookBridge4, L"WinHookAudio Bridge 4", L"WinHookAudio Bridge 4"},
+};
+// regsvr32 (elevated) WinHookAudioBridgeASIO64.dll
+extern "C" HRESULT __stdcall DllRegisterServer(){ return RegisterAsioDrivers(g_hModule, kRegistrations, 4); }
+extern "C" HRESULT __stdcall DllUnregisterServer(){ return UnregisterAsioDrivers(kRegistrations, 4); }

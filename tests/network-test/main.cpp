@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <timeapi.h>
+#include <avrt.h>
 
 #include <algorithm>
 #include <cmath>
@@ -375,6 +376,10 @@ void Deterministic() {
 
 int main() {
   timeBeginPeriod(1);
+  // This thread plays the Worker's role (processTick per Master Clock period), so run it like the
+  // Worker does: MMCSS "Pro Audio".
+  DWORD taskIndex = 0;
+  AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
   Deterministic();
   Loopbacks();
   timeEndPeriod(1);

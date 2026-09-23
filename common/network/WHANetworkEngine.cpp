@@ -2,6 +2,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <avrt.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include "WHASpscRing.h"
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "avrt.lib")
 
 namespace wha {
 
@@ -163,6 +165,10 @@ struct WHANetworkEngine::Impl {
   }
 
   void Run() {
+    // MMCSS "Audio": a normal-priority thread gets starved for tens of ms on a busy desktop, which
+    // empties a 20 ms PCM jitter buffer even though the network is fine.
+    DWORD taskIndex = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Audio", &taskIndex);
     WSADATA wsa;
     wsaStarted = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
     if (!wsaStarted) SetSocketError("WSAStartup failed");
@@ -187,6 +193,7 @@ struct WHANetworkEngine::Impl {
     if (sockEvent != WSA_INVALID_EVENT) WSACloseEvent(sockEvent);
     sockEvent = WSA_INVALID_EVENT;
     if (wsaStarted) WSACleanup();
+    if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
   }
 
   // ---- configuration (network thread) ----
