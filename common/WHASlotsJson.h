@@ -50,6 +50,8 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   if (table.general.virtualCables != 8 && table.general.virtualCables != 64)
     return fail("general virtualCables must be 8 or 64");
   if (std::strlen(table.general.virtualName) >= 32) return fail("general virtualName too long");
+  if (strnlen(table.general.hwRenderId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwRenderId too long");
+  if (strnlen(table.general.hwCaptureId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwCaptureId too long");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -481,7 +483,9 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += "\"jitterPcm\":" + std::to_string(t.general.jitterPcm) + ",";
   out += "\"jitterVorbis\":" + std::to_string(t.general.jitterVorbis) + ",";
   out += "\"virtualCables\":" + std::to_string(t.general.virtualCables) + ",";
-  out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName);
+  out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName) + ",";
+  out += "\"hwRenderId\":" + detail::EscapeJsonString(t.general.hwRenderId) + ",";
+  out += "\"hwCaptureId\":" + detail::EscapeJsonString(t.general.hwCaptureId);
   out += "},";
   out += "\"netTx\":[";
   for (int i = 0; i < WHA_NET_STREAMS; ++i) {
@@ -673,6 +677,11 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
           if (v.size() >= 32) return fail("virtualName too long");
           TruncateCopy(out.general.virtualName, 32, v.c_str());
           haveVN = true;
+        } else if (gkey == "hwRenderId" || gkey == "hwCaptureId") {  // optional: absent in older files = default device
+          std::string v;
+          if (!detail::ParseString(s, p, v)) return fail(gkey.c_str());
+          if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
+          TruncateCopy(gkey == "hwRenderId" ? out.general.hwRenderId : out.general.hwCaptureId, kEndpointIdLen, v.c_str());
         } else return fail("unknown general key");
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == ',') {

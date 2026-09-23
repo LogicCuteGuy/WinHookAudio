@@ -19,6 +19,7 @@ constexpr uint32_t kMasterClockBitsDefault = 32u;
 constexpr uint32_t kMasterClockBufferDefault = 128u;
 constexpr uint32_t kMaxPcmChannels = 32;
 constexpr uint32_t kMaxVorbisChannels = 128;
+constexpr uint32_t kEndpointIdLen = 64;  // "{0.0.0.00000000}.{guid}" is 55 chars
 
 // Backward compat macros (prefer constexpr above)
 #define WHA_MAX wha::kMax
@@ -68,6 +69,9 @@ struct WHAGeneral {
   uint32_t jitterVorbis = 50;
   uint32_t virtualCables = 8;  // 8 or 64 (GENERAL Virtual Cables)
   char virtualName[32] = "WinHookAudio Virtual";
+  // HW slot endpoints (IMMDevice IDs); empty = the Windows default device of that direction.
+  char hwRenderId[kEndpointIdLen] = "";
+  char hwCaptureId[kEndpointIdLen] = "";
 };
 
 struct WHANetworkStream {
