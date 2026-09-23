@@ -26,6 +26,10 @@ struct PanelViewState {
   const std::vector<HwStatusLine>* hwStatus = nullptr;  // GENERAL "actual" lines (HwStatusLines), by the host
 };
 
+// Windows' own audio settings, opened from the panel (device formats, exclusive-mode permission,
+// enabling devices): the classic Sound dialog's tabs, or the Settings app page.
+enum WindowsSoundPage : int { kSoundPlayback = 0, kSoundRecording = 1, kSoundSettingsApp = 2 };
+
 enum PanelTab : int { kTabInputs = 0, kTabOutputs, kTabNetwork, kTabGeneral, kTabAbout };
 
 struct PanelViewResult {
@@ -35,6 +39,7 @@ struct PanelViewResult {
   bool importSlots = false;
   bool close = false;
   bool refreshDevices = false;  // re-enumerate HW endpoints
+  int openWindowsSound = -1;    // WindowsSoundPage to open (host shell-executes it), -1 = none
 };
 
 // Draws one frame of the full-window panel. Mutations go through the WHAControlPanelUI model

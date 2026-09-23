@@ -1,5 +1,8 @@
 #include "WHAControlPanelWindow.h"
 
+#include <shellapi.h>
+#pragma comment(lib, "shell32.lib")  // ShellExecuteW: Windows Sound settings
+
 #include <commdlg.h>
 #include <d3d11.h>
 #include <mmdeviceapi.h>  // before the devpkey header: brings the PROPERTYKEY definitions
@@ -392,6 +395,15 @@ void ControlPanelWindow::Run() {
     if (host_.testFrameHook) host_.testFrameHook(r, frame);
 
     if (r.refreshDevices) devices = EnumerateEndpoints();
+    if (r.openWindowsSound >= 0) {
+      // Classic Sound dialog (control mmsys.cpl,,<tab>) or the Settings app. Asynchronous: the panel
+      // stays responsive; the device list is refreshed so changes made there show up.
+      const wchar_t* args = r.openWindowsSound == kSoundRecording ? L"mmsys.cpl,,1" : L"mmsys.cpl,,0";
+      const HINSTANCE h = r.openWindowsSound == kSoundSettingsApp
+                              ? ShellExecuteW(hwnd, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL)
+                              : ShellExecuteW(hwnd, L"open", L"control.exe", args, nullptr, SW_SHOWNORMAL);
+      if (reinterpret_cast<INT_PTR>(h) <= 32) state.status = "Could not open Windows sound settings";
+    }
     if (r.save && CommitPanelSave(edit, host_, &state.status)) baseline = edit.table;
     if (r.revert) {
       edit.table = *host_.table;

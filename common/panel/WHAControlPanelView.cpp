@@ -468,6 +468,14 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
     SetHwCaptureDevice(edit, chosen.c_str());
   if (ImGui::SmallButton("Refresh devices")) result.refreshDevices = true;
   ImGui::SameLine();
+  ImGui::TextUnformatted("Windows:");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Playback devices")) result.openWindowsSound = kSoundPlayback;
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Recording devices")) result.openWindowsSound = kSoundRecording;
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Sound settings")) result.openWindowsSound = kSoundSettingsApp;
+  ImGui::SameLine();
   ImGui::TextDisabled("Exclusive: other apps cannot use them while the DAW streams. Changing asks the DAW to reset on Save.");
   if (state.hwStatus) {
     ImGui::TextUnformatted("Actual:");
