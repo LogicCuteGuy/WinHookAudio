@@ -25,9 +25,9 @@ constexpr double kMaxCatchUpPeriods = 8;
 
 // A block handed over at a HW Master Clock tick is queued behind the target fill, then crosses the device.
 long HwOutputLatency(const KsAudio& hw) { return hw.targetFill() + hw.streamLatency(); }
-// A captured frame crosses the device, waits in the FIFO (its mean fill at a read), then sits in its
-// IN slot for one tick.
-long HwInputLatency(const KsCapture& hw, long block) { return hw.streamLatency() + hw.expectedFill() + block; }
+// A captured frame's age when read (the backlog target, from capture timestamps, plus the
+// resampler), then one tick in its IN slot.
+long HwInputLatency(const KsCapture& hw, long block) { return hw.latency() + block; }
 
 std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
 
@@ -145,6 +145,7 @@ ASIOError WinHookMasterASIO::start() {
   if (!holder_) {
     holder_ = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
     holder_->setTableChangedHandler([this] { onTableChanged(); });
+    holder_->setTickCounter(&clockTicks_);
     holder_->start();
   }
   bufferIndex_ = 0;
@@ -188,15 +189,20 @@ void WinHookMasterASIO::stats(WHAMasterStats* out) const {
   }
   out->hwInLastError = holder_->hwCaptureError();
   if (KsCapture* in = holder_->hwCapture()) {
+    const HwInputFifo& f = in->fifo();
     out->hwInOpen = 1;
-    out->hwInReads = in->reads();
-    out->hwInStarved = in->starved();
-    out->hwInTrims = in->trims();
+    out->hwInReads = f.reads();
+    out->hwInStarved = f.starved();
+    out->hwInTrims = f.trims();
     out->hwInGlitches = in->glitches();
-    out->hwInFill = in->fill();
-    out->hwInTarget = in->targetFill();
-    out->hwInMeanFill = in->meanFill();
+    out->hwInFill = f.fill();
+    out->hwInTarget = f.expectedFill();
+    out->hwInMeanFill = f.meanFill();
     out->hwInStreamLatency = in->streamLatency();
+    out->hwInDriftPpmMilli = static_cast<int32_t>(f.sourcePpm() * 1000.0);
+    out->hwInDriftEngaged = f.driftEngaged() ? 1 : 0;
+    out->hwInGrowths = f.growths();
+    out->hwInSkipped = f.skipped();
   }
 }
 
@@ -434,6 +440,12 @@ void WinHookMasterASIO::clockTick() {
   }
   samplePosition_ += static_cast<uint64_t>(bufferSize_);
   clockTicks_.fetch_add(1);
+  // The HW input grew its backlog target after a starve: the DAW re-queries getLatencies.
+  if (KsCapture* in = holder_ ? holder_->hwCapture() : nullptr) {
+    if (in->takeLatencyChanged() && callbacks_.asioMessage &&
+        callbacks_.asioMessage(kAsioSelectorSupported, kAsioLatenciesChanged, nullptr, nullptr) == 1)
+      callbacks_.asioMessage(kAsioLatenciesChanged, 0, nullptr, nullptr);
+  }
   if (masterTick_) SetEvent(masterTick_);
 }
 

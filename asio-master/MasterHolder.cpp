@@ -37,7 +37,18 @@ void MasterHolder::stop() {
   stopRequested_ = true;
   if (masterTick_) SetEvent(masterTick_);
   if (tableChanged_) SetEvent(tableChanged_);
-  if (thread_) { WaitForSingleObject(thread_, 1000); CloseHandle(thread_); thread_ = nullptr; }
+  // Join without a timeout: the Worker's teardown (device Stop/Release, CoUninitialize) runs on this
+  // object and in this DLL. Abandoning it after a timeout let it run on a deleted MasterHolder, whose
+  // garbage state made an extra CoUninitialize tear down its apartment, and COM then unloaded the
+  // DLL under the running thread (crash seen with a slow-closing capture device).
+  if (thread_) {
+    if (WaitForSingleObject(thread_, 1000) == WAIT_TIMEOUT) {
+      OutputDebugStringA("WinHookAudio MasterHolder: Worker teardown > 1 s, still waiting\n");
+      WaitForSingleObject(thread_, INFINITE);
+    }
+    CloseHandle(thread_);
+    thread_ = nullptr;
+  }
   if (network_) network_->stop();
   running_ = false;
   if (workerDone_) SetEvent(workerDone_);
@@ -80,10 +91,19 @@ void MasterHolder::run() {
       if (network_) network_->requestReconfigure();
       if (onTableChanged_) onTableChanged_();
     }
-    if (wait == WAIT_OBJECT_0 || wait == WAIT_OBJECT_0 + 1) {
+    // Route on Master_Tick only. A TableChanged-only wake used to run doTick too: an extra HW input
+    // read / HW output write / Network block that no tick asked for. The next tick uses the new table.
+    if (wait == WAIT_OBJECT_0) {
       if (stopRequested_) break;
+      if (clockTicks_) {
+        const uint64_t now = clockTicks_->load();
+        if (haveTicks_ && now > ticksSeen_ + 1 && ksCapture_ && ksCapture_->opened())
+          ksCapture_->skip(static_cast<size_t>(now - ticksSeen_ - 1) * table_->general.asioBuffer);
+        ticksSeen_ = now;
+        haveTicks_ = true;
+      }
       doTick();
-      if (wait == WAIT_OBJECT_0 && workerDone_) SetEvent(workerDone_);  // Master_Tick routed
+      if (workerDone_) SetEvent(workerDone_);  // Master_Tick routed
     }
   }
   hwMaster_ = nullptr;  // the Master Clock is already stopped; never hand out a closing device

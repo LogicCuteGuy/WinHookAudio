@@ -22,12 +22,11 @@ bool KsCapture::open(int32_t sampleRate, int32_t periodFrames, int32_t blockFram
   close();
   lastError_ = S_OK;
   lastStep_ = "";
-  reads_ = 0;
-  starved_ = 0;
-  trims_ = 0;
   glitches_ = 0;
-  fill_ = 0;
-  fillSum_ = 0;
+  LARGE_INTEGER f;
+  QueryPerformanceFrequency(&f);
+  qpcFreq_ = static_cast<double>(f.QuadPart);
+  rate_ = sampleRate;
 
   comInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
   KsOpenResult r;
@@ -35,15 +34,9 @@ bool KsCapture::open(int32_t sampleRate, int32_t periodFrames, int32_t blockFram
   audioClient_ = r.client;
   format_ = r.format;
   streamLatencyFrames_ = r.streamLatencyFrames;
-  // Enough queued that a block is always there although packets arrive one device period at a time.
-  const int32_t block = blockFrames > 0 ? blockFrames : r.periodFrames;
-  blockFrames_ = block;
-  periodFrames_ = r.periodFrames;
-  primeFrames_ = 2 * block + r.periodFrames;
-  fifoFrames_ = static_cast<size_t>(r.capacityFrames + 8 * block);
-  fifo_.assign(fifoFrames_ * kKsDeviceChannels, 0.0f);
-  readPos_ = count_ = 0;
-  primed_ = false;
+  const int block = blockFrames > 0 ? blockFrames : r.periodFrames;
+  fifo_.reset(rate_, kKsDeviceChannels, block, r.periodFrames);
+  packet_.assign(static_cast<size_t>(r.capacityFrames) * kKsDeviceChannels, 0.0f);
 
   const HRESULT hr = audioClient_->GetService(__uuidof(IAudioCaptureClient), (void**)&captureClient_);
   if (FAILED(hr)) return fail("GetService IAudioCaptureClient", hr);
@@ -69,63 +62,37 @@ void KsCapture::pull() {
     BYTE* data = nullptr;
     UINT32 frames = 0;
     DWORD flags = 0;
-    if (FAILED(captureClient_->GetBuffer(&data, &frames, &flags, nullptr, nullptr))) return;
+    UINT64 qpc100ns = 0;  // device packet stamp (QPC, 100 ns units)
+    if (FAILED(captureClient_->GetBuffer(&data, &frames, &flags, nullptr, &qpc100ns))) return;
     if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) glitches_.fetch_add(1);
+    const size_t samples = static_cast<size_t>(frames) * kKsDeviceChannels;
+    if (samples > packet_.size()) packet_.resize(samples);
     const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-    bool overflowed = false;
-    for (UINT32 f = 0; f < frames; ++f) {
-      if (count_ == fifoFrames_) {  // full: the oldest frame goes
-        readPos_ = (readPos_ + 1) % fifoFrames_;
-        --count_;
-        overflowed = true;
-      }
-      const size_t w = (readPos_ + count_) % fifoFrames_;
-      for (int ch = 0; ch < kKsDeviceChannels; ++ch)
-        fifo_[w * kKsDeviceChannels + ch] = silent ? 0.0f : KsFromDevice(format_, data, static_cast<int>(f) * kKsDeviceChannels + ch);
-      ++count_;
-    }
+    for (size_t i = 0; i < samples; ++i) packet_[i] = silent ? 0.0f : KsFromDevice(format_, data, static_cast<int>(i));
     captureClient_->ReleaseBuffer(frames);
-    if (overflowed) trims_.fetch_add(1);
+    // The device's packet stamp (capture or delivery time: devices differ, the FIFO's DLL absorbs
+    // the offset and jitter); without one, now.
+    double stamp;
+    if (qpc100ns) {
+      stamp = static_cast<double>(qpc100ns) / 1e7;
+    } else {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      stamp = static_cast<double>(now.QuadPart) / qpcFreq_;
+    }
+    fifo_.push(packet_.data(), frames, stamp);
   }
 }
 
 bool KsCapture::read(float* data, int frames, int channels) {
-  std::memset(data, 0, sizeof(float) * static_cast<size_t>(frames) * static_cast<size_t>(channels));
-  if (!opened_) return false;
-  pull();
-  const size_t need = static_cast<size_t>(frames);
-  if (!primed_ && count_ >= static_cast<size_t>(primeFrames_) + need) {
-    // Start exactly at the target: packets arrive a device period at a time, and the overshoot would
-    // otherwise become a run-to-run latency difference of up to one period.
-    const size_t excess = count_ - (static_cast<size_t>(primeFrames_) + need);
-    readPos_ = (readPos_ + excess) % fifoFrames_;
-    count_ -= excess;
-    primed_ = true;
-  }
-  // The device clock runs ahead of the Master Clock: trim back to the target, one discontinuity.
-  if (primed_ && count_ > static_cast<size_t>(primeFrames_) + 5 * need) {
-    const size_t drop = count_ - (static_cast<size_t>(primeFrames_) + need);
-    readPos_ = (readPos_ + drop) % fifoFrames_;
-    count_ -= drop;
-    trims_.fetch_add(1);
-  }
-  fill_ = static_cast<int32_t>(count_);
-  if (!primed_) return false;
-  if (count_ < need) {  // behind the Master Clock: silence, then re-prime
-    starved_.fetch_add(1);
-    primed_ = false;
+  if (!opened_) {
+    std::memset(data, 0, sizeof(float) * static_cast<size_t>(frames) * static_cast<size_t>(channels));
     return false;
   }
-  for (size_t f = 0; f < need; ++f) {
-    const size_t r = (readPos_ + f) % fifoFrames_;
-    for (int ch = 0; ch < channels && ch < kKsDeviceChannels; ++ch)
-      data[static_cast<size_t>(ch) * need + f] = fifo_[r * kKsDeviceChannels + ch];
-  }
-  fillSum_.fetch_add(count_);
-  readPos_ = (readPos_ + need) % fifoFrames_;
-  count_ -= need;
-  reads_.fetch_add(1);
-  return true;
+  pull();
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return fifo_.read(data, frames, channels, static_cast<double>(now.QuadPart) / qpcFreq_);
 }
 
 }  // namespace wha

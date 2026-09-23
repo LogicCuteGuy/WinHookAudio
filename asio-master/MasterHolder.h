@@ -36,6 +36,10 @@ class MasterHolder {
   class KsCapture* hwCapture() const { return hwCapture_.load(); }
   int32_t hwCaptureError() const { return hwCaptureError_.load(); }
 
+  // The Master Clock's tick count: the Worker compares it with its own to find ticks it missed (an
+  // auto-reset Master_Tick coalesces them) and keeps the HW input in step.
+  void setTickCounter(const std::atomic<uint64_t>* ticks) { clockTicks_ = ticks; }
+
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
   // Called on the Worker thread whenever TableChanged fires (any process may have saved).
@@ -61,6 +65,9 @@ class MasterHolder {
   class KsAudio* ksAudio_ = nullptr;
   std::atomic<class KsAudio*> hwMaster_{nullptr};
   std::atomic<int32_t> hwOpenError_{0};
+  const std::atomic<uint64_t>* clockTicks_ = nullptr;
+  uint64_t ticksSeen_ = 0;
+  bool haveTicks_ = false;
   class KsCapture* ksCapture_ = nullptr;
   std::atomic<class KsCapture*> hwCapture_{nullptr};
   std::atomic<int32_t> hwCaptureError_{0};
