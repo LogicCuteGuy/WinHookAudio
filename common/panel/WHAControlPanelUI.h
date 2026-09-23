@@ -143,6 +143,11 @@ bool AssignSource(PanelModel& model, bool isInput, uint32_t index, WHASlotType t
 bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* deviceId, int32_t side);
 // What a slot carries, for the Source column: "Microphone · L", "Virtual Cable 2", "Rx3 · Ch1", "Bridge1".
 std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDevice);
+// Source menu entries: "WinHookAudio Virtual 1" (GENERAL name prefix), "Rx1  from 192.168.1.50:6980 ·
+// PCM 32 · 2 ch" or "(not set up: NETWORK tab)", "Bridge 1  (2 apps connected)" (shared = nullptr: unknown).
+std::string VirtualCableLabel(const WHAGeneral& general, int cable);
+std::string NetworkStreamLabel(const WHANetworkStream& stream, bool isInput, int index);
+std::string BridgeLabel(int bridge, const WHABridgeShared* shared);
 
 // GENERAL HW status: requested versus actual. `stats` is the streaming Master's (nullptr: the DAW has
 // not started the driver); `saved` is the Slot Table's GENERAL now. HW settings are read when the

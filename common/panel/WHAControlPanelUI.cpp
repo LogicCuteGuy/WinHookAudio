@@ -164,6 +164,7 @@ bool IsValidSource(WHASlotType type, int32_t srcChannel, int32_t streamId) {
     case SLOT_NETWORK:
       return streamId >= 0 && streamId < static_cast<int32_t>(kNetStreams) && srcChannel >= 0 &&
              srcChannel < static_cast<int32_t>(kMaxPcmChannels);
+    case SLOT_VIRTUAL: return srcChannel >= 0 && srcChannel < 2 * kVirtualSlotCables;  // cable * 2 + side
     default: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kMax);
   }
 }
@@ -446,7 +447,7 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDev
       return buf;
     }
     case SLOT_VIRTUAL:
-      std::snprintf(buf, sizeof(buf), "Virtual Cable %d", (slot.srcChannel < 0 ? 0 : slot.srcChannel % 8) + 1);
+      std::snprintf(buf, sizeof(buf), "Virtual %d \xC2\xB7 %c", VirtualCableOf(slot) + 1, VirtualSideOf(slot) ? 'R' : 'L');
       return buf;
     case SLOT_NETWORK:
       std::snprintf(buf, sizeof(buf), "%s%d \xC2\xB7 Ch%d", isInput ? "Rx" : "Tx", slot.streamId + 1, slot.srcChannel + 1);
@@ -455,6 +456,36 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDev
       std::snprintf(buf, sizeof(buf), "Bridge%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1);
       return buf;
   }
+}
+
+std::string VirtualCableLabel(const WHAGeneral& general, int cable) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%s %d", general.virtualName[0] ? general.virtualName : "Virtual", cable + 1);
+  return buf;
+}
+
+std::string NetworkStreamLabel(const WHANetworkStream& stream, bool isInput, int index) {
+  char buf[96];
+  if (!stream.ip[0]) {
+    std::snprintf(buf, sizeof(buf), "%s%d  (not set up: NETWORK tab)", isInput ? "Rx" : "Tx", index + 1);
+    return buf;
+  }
+  const char* codec = stream.codec == WHA_PCM_I16 ? "PCM 16" : (stream.codec == WHA_VORBIS ? "Vorbis" : "PCM 32");
+  std::snprintf(buf, sizeof(buf), "%s%d  %s %s:%u \xC2\xB7 %s \xC2\xB7 %u ch", isInput ? "Rx" : "Tx", index + 1,
+                isInput ? "from" : "to", stream.ip, static_cast<unsigned>(stream.port), codec, stream.channels);
+  return buf;
+}
+
+std::string BridgeLabel(int bridge, const WHABridgeShared* shared) {
+  char buf[64];
+  if (!shared) {
+    std::snprintf(buf, sizeof(buf), "Bridge %d", bridge + 1);
+  } else {
+    const int apps = shared->clientCount;
+    if (apps <= 0) std::snprintf(buf, sizeof(buf), "Bridge %d  (no app connected)", bridge + 1);
+    else std::snprintf(buf, sizeof(buf), "Bridge %d  (%d app%s connected)", bridge + 1, apps, apps == 1 ? "" : "s");
+  }
+  return buf;
 }
 
 bool SetHwBuffer(PanelModel& model, uint32_t frames) {

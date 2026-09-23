@@ -186,6 +186,12 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
 // HW slots take one channel of a stereo device (KsEndpoint kKsDeviceChannels): srcChannel 0 = L, 1 = R.
 constexpr int32_t kHwSlotChannels = 2;
 
+// VIRTUAL slots take one side of a stereo Virtual Cable: srcChannel = cable * 2 + side (0 = L, 1 = R),
+// cables 1..8 (datasheet "Virtual 1..8 L/R").
+constexpr int32_t kVirtualSlotCables = 8;
+inline int VirtualCableOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : (s.srcChannel / 2) % kVirtualSlotCables; }
+inline int VirtualSideOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : s.srcChannel % 2; }
+
 // A name nobody chose: what an empty slot shows.
 inline bool IsPlaceholderName(const char* name) {
   return name == nullptr || name[0] == '\0' || std::strncmp(name, "- empty -", kNameLen) == 0;
@@ -223,7 +229,7 @@ inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, b
         std::snprintf(out, kNameLen, "%s Ch%d", device, ch);
       break;
     }
-    case SLOT_VIRTUAL: std::snprintf(out, kNameLen, "Virtual %d", (s.srcChannel < 0 ? 0 : s.srcChannel % 8) + 1); break;
+    case SLOT_VIRTUAL: std::snprintf(out, kNameLen, "Virtual %d %c", VirtualCableOf(s) + 1, VirtualSideOf(s) ? 'R' : 'L'); break;
     case SLOT_NETWORK: std::snprintf(out, kNameLen, "%s%d Ch%d", isInput ? "Rx" : "Tx", s.streamId + 1, ch); break;
     default: {  // SLOT_BRIDGE1..4
       int k = 1;

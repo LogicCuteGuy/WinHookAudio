@@ -58,7 +58,8 @@ const SlotListOps kOutputOps{false, "OUTPUTS", "Out", "WHA_OUT", "+Add Output", 
 
 // The Source cell: one menu picks what a slot carries (type and source together), with HW devices
 // by name, so nobody has to know that "HW" + "L" means the left channel of the GENERAL device.
-void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDevices* devices, const char* hwName) {
+void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDevices* devices, const char* hwName,
+                    WHABridgeShared* const* bridges, bool cableDriver) {
   WHASlot& s = (isInput ? edit.table.masterIn : edit.table.masterOut)[idx];
   const std::string preview = SlotSourceLabel(s, isInput, hwName);
   ImGui::SetNextItemWidth(-FLT_MIN);
@@ -96,22 +97,31 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
   }
 
   if (ImGui::BeginMenu("Virtual Cable")) {
-    for (int c = 0; c < 8; ++c) {
-      char label[32];
-      std::snprintf(label, sizeof(label), "Cable %d", c + 1);
-      if (ImGui::MenuItem(label, nullptr, s.type == SLOT_VIRTUAL && s.srcChannel % 8 == c))
-        AssignSource(edit, isInput, idx, SLOT_VIRTUAL, c, 0);
+    ImGui::TextDisabled(isInput ? "Windows apps play into these (they appear as sound outputs)."
+                                : "Windows apps record from these (they appear as microphones).");
+    if (!cableDriver) ImGui::TextDisabled("Cable driver not installed yet: only DAW OUT -> DAW IN loops work.");
+    for (int c = 0; c < kVirtualSlotCables; ++c) {
+      ImGui::PushID(c);
+      if (ImGui::BeginMenu(VirtualCableLabel(edit.table.general, c).c_str())) {
+        for (int side = 0; side < 2; ++side)
+          if (ImGui::MenuItem(side == 0 ? "L (left)" : "R (right)", nullptr,
+                              s.type == SLOT_VIRTUAL && VirtualCableOf(s) == c && VirtualSideOf(s) == side))
+            AssignSource(edit, isInput, idx, SLOT_VIRTUAL, c * 2 + side, 0);
+        ImGui::EndMenu();
+      }
+      ImGui::PopID();
     }
     ImGui::EndMenu();
   }
 
   if (ImGui::BeginMenu(isInput ? "Network (receive)" : "Network (send)")) {
+    ImGui::TextDisabled(isInput ? "Audio from another PC. Set streams up in the NETWORK tab."
+                                : "Audio to another PC. Set streams up in the NETWORK tab.");
     for (int st = 0; st < static_cast<int>(kNetStreams); ++st) {
       const WHANetworkStream& ns = isInput ? edit.table.netRx[st] : edit.table.netTx[st];
       const int channels = ns.channels ? static_cast<int>(ns.channels) : 2;
-      char label[48];
-      std::snprintf(label, sizeof(label), "%s%d%s", isInput ? "Rx" : "Tx", st + 1, ns.ip[0] ? "" : "  (not set up)");
-      if (ImGui::BeginMenu(label)) {
+      ImGui::PushID(st);
+      if (ImGui::BeginMenu(NetworkStreamLabel(ns, isInput, st).c_str())) {
         for (int ch = 0; ch < channels; ++ch) {
           char item[16];
           std::snprintf(item, sizeof(item), "Ch %d", ch + 1);
@@ -120,16 +130,21 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
         }
         ImGui::EndMenu();
       }
+      ImGui::PopID();
     }
     ImGui::EndMenu();
   }
 
   if (ImGui::BeginMenu("Bridge")) {
+    ImGui::TextDisabled(isInput ? "Audio from other ASIO apps that pick \"WinHookAudio Bridge N\"."
+                                : "Audio to other ASIO apps that pick \"WinHookAudio Bridge N\".");
+    ImGui::TextDisabled("Their channels follow the order of Bridge rows in this list.");
     for (int b = 0; b < 4; ++b) {
-      char label[16];
-      std::snprintf(label, sizeof(label), "Bridge%d", b + 1);
       const auto type = static_cast<WHASlotType>(SLOT_BRIDGE1 + b);
-      if (ImGui::MenuItem(label, nullptr, s.type == type)) AssignSource(edit, isInput, idx, type, 0, 0);
+      ImGui::PushID(b);
+      if (ImGui::MenuItem(BridgeLabel(b, bridges ? bridges[b] : nullptr).c_str(), nullptr, s.type == type))
+        AssignSource(edit, isInput, idx, type, 0, 0);
+      ImGui::PopID();
     }
     ImGui::EndMenu();
   }
@@ -181,7 +196,8 @@ bool BeginComboHwFrames(uint32_t& value) {
 }
 
 void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter, char* search, size_t searchLen,
-                  int& rowsDrawn, int bridgeIndex, const AboutInfo& about, const PanelDevices* devices) {
+                  int& rowsDrawn, int bridgeIndex, const AboutInfo& about, const PanelDevices* devices,
+                  WHABridgeShared* const* bridges) {
   WHASlotTable& t = edit.table;
   const uint32_t count = ops.isInput ? t.masterInCount : t.masterOutCount;
   WHASlot* slots = ops.isInput ? t.masterIn : t.masterOut;
@@ -267,7 +283,7 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
         ImGui::Text("%s%02u", ops.prefix, idx + 1);
 
         ImGui::TableSetColumnIndex(2);
-        DrawSourceCell(edit, ops.isInput, idx, devices, hwName);
+        DrawSourceCell(edit, ops.isInput, idx, devices, hwName, bridges, about.sysRunning);
 
         ImGui::TableSetColumnIndex(3);
         char name[kNameLen];
@@ -575,7 +591,7 @@ PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABri
       state.activeTab = kTabInputs;
       ImGui::BeginChild("body", ImVec2(0, -footer));
       DrawSlotList(edit, kInputOps, state.inFilter, state.inSearch, sizeof(state.inSearch), state.rowsDrawnIn,
-                   state.bridgeIndex, about, state.devices);
+                   state.bridgeIndex, about, state.devices, bridges);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
@@ -583,7 +599,7 @@ PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABri
       state.activeTab = kTabOutputs;
       ImGui::BeginChild("body", ImVec2(0, -footer));
       DrawSlotList(edit, kOutputOps, state.outFilter, state.outSearch, sizeof(state.outSearch), state.rowsDrawnOut,
-                   state.bridgeIndex, about, state.devices);
+                   state.bridgeIndex, about, state.devices, bridges);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

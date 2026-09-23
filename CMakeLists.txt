@@ -204,6 +204,8 @@ if(BUILD_TESTING)
     target_compile_options(winhookaudio-panel-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
     target_include_directories(winhookaudio-panel-test PRIVATE common common/panel)
     target_link_libraries(winhookaudio-panel-test PRIVATE wha_common)
+    # main() holds ~20 PanelModels (~50 KB each, a full Slot Table): past the default 1 MB stack.
+    target_link_options(winhookaudio-panel-test PRIVATE /STACK:8388608)
     add_test(NAME panel-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Panel-Test.ps1" -PanelTest "$<TARGET_FILE:winhookaudio-panel-test>")
     set_tests_properties(panel-offline PROPERTIES TIMEOUT 30)

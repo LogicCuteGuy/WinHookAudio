@@ -60,6 +60,36 @@ int main() {
   }
   check("virtual SHM Out -> Ring -> SHM In", virtualOk);
 
+  // Stereo cables: srcChannel = cable * 2 + side. OUT Virtual 2 R carries 0.3, OUT Virtual 2 L 0.2;
+  // three IN slots on cable 2 (R, L, R) all get their side from one ring read, at a 512-frame block.
+  {
+    auto stereo = std::make_unique<WHASlotTable>();
+    stereo->version = 1;
+    stereo->general.asioBuffer = 512;
+    stereo->masterOutCount = 2;
+    stereo->masterOut[0].type = SLOT_VIRTUAL; stereo->masterOut[0].srcChannel = 3;  // Virtual 2 R
+    stereo->masterOut[1].type = SLOT_VIRTUAL; stereo->masterOut[1].srcChannel = 2;  // Virtual 2 L
+    stereo->masterInCount = 3;
+    stereo->masterIn[0].type = SLOT_VIRTUAL; stereo->masterIn[0].srcChannel = 3;
+    stereo->masterIn[1].type = SLOT_VIRTUAL; stereo->masterIn[1].srcChannel = 2;
+    stereo->masterIn[2].type = SLOT_VIRTUAL; stereo->masterIn[2].srcChannel = 3;
+    auto audio = std::make_unique<float[]>(2 * 512 * 4096);
+    std::memset(audio.get(), 0, 2 * 512 * 4096 * sizeof(float));
+    for (int f = 0; f < 512; ++f) {
+      audio[0 * 4096 + f] = 0.3f;
+      audio[1 * 4096 + f] = 0.2f;
+    }
+    MasterHolder stereoHolder(stereo.get(), audio.get(), bridges, masterTick, tableChanged, bridgeTicks);
+    stereoHolder.tickOnce();
+    auto all = [&](int inSlot, float want) {
+      for (int f = 0; f < 512; ++f)
+        if (std::abs(audio[(512 + inSlot) * 4096 + f] - want) > 0.001f) return false;
+      return true;
+    };
+    check("virtual stereo: R and L stay apart", all(0, 0.3f) && all(1, 0.2f));
+    check("virtual stereo: two IN slots on one cable both get it (one read)", all(2, 0.3f));
+  }
+
   CloseHandle(masterTick); CloseHandle(tableChanged);
 
   std::printf("{\"schema_version\":1,\"operation\":\"virtual_test\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");

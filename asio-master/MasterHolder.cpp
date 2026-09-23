@@ -213,34 +213,33 @@ void MasterHolder::doTick() {
     for (int ci = 0; ci < 4; ++ci)
       if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
   }
-  // Virtual Cable: DeviceIoControl stub — SHM Out -> Ring Write, Ring Read -> SHM In
-  for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
-    if (table_->masterOut[oi].type == SLOT_VIRTUAL) {
-      int cable = table_->masterOut[oi].srcChannel % 8;
-      if (cable < 0) cable = 0;
-      if (virtualRings_[cable]) {
-        int frames = static_cast<int>(table_->general.asioBuffer);
-        if (frames > 4096) frames = 4096;
-        float* outBuf = masterAudio_ + oi * 4096;
-        // Interleave mono to stereo for ring
-        float stereo[256 * 2] = {};
-        for (int f = 0; f < frames && f < 256; ++f) stereo[f * 2] = stereo[f * 2 + 1] = outBuf[f];
-        virtualRings_[cable]->write(stereo, frames);
+  // Virtual Cable: DeviceIoControl stub — SHM Out -> Ring Write, Ring Read -> SHM In. Each cable is
+  // stereo: a VIRTUAL slot's source is one side of one cable (VirtualCableOf/VirtualSideOf). Per cable,
+  // OUT slots are summed into their side and written once; one read feeds every IN slot of it.
+  {
+    const uint32_t frames = table_->general.asioBuffer < 4096 ? table_->general.asioBuffer : 4096;
+    for (int cable = 0; cable < static_cast<int>(kVirtualSlotCables); ++cable) {
+      if (!virtualRings_[cable] || !frames) continue;
+      bool anyOut = false, anyIn = false;
+      std::memset(virtualScratch_, 0, sizeof(float) * 2 * frames);
+      for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
+        const WHASlot& slot = table_->masterOut[oi];
+        if (slot.type != SLOT_VIRTUAL || VirtualCableOf(slot) != cable) continue;
+        const float* outBuf = masterAudio_ + oi * 4096;
+        const int side = VirtualSideOf(slot);
+        for (uint32_t f = 0; f < frames; ++f) virtualScratch_[f * 2 + side] += outBuf[f];
+        anyOut = true;
       }
-    }
-  }
-  for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
-    if (table_->masterIn[ii].type == SLOT_VIRTUAL) {
-      int cable = table_->masterIn[ii].srcChannel % 8;
-      if (cable < 0) cable = 0;
-      if (virtualRings_[cable] && virtualRings_[cable]->size() >= (uint32_t)table_->general.asioBuffer) {
-        int frames = static_cast<int>(table_->general.asioBuffer);
-        if (frames > 4096) frames = 4096;
+      if (anyOut) virtualRings_[cable]->write(virtualScratch_, frames);
+      for (uint32_t ii = 0; ii < table_->masterInCount; ++ii)
+        anyIn = anyIn || (table_->masterIn[ii].type == SLOT_VIRTUAL && VirtualCableOf(table_->masterIn[ii]) == cable);
+      if (!anyIn || virtualRings_[cable]->size() < frames || !virtualRings_[cable]->read(virtualScratch_, frames)) continue;
+      for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+        const WHASlot& slot = table_->masterIn[ii];
+        if (slot.type != SLOT_VIRTUAL || VirtualCableOf(slot) != cable) continue;
         float* inBuf = masterAudio_ + 512 * 4096 + ii * 4096;
-        float stereo[256 * 2] = {};
-        if (virtualRings_[cable]->read(stereo, frames)) {
-          for (int f = 0; f < frames; ++f) inBuf[f] = stereo[f * 2];
-        }
+        const int side = VirtualSideOf(slot);
+        for (uint32_t f = 0; f < frames; ++f) inBuf[f] = virtualScratch_[f * 2 + side];
       }
     }
   }

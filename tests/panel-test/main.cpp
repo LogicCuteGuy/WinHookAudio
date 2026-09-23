@@ -211,8 +211,8 @@ int main() {
     SetInputType(nm, 2, SLOT_HW);
     check("SetInputType HW resets a non-L/R source to L", nm.table.masterIn[2].srcChannel == 0 && dawName(nm, 2, true) == "HW In L");
     SetInputType(nm, 2, SLOT_VIRTUAL);
-    SetInputSource(nm, 2, 3, 0);
-    check("VIRTUAL -> 'Virtual 4'", dawName(nm, 2, true) == "Virtual 4");
+    check("VIRTUAL cable 4 R (source 7) -> 'Virtual 4 R'", SetInputSource(nm, 2, 7, 0) && dawName(nm, 2, true) == "Virtual 4 R");
+    check("VIRTUAL source 16 rejected (8 stereo cables)", !SetInputSource(nm, 2, 16, 0));
     SetInputType(nm, 2, SLOT_NETWORK);
     check("NETWORK stream 2 ch 1 -> 'Rx3 Ch1'", SetInputSource(nm, 2, 0, 2) && dawName(nm, 2, true) == "Rx3 Ch1");
     check("NETWORK stream 8 rejected", !SetInputSource(nm, 2, 0, 8));
@@ -225,7 +225,7 @@ int main() {
     SetInputType(nm, 1, SLOT_VIRTUAL);
     check("...through source and type changes", dawName(nm, 1, true) == "Vocal Mic");
     SetInputName(nm, 1, "");
-    check("clearing the name goes back to automatic", dawName(nm, 1, true) == "Virtual 1");
+    check("clearing the name goes back to automatic", dawName(nm, 1, true) == "Virtual 1 L");
     SetInputType(nm, 1, SLOT_NONE);
     check("back to NONE -> '- empty -'", dawName(nm, 1, true) == "- empty -");
 
@@ -259,8 +259,19 @@ int main() {
       bridgeHeap->isMaster = false;
       return !AssignHw(*bridgeHeap, true, 2, mic, 0);
     }());
-    check("AssignSource Virtual Cable 3", AssignSource(nm, true, 2, SLOT_VIRTUAL, 2, 0) && nm.table.masterIn[2].type == SLOT_VIRTUAL &&
-                                              SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual Cable 3");
+    check("AssignSource Virtual 3 L", AssignSource(nm, true, 2, SLOT_VIRTUAL, 4, 0) && nm.table.masterIn[2].type == SLOT_VIRTUAL &&
+                                          SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual 3 \xC2\xB7 L");
+    check("Virtual Cable menu uses the GENERAL name", VirtualCableLabel(nm.table.general, 0) == "WinHookAudio Virtual 1");
+    WHANetworkStream rx{};
+    check("Network stream not set up says where", NetworkStreamLabel(rx, true, 0) == "Rx1  (not set up: NETWORK tab)");
+    TruncateCopy(rx.ip, sizeof(rx.ip), "192.168.1.50");
+    check("Network stream shows peer, codec, channels",
+          NetworkStreamLabel(rx, true, 2) == "Rx3  from 192.168.1.50:6980 \xC2\xB7 PCM 32 \xC2\xB7 2 ch");
+    auto shared = std::make_unique<WHABridgeShared>();
+    check("Bridge label: no app", BridgeLabel(0, shared.get()) == "Bridge 1  (no app connected)");
+    shared->clientCount = 2;
+    check("Bridge label: 2 apps", BridgeLabel(1, shared.get()) == "Bridge 2  (2 apps connected)");
+    check("Bridge label: unknown", BridgeLabel(3, nullptr) == "Bridge 4");
     check("AssignSource Tx2 Ch2 on an output", AssignSource(nm, false, 1, SLOT_NETWORK, 1, 1) &&
                                                    SlotSourceLabel(nm.table.masterOut[1], false, nullptr) == "Tx2 \xC2\xB7 Ch2");
     check("AssignSource invalid source leaves the slot", !AssignSource(nm, true, 2, SLOT_NETWORK, 0, 9) &&

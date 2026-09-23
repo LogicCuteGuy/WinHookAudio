@@ -81,6 +81,7 @@ class MasterHolder {
   std::atomic<bool> hwRequestValid_{false};
   float hwOut_[2 * 4096] = {};  // planar device-channel scratch (Worker thread)
   float hwIn_[2 * 4096] = {};
+  float virtualScratch_[2 * 4096] = {};  // one Virtual Cable's interleaved stereo block (Worker thread)
   class WHARingBuffer* virtualRings_[8] = {};
   class WHANetworkEngine* network_ = nullptr;
   std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs
