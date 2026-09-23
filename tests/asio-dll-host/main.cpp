@@ -272,6 +272,22 @@ int main(int argc, char** argv) {
     if (match) delay = d;
   }
   std::printf("Loopback OUT0 -> IN0 delay: %ld frames\n", delay);
+  if (delay < 0) {  // per-block delay (in blocks), '?' = no whole-block match: shows where the stream slipped
+    std::printf("Loopback per-block delay:");
+    for (size_t blk = 4; blk < gIn0.size() / kBlock; ++blk) {
+      int found = -1;
+      for (int d = 0; d <= 4 && found < 0; ++d) {
+        bool match = true;
+        for (size_t i = 0; match && i < static_cast<size_t>(kBlock); ++i) {
+          const size_t n = blk * kBlock + i;
+          match = std::abs(gIn0[n] - Sine(n - static_cast<size_t>(d) * kBlock)) < 1e-6f;
+        }
+        if (match) found = d;
+      }
+      if (found < 0) std::printf(" [%zu]?", blk); else std::printf(" %d", found);
+    }
+    std::printf("\n");
+  }
   check("VIRTUAL loopback OUT0 -> Worker -> IN0 sample-exact", delay >= 0);
 
   if (b) {

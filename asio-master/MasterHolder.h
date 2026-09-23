@@ -21,6 +21,11 @@ class MasterHolder {
   bool start();
   void stop();
   bool running() const { return running_; }
+  // Master Clock side: wait (bounded) until the Worker has routed the last Master_Tick, so the next
+  // bufferSwitch reads this tick's IN slots and no OUT slot is overwritten before it was routed.
+  bool waitWorker(DWORD timeoutMs) const {
+    return !running_ || WaitForSingleObject(workerDone_, timeoutMs) == WAIT_OBJECT_0;
+  }
 
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
@@ -37,6 +42,7 @@ class MasterHolder {
   WHABridgeShared* bridges_[4] = {};
   HANDLE masterTick_ = nullptr;
   HANDLE tableChanged_ = nullptr;
+  HANDLE workerDone_ = nullptr;  // auto-reset, set after each Master_Tick doTick
   HANDLE bridgeTicks_[4][4] = {};
   HANDLE thread_ = nullptr;
   bool running_ = false;

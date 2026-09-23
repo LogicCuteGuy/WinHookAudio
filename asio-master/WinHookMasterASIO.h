@@ -57,6 +57,7 @@ class WinHookMasterASIO : public IASIO {
   void clearResetRequest() { resetRequested_ = false; }
   uint64_t clockTicks() const { return clockTicks_.load(); }
   uint64_t clockOverruns() const { return clockOverruns_.load(); }
+  uint64_t workerOverruns() const { return workerOverruns_.load(); }
 
  private:
   struct Binding {  // one DAW channel's double buffer, created by createBuffers
@@ -106,6 +107,7 @@ class WinHookMasterASIO : public IASIO {
   std::atomic<uint64_t> sampleTimeNs_{0};    // system time of the last bufferSwitch
   std::atomic<uint64_t> clockTicks_{0};
   std::atomic<uint64_t> clockOverruns_{0};   // periods the clock thread started late (> 1 period)
+  std::atomic<uint64_t> workerOverruns_{0};  // ticks the Worker had not routed within one period
 };
 
 }  // namespace wha

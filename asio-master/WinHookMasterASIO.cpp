@@ -6,6 +6,7 @@
 
 #include <avrt.h>
 
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 
@@ -314,6 +315,9 @@ void WinHookMasterASIO::clockTick() {
   const long index = bufferIndex_;
   bufferIndex_ ^= 1;
   const size_t bytes = sizeof(float) * static_cast<size_t>(bufferSize_);
+  // Bounded wait for the Worker to finish routing last tick; never block the DAW longer than one period.
+  const DWORD periodMs = static_cast<DWORD>(std::ceil(1000.0 * static_cast<double>(bufferSize_) / sampleRate_));
+  if (holder_ && !holder_->waitWorker(periodMs)) workerOverruns_.fetch_add(1);
   // SHM IN slots (routed by the Worker last tick) -> DAW inputs
   for (const Binding& b : bindings_) {
     if (!b.isInput) continue;

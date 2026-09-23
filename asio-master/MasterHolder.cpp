@@ -14,8 +14,9 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
     : table_(table), masterAudio_(masterAudio), masterTick_(masterTick), tableChanged_(tableChanged) {
   for (int i = 0; i < 4; ++i) bridges_[i] = bridges[i];
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
+  workerDone_ = CreateEventA(nullptr, FALSE, TRUE, nullptr);  // signaled: the first tick has nothing to wait for
 }
-MasterHolder::~MasterHolder() { stop(); delete network_; delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
+MasterHolder::~MasterHolder() { stop(); if (workerDone_) CloseHandle(workerDone_); delete network_; delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
 
 bool MasterHolder::start() {
   if (running_) return true;
@@ -38,6 +39,7 @@ void MasterHolder::stop() {
   if (thread_) { WaitForSingleObject(thread_, 1000); CloseHandle(thread_); thread_ = nullptr; }
   if (network_) network_->stop();
   running_ = false;
+  if (workerDone_) SetEvent(workerDone_);
 }
 DWORD WINAPI MasterHolder::threadProc(LPVOID param) { static_cast<MasterHolder*>(param)->run(); return 0; }
 void MasterHolder::run() {
@@ -69,6 +71,7 @@ void MasterHolder::run() {
     if (wait == WAIT_OBJECT_0 || wait == WAIT_OBJECT_0 + 1) {
       if (stopRequested_) break;
       doTick();
+      if (wait == WAIT_OBJECT_0 && workerDone_) SetEvent(workerDone_);  // Master_Tick routed
     }
   }
   if (ksAudio_) { ksAudio_->stop(); ksAudio_->close(); }
