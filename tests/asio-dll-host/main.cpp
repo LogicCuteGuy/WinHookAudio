@@ -249,7 +249,12 @@ int main(int argc, char** argv) {
   QueryPerformanceFrequency(&f);
   QueryPerformanceCounter(&t0);
   check("Master start", m->start() == ASE_OK);
-  Sleep(1000);
+  Sleep(600);
+  // A Control Panel Save mid-stream (TableChanged, same table): the loopback must stay sample-exact.
+  HANDLE changed = OpenEventA(EVENT_MODIFY_STATE, FALSE, shm::kTableChangedName + 7);
+  check("Save mid-stream signals TableChanged", changed && SetEvent(changed));
+  if (changed) CloseHandle(changed);
+  Sleep(400);
   check("Master stop", m->stop() == ASE_OK);
   QueryPerformanceCounter(&t1);
   if (b) b->stop();
