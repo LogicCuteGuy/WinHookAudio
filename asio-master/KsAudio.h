@@ -37,7 +37,9 @@ class KsAudio {
   const char* lastStep() const { return lastStep_; }
 
   // Hardware Master Clock: frames queued in the device and not yet played (-1: device gone).
-  // Safe from another thread than write().
+  // Called from the clock thread while the Worker may be in write(): WASAPI clients are not safe for
+  // concurrent calls (overlapping GetCurrentPadding and GetBuffer/ReleaseBuffer crashed in AUDIOKSE
+  // when a tick overran), so every call on the client takes clientLock_.
   long padding() const;
   int32_t capacity() const { return capacityFrames_; }
   // HW Master Clock: tick once the device has drained to this fill (2 blocks of room above it).
@@ -56,6 +58,7 @@ class KsAudio {
  private:
   bool fail(const char* step, HRESULT hr);
 
+  mutable SRWLOCK clientLock_ = SRWLOCK_INIT;  // guards audioClient_/renderClient_ calls
   IAudioClient* audioClient_ = nullptr;
   IAudioRenderClient* renderClient_ = nullptr;
   IAudioClock* audioClock_ = nullptr;

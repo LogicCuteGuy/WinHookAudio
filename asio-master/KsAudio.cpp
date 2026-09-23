@@ -7,6 +7,18 @@
 
 namespace wha {
 
+namespace {
+
+struct ClientLock {  // exclusive SRW lock for the scope
+  explicit ClientLock(SRWLOCK& lock) : lock_(lock) { AcquireSRWLockExclusive(&lock_); }
+  ~ClientLock() { ReleaseSRWLockExclusive(&lock_); }
+  ClientLock(const ClientLock&) = delete;
+  ClientLock& operator=(const ClientLock&) = delete;
+  SRWLOCK& lock_;
+};
+
+}  // namespace
+
 KsAudio::KsAudio() = default;
 KsAudio::~KsAudio() { close(); }
 
@@ -58,6 +70,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
 }
 
 void KsAudio::close() {
+  ClientLock lock(clientLock_);
   if (renderClient_) { renderClient_->Release(); renderClient_ = nullptr; }
   if (audioClock_) { audioClock_->Release(); audioClock_ = nullptr; }
   if (audioClient_) { audioClient_->Stop(); audioClient_->Release(); audioClient_ = nullptr; }
@@ -67,6 +80,7 @@ void KsAudio::close() {
 }
 
 bool KsAudio::start() {
+  ClientLock lock(clientLock_);
   if (!audioClient_ || !renderClient_) return false;
   // Queue silence up to the target fill: the first Worker writes land ahead of the device, and the
   // Master Clock starts at its steady state instead of bursting to fill the buffer.
@@ -77,11 +91,13 @@ bool KsAudio::start() {
   return SUCCEEDED(hr);
 }
 void KsAudio::stop() {
+  ClientLock lock(clientLock_);
   if (audioClient_) audioClient_->Stop();
 }
 
 // data is planar: channel c at data[c * frames]. Source channel c -> device channel c; others silent.
 bool KsAudio::write(const float* data, int frames, int channels) {
+  ClientLock lock(clientLock_);
   if (!renderClient_ || !audioClient_) return false;
   UINT32 padding = 0;
   audioClient_->GetCurrentPadding(&padding);
@@ -107,6 +123,7 @@ bool KsAudio::write(const float* data, int frames, int channels) {
 }
 
 long KsAudio::padding() const {
+  ClientLock lock(clientLock_);
   if (!audioClient_) return -1;
   UINT32 queued = 0;
   return SUCCEEDED(audioClient_->GetCurrentPadding(&queued)) ? static_cast<long>(queued) : -1;
