@@ -29,7 +29,8 @@ class KsAudio {
   void close();
   bool start();
   void stop();
-  bool write(const float* data, int frames, int channels);
+  bool write(const float* data, int frames, int channels);  // planar: channel c at data[c * frames]
+  bool writeInterleaved(const float* data, int frames, int channels);  // frame f at data[f * channels]
   double latencyMs() const;
   bool opened() const { return opened_; }
   SampleFormat format() const { return format_; }
@@ -64,6 +65,7 @@ class KsAudio {
 
  private:
   bool fail(const char* step, HRESULT hr);
+  bool writeFrames(const float* data, int frames, int channels, bool interleaved);
 
   mutable SRWLOCK clientLock_ = SRWLOCK_INIT;  // guards audioClient_/renderClient_ calls
   IAudioClient* audioClient_ = nullptr;

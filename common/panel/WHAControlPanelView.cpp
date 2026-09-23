@@ -58,27 +58,31 @@ const SlotListOps kOutputOps{false, "OUTPUTS", "Out", "WHA_OUT", "+Add Output", 
 
 // The Source cell: one menu picks what a slot carries (type and source together), with HW devices
 // by name, so nobody has to know that "HW" + "L" means the left channel of the GENERAL device.
-void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDevices* devices, const char* hwName,
+void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDevices* devices, const char* const* hwNames,
                     WHABridgeShared* const* bridges, bool cableDriver) {
   WHASlot& s = (isInput ? edit.table.masterIn : edit.table.masterOut)[idx];
-  const std::string preview = SlotSourceLabel(s, isInput, hwName);
+  const std::string preview = SlotSourceLabel(s, isInput, hwNames);
   ImGui::SetNextItemWidth(-FLT_MIN);
   if (!ImGui::BeginCombo("##source", preview.c_str(), ImGuiComboFlags_HeightLargest)) {
-    if (s.type == SLOT_HW && ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s %s", isInput ? "From" : "To", hwName ? hwName : "the Windows default device");
+    if (s.type == SLOT_HW && ImGui::IsItemHovered()) {
+      const char* name = hwNames ? hwNames[HwDeviceOf(s)] : nullptr;
+      ImGui::SetTooltip("%s device #%d: %s", isInput ? "From" : "To", HwDeviceOf(s) + 1,
+                        name ? name : "the Windows default device");
+    }
     return;
   }
   if (ImGui::Selectable("- empty -", s.type == SLOT_NONE)) AssignSource(edit, isInput, idx, SLOT_NONE, 0, 0);
 
   if (ImGui::BeginMenu("Hardware", !IsGeneralReadOnly(edit))) {
-    ImGui::TextDisabled(isInput ? "All HW inputs share one device (2 channels)." : "All HW outputs share one device (2 channels).");
-    const WHAGeneral& g = edit.table.general;
-    const char* current = isInput ? g.hwCaptureId : g.hwRenderId;
+    ImGui::TextDisabled("Each device has 2 channels (L/R). Up to 4 %s devices; GENERAL lists them.", isInput ? "input" : "output");
+    if (!isInput) ImGui::TextDisabled("Output #1 is the clock: the others are resampled to it.");
     const std::vector<PanelEndpoint>* list = devices ? (isInput ? &devices->capture : &devices->render) : nullptr;
-    auto deviceMenu = [&](const char* id, const std::string& label) {
+    auto deviceMenu = [&](const char* id, std::string label) {
       ImGui::PushID(id[0] ? id : "default");
-      const bool isCurrent = s.type == SLOT_HW && std::strcmp(current, id) == 0;
-      if (ImGui::BeginMenu(label.c_str())) {
+      const int listed = FindHwDevice(edit.table, isInput, id);
+      if (listed >= 0) label += "  (#" + std::to_string(listed + 1) + ")";
+      const bool isCurrent = s.type == SLOT_HW && listed == HwDeviceOf(s);
+      if (ImGui::BeginMenu(label.c_str(), CanAssignHw(edit, isInput, idx, id))) {
         for (int side = 0; side < kHwSlotChannels; ++side)
           if (ImGui::MenuItem(side == 0 ? "L (left)" : "R (right)", nullptr, isCurrent && s.srcChannel == side))
             AssignHw(edit, isInput, idx, id, side);
@@ -91,8 +95,11 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
     deviceMenu("", defName ? std::string("Windows default (") + defName + ")" : std::string("Windows default"));
     if (list)
       for (const PanelEndpoint& e : *list) deviceMenu(e.id.c_str(), e.name);
-    if (current[0] && (!list || !EndpointName(*list, current)))  // saved device not connected: keep it visible
-      deviceMenu(current, std::string("not connected: ") + current);
+    for (int d = 0; d < kHwDevices; ++d) {  // a listed device not connected: keep it visible
+      const char* id = HwDeviceId(edit.table, isInput, d);
+      if (HwDeviceListed(edit.table, isInput, d) && id[0] && (!list || !EndpointName(*list, id)))
+        deviceMenu(id, std::string("not connected: ") + id);
+    }
     ImGui::EndMenu();
   }
 
@@ -222,7 +229,8 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
   if (ImGui::Button(ops.addLabel)) op.kind = PendingOp::Add;
   ImGui::EndDisabled();
 
-  const char* hwName = HwDeviceName(devices, t.general, ops.isInput);
+  const char* hwNames[kHwDevices];
+  HwDeviceNames(devices, t, ops.isInput, hwNames);
 
   std::vector<uint32_t> visible;
   visible.reserve(count);
@@ -283,7 +291,7 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
         ImGui::Text("%s%02u", ops.prefix, idx + 1);
 
         ImGui::TableSetColumnIndex(2);
-        DrawSourceCell(edit, ops.isInput, idx, devices, hwName, bridges, about.sysRunning);
+        DrawSourceCell(edit, ops.isInput, idx, devices, hwNames, bridges, about.sysRunning);
 
         ImGui::TableSetColumnIndex(3);
         char name[kNameLen];
@@ -294,7 +302,7 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
           // Nobody named it: the DAW gets the automatic name, shown greyed; typing sets a name,
           // clearing it goes back to automatic.
           char autoName[kNameLen];
-          AutoSlotName(slots, count, idx, ops.isInput, hwName, autoName);
+          AutoSlotName(slots, count, idx, ops.isInput, hwNames, autoName);
           name[0] = '\0';
           if (ImGui::InputTextWithHint("##name", autoName, name, sizeof(name))) ops.setName(edit, idx, name);
         } else if (ImGui::InputText("##name", name, sizeof(name))) {
@@ -414,14 +422,15 @@ void DrawNetworkStreams(PanelModel& edit, bool tx, std::string& status) {
   ImGui::EndTable();
 }
 
-// One HW device choice: "Windows default" or an endpoint. A saved ID that is not present shows as
-// not connected (the Worker will fail to open it, not fall back silently).
-bool ComboEndpoint(const char* label, const char* currentId, const std::vector<PanelEndpoint>* list, std::string& chosen) {
+// One HW device choice: "Windows default" (device 0 only) or an endpoint. A saved ID that is not
+// present shows as not connected (the Worker will fail to open it, not fall back silently).
+bool ComboEndpoint(const char* label, const char* currentId, const std::vector<PanelEndpoint>* list, std::string& chosen,
+                   bool allowDefault = true) {
   const char* name = !*currentId ? "Windows default" : list ? EndpointName(*list, currentId) : nullptr;
   std::string preview = name ? name : std::string("(not connected) ") + currentId;
   bool changed = false;
   if (ImGui::BeginCombo(label, preview.c_str())) {
-    if (ImGui::Selectable("Windows default", !*currentId)) {
+    if (allowDefault && ImGui::Selectable("Windows default", !*currentId)) {
       changed = *currentId != 0;
       chosen.clear();
     }
@@ -459,13 +468,50 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
   ImGui::TextDisabled("Changing the Master Clock asks the DAW to reset on Save.");
 
   ImGui::SeparatorText("2. HARDWARE DEVICES");
-  std::string chosen;
-  ImGui::SetNextItemWidth(360);
-  if (ComboEndpoint("Output (HW OUT slots)", g.hwRenderId, state.devices ? &state.devices->render : nullptr, chosen))
-    SetHwRenderDevice(edit, chosen.c_str());
-  ImGui::SetNextItemWidth(360);
-  if (ComboEndpoint("Input (HW IN slots)", g.hwCaptureId, state.devices ? &state.devices->capture : nullptr, chosen))
-    SetHwCaptureDevice(edit, chosen.c_str());
+  for (int dir = 0; dir < 2; ++dir) {
+    const bool isInput = dir == 1;
+    const std::vector<PanelEndpoint>* list = state.devices ? (isInput ? &state.devices->capture : &state.devices->render) : nullptr;
+    ImGui::PushID(dir);
+    ImGui::TextUnformatted(isInput ? "Inputs (HW IN slots)" : "Outputs (HW OUT slots)");
+    int removeDevice = -1;
+    for (int d = 0; d < kHwDevices; ++d) {
+      if (!HwDeviceListed(edit.table, isInput, d)) continue;
+      ImGui::PushID(d);
+      ImGui::Text("  #%d", d + 1);
+      ImGui::SameLine(60);
+      std::string chosen;
+      ImGui::SetNextItemWidth(360);
+      if (ComboEndpoint("##device", HwDeviceId(edit.table, isInput, d), list, chosen, d == 0))
+        SetHwDevice(edit, isInput, d, chosen.c_str());
+      ImGui::SameLine();
+      if (d > 0 && ImGui::SmallButton("x")) removeDevice = d;
+      if (d > 0) ImGui::SameLine();
+      const int used = HwDeviceSlotCount(edit.table, isInput, d);
+      if (!isInput && d == 0) ImGui::TextDisabled("clock; %d slot%s", used, used == 1 ? "" : "s");
+      else if (used) ImGui::TextDisabled("%d slot%s", used, used == 1 ? "" : "s");
+      else ImGui::TextDisabled("no slot uses it: not opened");
+      ImGui::PopID();
+    }
+    if (removeDevice > 0) RemoveHwDevice(edit, isInput, removeDevice);
+    bool full = true;
+    for (int d = 1; d < kHwDevices; ++d) full = full && HwDeviceListed(edit.table, isInput, d);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 52);
+    ImGui::SetNextItemWidth(360);
+    ImGui::BeginDisabled(full || !list);
+    if (ImGui::BeginCombo("##add", isInput ? "+ Add input device" : "+ Add output device")) {
+      for (size_t i = 0; list && i < list->size(); ++i) {
+        const PanelEndpoint& e = (*list)[i];
+        if (FindHwDevice(edit.table, isInput, e.id.c_str()) >= 0) continue;
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(e.name.c_str())) AddHwDevice(edit, isInput, e.id.c_str());
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ImGui::PopID();
+  }
+  ImGui::TextDisabled("Each device: 2 channels. Output #1 paces the DAW; other devices are resampled to it.");
   if (ImGui::SmallButton("Refresh devices")) result.refreshDevices = true;
   ImGui::SameLine();
   ImGui::TextUnformatted("Windows:");

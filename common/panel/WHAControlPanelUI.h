@@ -46,9 +46,9 @@ bool MoveInput(PanelModel& model, uint32_t from, uint32_t to);  // memmove INPUT
 bool SetInputLoopback(PanelModel& model, uint32_t index, bool loopback);  // VIRTUAL only
 bool SetInputEnabled(PanelModel& model, uint32_t index, bool enabled);
 bool SetInputName(PanelModel& model, uint32_t index, const char* name);
-bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type);  // HW: source reset to L if not L/R
-// Source of a slot for its type: HW 0 = L / 1 = R of the GENERAL input device; VIRTUAL cable channel;
-// NETWORK Rx stream + channel in it. Names left unset follow it (DawChannelName in WHASlotTable.h).
+bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type);  // HW: source reset to L / device 0 if invalid
+// Source of a slot for its type: HW 0 = L / 1 = R, streamId = the HW device (0..3, listed); VIRTUAL
+// cable channel; NETWORK Rx stream + channel in it. Names left unset follow it (DawChannelName).
 bool SetInputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int32_t streamId);
 
 // Operations on OUTPUTS only (12) — independent indices
@@ -132,17 +132,35 @@ bool SetHwRenderDevice(PanelModel& model, const char* id);   // requires host re
 bool SetHwCaptureDevice(PanelModel& model, const char* id);  // requires host reset
 // Friendly name for an ID among `list`; nullptr if the device is not present.
 const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id);
-// Friendly name of the device HW slots of one direction use (GENERAL; "" = the Windows default);
-// nullptr if unknown.
+// Friendly name of HW device 0 of one direction (GENERAL; "" = the Windows default); nullptr if unknown.
 const char* HwDeviceName(const PanelDevices* devices, const WHAGeneral& general, bool isInput);
+// Friendly names of all HW devices of one direction, by device index (nullptr: not listed / unknown).
+void HwDeviceNames(const PanelDevices* devices, const WHASlotTable& table, bool isInput, const char* out[kHwDevices]);
+
+// GENERAL HW device list, per direction (WHAHwMore): device 0 (output 0 is the Master Clock) plus up
+// to three more, each on its own clock. Master only; each change asks the DAW to reset on Save.
+// The listed device with this ID (-1: none). Device 0 matches "" (Windows default).
+int FindHwDevice(const WHASlotTable& table, bool isInput, const char* id);
+// HW slots of one direction that use device d.
+int HwDeviceSlotCount(const WHASlotTable& table, bool isInput, int device);
+// Set device d's ID: "" only for device 0; an ID another device of that direction has is rejected.
+bool SetHwDevice(PanelModel& model, bool isInput, int device, const char* id);
+// Add a device (the first free index 1..3); returns its index, -1 if full, listed already or "".
+int AddHwDevice(PanelModel& model, bool isInput, const char* id);
+// Remove device 1..3 from the list; its HW slots become empty.
+bool RemoveHwDevice(PanelModel& model, bool isInput, int device);
 
 // Source menu (INPUTS/OUTPUTS "Source" column): one pick sets type and source together.
-// AssignHw also sets the GENERAL device of that direction ("" = Windows default): a direction has one
-// HW device, so every HW slot of it follows. Master only (a Bridge popup cannot change GENERAL).
+// AssignHw picks a device by ID: a listed one; else it replaces device 0 when no other HW slot uses
+// it (switching the one device), else it is added to the list (false when the list is full).
+// Master only (a Bridge popup cannot change GENERAL).
 bool AssignSource(PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t srcChannel, int32_t streamId);
 bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* deviceId, int32_t side);
+// Whether AssignHw could use this device for that slot (listed, or room in the list).
+bool CanAssignHw(const PanelModel& model, bool isInput, uint32_t index, const char* deviceId);
 // What a slot carries, for the Source column: "Microphone · L", "Virtual Cable 2", "Rx3 · Ch1", "Bridge1".
-std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDevice);
+// hwDevices: HwDeviceNames of the slot's direction (nullptr: unknown).
+std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const* hwDevices);
 // Source menu entries: "WinHookAudio Virtual 1" (GENERAL name prefix), "Rx1  from 192.168.1.50:6980 ·
 // PCM 32 · 2 ch" or "(not set up: NETWORK tab)", "Bridge 1  (2 apps connected)" (shared = nullptr: unknown).
 std::string VirtualCableLabel(const WHAGeneral& general, int cable);
@@ -157,7 +175,9 @@ struct HwStatusLine {
   HwStatusLevel level;
   std::string text;
 };
-std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* stats, const WHAGeneral& saved, const PanelDevices* devices);
+// savedMore: the Slot Table's more-devices list now (nullptr: not compared).
+std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* stats, const WHAGeneral& saved, const PanelDevices* devices,
+                                        const WHAHwMore* savedMore = nullptr);
 // Why a HW open failed, in words ("" for an unknown HRESULT).
 const char* HwErrorText(int32_t hr);
 

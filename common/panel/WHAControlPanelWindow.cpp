@@ -382,7 +382,7 @@ void ControlPanelWindow::Run() {
       hwStatusAt = GetTickCount64();
       WHAMasterStats stats{};
       const bool streaming = host_.readStats(stats);
-      hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices);
+      hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices, &host_.table->hwMore);
       state.hwStatus = &hwStatus;
     }
     PanelViewResult r = DrawControlPanel(edit, state, host_.bridges);

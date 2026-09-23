@@ -100,8 +100,13 @@ void KsAudio::stop() {
   if (audioClient_) audioClient_->Stop();
 }
 
-// data is planar: channel c at data[c * frames]. Source channel c -> device channel c; others silent.
-bool KsAudio::write(const float* data, int frames, int channels) {
+bool KsAudio::write(const float* data, int frames, int channels) { return writeFrames(data, frames, channels, false); }
+bool KsAudio::writeInterleaved(const float* data, int frames, int channels) {
+  return writeFrames(data, frames, channels, true);
+}
+
+// Source channel c -> device channel c; others silent.
+bool KsAudio::writeFrames(const float* data, int frames, int channels, bool interleaved) {
   ClientLock lock(clientLock_);
   if (!renderClient_ || !audioClient_) return false;
   UINT32 padding = 0;
@@ -119,7 +124,8 @@ bool KsAudio::write(const float* data, int frames, int channels) {
   if (FAILED(hr)) return false;
   for (int f = 0; f < frames; ++f) {
     for (int ch = 0; ch < kKsDeviceChannels; ++ch) {
-      KsToDevice(format_, ch < channels ? data[ch * frames + f] : 0.0f, buffer, f * kKsDeviceChannels + ch);
+      const float v = ch >= channels ? 0.0f : interleaved ? data[f * channels + ch] : data[ch * frames + f];
+      KsToDevice(format_, v, buffer, f * kKsDeviceChannels + ch);
     }
   }
   hr = renderClient_->ReleaseBuffer(frames, 0);

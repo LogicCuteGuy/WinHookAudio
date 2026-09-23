@@ -79,6 +79,7 @@ class WinHookMasterASIO : public IASIO {
   static DWORD WINAPI clockProc(LPVOID self);
   void runClock();
   void clockTick();
+  class KsCapture* reportedCapture() const;  // the HW input the DAW's input latency describes
 
   std::atomic<ULONG> refCount_{1};
   bool initialized_ = false;
@@ -103,8 +104,8 @@ class WinHookMasterASIO : public IASIO {
   std::mutex dawViewMutex_;
   WHASlotTable dawView_{};      // table as last seen by the DAW (getChannels)
   bool resetPending_ = false;   // sent ASIOResetRequest, DAW has not re-queried yet
-  std::string hwInName_;        // HW device friendly names at getChannels (DAW thread), for channel names
-  std::string hwOutName_;
+  std::string hwInNames_[kHwDevices];  // HW device friendly names at getChannels (DAW thread), for channel names
+  std::string hwOutNames_[kHwDevices];
 
   // Buffers + Master Clock
   bool buffersCreated_ = false;

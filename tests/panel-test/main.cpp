@@ -186,10 +186,14 @@ int main() {
 
   // Automatic names: an assigned slot nobody named reaches the DAW as what it carries, not "- empty -".
   {
-    auto dawName = [](const PanelModel& m, uint32_t i, bool in, const char* hwDevice = nullptr) {
+    // hwDevice: device 0's name; hwMore: devices 1..3 (nullptr: unknown).
+    auto dawName = [](const PanelModel& m, uint32_t i, bool in, const char* hwDevice = nullptr,
+                      const char* const* hwMore = nullptr) {
+      const char* devices[kHwDevices] = {hwDevice, hwMore ? hwMore[0] : nullptr, hwMore ? hwMore[1] : nullptr,
+                                         hwMore ? hwMore[2] : nullptr};
       char n[kNameLen];
-      if (in) DawChannelName(m.table.masterIn, m.table.masterInCount, i, true, hwDevice, n);
-      else DawChannelName(m.table.masterOut, m.table.masterOutCount, i, false, hwDevice, n);
+      if (in) DawChannelName(m.table.masterIn, m.table.masterInCount, i, true, devices, n);
+      else DawChannelName(m.table.masterOut, m.table.masterOutCount, i, false, devices, n);
       return std::string(n);
     };
     auto nmHeap = std::make_unique<PanelModel>();  // ~50 KB each: main's stack is nearly full of them
@@ -248,11 +252,44 @@ int main() {
     devs.defaultCaptureId = mic;
     check("HwDeviceName: empty ID = the Windows default's name",
           HwDeviceName(&devs, nm.table.general, true) && std::string(HwDeviceName(&devs, nm.table.general, true)) == "Microphone (Realtek Audio)");
-    check("AssignHw: USB interface R", AssignHw(nm, true, 2, usb, 1) && nm.table.masterIn[2].type == SLOT_HW &&
-                                            nm.table.masterIn[2].srcChannel == 1 && std::strcmp(nm.table.general.hwCaptureId, usb) == 0);
-    check("...and the DAW name follows the device",
-          dawName(nm, 2, true, HwDeviceName(&devs, nm.table.general, true)) == "Line In R");
-    check("Source label names the device", SlotSourceLabel(nm.table.masterIn[2], true, "Line In (USB Interface)") == "Line In \xC2\xB7 R");
+    // In02 already uses device #1 (the Windows default): the USB interface is added as device #2.
+    check("AssignHw: USB interface R, added as device #2", AssignHw(nm, true, 2, usb, 1) && nm.table.masterIn[2].type == SLOT_HW &&
+                                                               nm.table.masterIn[2].srcChannel == 1 && nm.table.masterIn[2].streamId == 1 &&
+                                                               nm.table.general.hwCaptureId[0] == 0 &&
+                                                               std::strcmp(nm.table.hwMore.captureId[0], usb) == 0);
+    const char* names[kHwDevices];
+    HwDeviceNames(&devs, nm.table, true, names);
+    check("HwDeviceNames: #1 the default, #2 the USB interface", names[0] && std::string(names[0]) == "Microphone (Realtek Audio)" &&
+                                                                     names[1] && std::string(names[1]) == "Line In (USB Interface)" && !names[2]);
+    check("...and the DAW names follow each slot's device",
+          dawName(nm, 2, true, names[0], names + 1) == "Line In R" && dawName(nm, 1, true, names[0], names + 1) == "Microphone L");
+    check("Source label names the device", SlotSourceLabel(nm.table.masterIn[2], true, names) == "Line In \xC2\xB7 R");
+    check("unknown device #2 -> 'HW In 2 R'", dawName(nm, 2, true) == "HW In 2 R");
+    check("AssignHw a listed device reuses it", AssignHw(nm, true, 1, usb, 0) && nm.table.masterIn[1].streamId == 1 &&
+                                                    FindHwDevice(nm.table, true, usb) == 1 && HwDeviceSlotCount(nm.table, true, 1) == 2);
+    check("device #1 now unused: picking another device switches #1 instead of adding",
+          AssignHw(nm, true, 1, mic, 1) && nm.table.masterIn[1].streamId == 0 && std::strcmp(nm.table.general.hwCaptureId, mic) == 0);
+    check("a device cannot be listed twice", !SetHwDevice(nm, true, 2, usb) && AddHwDevice(nm, true, usb) < 0);
+    check("an unlisted device index is rejected as a source", !SetInputSource(nm, 1, 0, 3) && !AssignSource(nm, true, 1, SLOT_HW, 0, 3));
+    {
+      auto full = std::make_unique<PanelModel>(nm);
+      const char* ids[] = {"{x2}", "{x3}"};
+      check("four input devices at most", AddHwDevice(*full, true, ids[0]) == 2 && AddHwDevice(*full, true, ids[1]) == 3 &&
+                                              AddHwDevice(*full, true, "{x4}") < 0);
+      check("...then a new device cannot be assigned while #1 is in use",
+            !CanAssignHw(*full, true, 2, "{x4}") && !AssignHw(*full, true, 2, "{x4}", 0) && full->table.masterIn[2].streamId == 1);
+      check("RemoveHwDevice empties its slots", RemoveHwDevice(*full, true, 1) && full->table.masterIn[2].type == SLOT_NONE &&
+                                                    full->table.hwMore.captureId[0][0] == 0 && !RemoveHwDevice(*full, true, 0));
+      check("the list round-trips through slots.json", [&] {
+        WHASlotTable back{};
+        std::string err;
+        const bool ok = DeserializeSlots(SerializeSlots(full->table), back, &err);
+        if (!ok) std::printf("  JSON error: %s\n", err.c_str());
+        return ok && std::strcmp(back.hwMore.captureId[1], "{x2}") == 0 && std::strcmp(back.hwMore.captureId[2], "{x3}") == 0 &&
+               back.hwMore.captureId[0][0] == 0 && back.masterIn[1].streamId == 0;
+      }());
+      check("a device list change is DAW-visible (reset)", DawVisibleChanged(nm.table, full->table));
+    }
     check("AssignHw side 2 rejected", !AssignHw(nm, true, 2, usb, 2));
     check("AssignHw from a Bridge popup rejected (GENERAL is read-only there)", [&] {
       auto bridgeHeap = std::make_unique<PanelModel>(nm);
@@ -380,6 +417,43 @@ int main() {
     check("HW status: input dropouts counted", has(lines, HwStatusLevel::Warning, "4 ran empty (buffer grew 4 times), 1 overflowed") &&
                                                    has(lines, HwStatusLevel::Warning, "10.0 ms skipped"));
     check("HW status: Worker late warns", has(lines, HwStatusLevel::Warning, "Worker late 2 times"));
+
+    // More devices: each its own line (clock drift, latency), failures, a device listed twice.
+    const char* cable = "{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000009}";
+    devs.render.push_back({cable, "CABLE Input"});
+    WHAMasterStats more = st;
+    WHAHwDeviceStats& o2 = more.hwMoreOut[0];
+    TruncateCopy(o2.requestedId, kStatsEndpointIdLen, cable);
+    TruncateCopy(o2.id, kStatsEndpointIdLen, cable);
+    o2.used = o2.open = 1;
+    o2.sameAs = -1;
+    o2.period = 128;
+    o2.format = HW_FORMAT_FLOAT32;
+    o2.latency = 960;
+    o2.driftPpmMilli = 42500;
+    o2.driftEngaged = 1;
+    WHAHwDeviceStats& o3 = more.hwMoreOut[1];
+    o3.used = 1;
+    o3.sameAs = 0;
+    WHAHwDeviceStats& i2 = more.hwMoreIn[0];
+    i2.used = 1;
+    i2.sameAs = -1;
+    i2.lastError = static_cast<int32_t>(0x8889000A);
+    WHAHwMore savedMore{};
+    TruncateCopy(savedMore.renderId[0], kEndpointIdLen, cable);
+    lines = HwStatusLines(&more, saved, &devs, &savedMore);
+    dump(lines);
+    check("HW status: output #2 with its clock and latency", has(lines, HwStatusLevel::Ok, "Output #2: CABLE Input - exclusive float32") &&
+                                                               has(lines, HwStatusLevel::Ok, "latency 20.0 ms, clock +42.5 ppm (resampling)"));
+    check("HW status: output #3 is output #1 listed twice", has(lines, HwStatusLevel::Info, "Output #3: the same device as #1"));
+    check("HW status: input #2 failed", has(lines, HwStatusLevel::Error, "Input #2: FAILED - in use"));
+    check("HW status: more devices as saved: nothing pending", !has(lines, HwStatusLevel::Warning, "DAW resets"));
+    WHAHwMore changedMore = savedMore;
+    TruncateCopy(changedMore.captureId[2], kEndpointIdLen, mic);
+    check("HW status: a device added since start is pending", has(HwStatusLines(&more, saved, &devs, &changedMore), HwStatusLevel::Warning, "DAW resets"));
+    more.hwMoreOut[0].underruns = 2;
+    more.hwMoreOut[0].gaps = 1;
+    check("HW status: output #2 dropouts warn", has(HwStatusLines(&more, saved, &devs), HwStatusLevel::Warning, "device ran dry 2 times, 1 refills"));
   }
 
   // ABOUT + Save contract (13)

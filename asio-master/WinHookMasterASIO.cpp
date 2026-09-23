@@ -2,6 +2,7 @@
 #include "MasterHolder.h"
 #include "KsAudio.h"
 #include "KsCapture.h"
+#include "HwOutputFifo.h"
 #include "WHASlotsFile.h"
 #if WHA_HAVE_IMGUI
 #include "WHAControlPanelWindow.h"
@@ -23,6 +24,7 @@ namespace {
 
 constexpr size_t kSlotFrames = 4096;  // Master audio SHM stride per slot
 static_assert(kStatsEndpointIdLen == kEndpointIdLen, "WHAMasterStats endpoint IDs hold a Slot Table ID");
+static_assert(kStatsHwMore == kHwDevices - 1, "WHAMasterStats has one entry per more HW device");
 static_assert(static_cast<int>(KsSampleFormat::Float32) == HW_FORMAT_FLOAT32 &&
                   static_cast<int>(KsSampleFormat::Pcm24In32) == HW_FORMAT_PCM24IN32 &&
                   static_cast<int>(KsSampleFormat::Pcm16) == HW_FORMAT_PCM16,
@@ -39,6 +41,23 @@ long HwOutputLatency(const KsAudio& hw, int32_t pacedFill = -1) {
 // A captured frame's age when read (the backlog target, from capture timestamps, plus the
 // resampler), then one tick in its IN slot.
 long HwInputLatency(const KsCapture& hw, long block) { return hw.latency() + block; }
+// A more output device (own clock): the block waits behind the FIFO's backlog and the resampler,
+// then crosses the device.
+long HwMoreOutputLatency(const KsAudio& hw, const HwOutputFifo& fifo) {
+  return fifo.target() + HwOutputFifo::resamplerDelay() + hw.streamLatency();
+}
+
+// The lowest HW device index a HW slot of one direction uses (-1: none).
+int FirstUsedDevice(const WHASlotTable& t, bool isInput) {
+  const WHASlot* slots = isInput ? t.masterIn : t.masterOut;
+  const uint32_t count = isInput ? t.masterInCount : t.masterOutCount;
+  int first = -1;
+  for (uint32_t i = 0; i < count && i < kMax; ++i)
+    if (slots[i].type == SLOT_HW && HwDeviceListed(t, isInput, HwDeviceOf(slots[i])) &&
+        (first < 0 || HwDeviceOf(slots[i]) < first))
+      first = HwDeviceOf(slots[i]);
+  return first;
+}
 
 std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
 
@@ -218,7 +237,8 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
   std::lock_guard<std::mutex> lock(holderMutex_);
   if (!holder_) return false;
   WHAGeneral request{};
-  if (holder_->hwRequest(request)) {
+  WHAHwMore requestMore{};
+  if (holder_->hwRequest(request, &requestMore)) {
     out->hwRequestValid = 1;
     out->hwRequestedPeriod = static_cast<int32_t>(request.hwBuffer);
     TruncateCopy(out->hwRequestedRenderId, kStatsEndpointIdLen, request.hwRenderId);
@@ -264,6 +284,57 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
     out->hwInGrowths = f.growths();
     out->hwInSkipped = f.skipped();
   }
+  for (int d = 1; d < kHwDevices; ++d) {
+    WHAHwDeviceStats& o = out->hwMoreOut[d - 1];
+    TruncateCopy(o.requestedId, kStatsEndpointIdLen, requestMore.renderId[d - 1]);
+    o.used = holder_->hwOutputUsed(d) ? 1 : 0;
+    o.lastError = holder_->hwOpenError(d);
+    o.format = HW_FORMAT_NONE;
+    const int route = holder_->hwOutputRoute(d);
+    o.sameAs = route >= 0 && route != d ? route : -1;
+    const HwOutputFifo* fifo = holder_->hwOutputFifo(d);
+    if (KsAudio* hw = holder_->hwOutput(d); hw && fifo) {
+      o.open = 1;
+      TruncateCopy(o.id, kStatsEndpointIdLen, hw->endpointId().c_str());
+      o.period = hw->periodFrames();
+      o.format = static_cast<int32_t>(hw->format());
+      o.latency = static_cast<int32_t>(HwMoreOutputLatency(*hw, *fifo));
+      o.fill = fifo->fill();
+      o.target = fifo->target();
+      o.driftPpmMilli = static_cast<int32_t>(fifo->devicePpm() * 1000.0);
+      o.driftEngaged = fifo->driftEngaged() ? 1 : 0;
+      o.chunk = fifo->chunk();
+      o.blocks = fifo->blocks();
+      o.underruns = fifo->underruns();
+      o.gaps = fifo->gaps();
+      o.trims = fifo->trims();
+    }
+    WHAHwDeviceStats& i = out->hwMoreIn[d - 1];
+    TruncateCopy(i.requestedId, kStatsEndpointIdLen, requestMore.captureId[d - 1]);
+    i.used = holder_->hwInputUsed(d) ? 1 : 0;
+    i.lastError = holder_->hwCaptureError(d);
+    i.format = HW_FORMAT_NONE;
+    const int inRoute = holder_->hwInputRoute(d);
+    i.sameAs = inRoute >= 0 && inRoute != d ? inRoute : -1;
+    if (KsCapture* in = holder_->hwCapture(d)) {
+      const HwInputFifo& f = in->fifo();
+      i.open = 1;
+      TruncateCopy(i.id, kStatsEndpointIdLen, in->endpointId().c_str());
+      i.period = in->periodFrames();
+      i.format = static_cast<int32_t>(in->format());
+      i.latency = static_cast<int32_t>(HwInputLatency(*in, bufferSize_));
+      i.fill = f.fill();
+      i.target = f.expectedFill();
+      i.driftPpmMilli = static_cast<int32_t>(f.sourcePpm() * 1000.0);
+      i.driftEngaged = f.driftEngaged() ? 1 : 0;
+      i.blocks = f.reads();
+      i.underruns = f.starved();
+      i.gaps = in->glitches();
+      i.trims = f.trims();
+      i.growths = f.growths();
+      i.skipped = f.skipped();
+    }
+  }
   return true;
 }
 
@@ -297,10 +368,11 @@ ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatenc
   // Frames from the sample position at bufferSwitch. Inputs and Worker-routed outputs: one block
   // (routed on the tick after the DAW wrote them). HW slots add the device queues. Not streaming
   // yet: open the devices briefly for their real buffers and stream latencies.
+  // With several HW devices the pair describes the Master Clock's output device and the lowest-numbered
+  // input device in use (the others' own latencies are in the Control Panel).
   const auto& g = slotTable_->general;
-  bool hwIn = false, hwOut = false;
-  for (uint32_t i = 0; i < slotTable_->masterInCount; ++i) hwIn = hwIn || slotTable_->masterIn[i].type == SLOT_HW;
-  for (uint32_t i = 0; i < slotTable_->masterOutCount; ++i) hwOut = hwOut || slotTable_->masterOut[i].type == SLOT_HW;
+  const int firstIn = FirstUsedDevice(*slotTable_, true);
+  const bool hwIn = firstIn >= 0, hwOut = hwIn || FirstUsedDevice(*slotTable_, false) >= 0;
   long output = bufferSize_, input = bufferSize_;
   if (KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr) {
     output = HwOutputLatency(*hw, hwOutReportFill_.load());
@@ -309,11 +381,12 @@ ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatenc
     if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwRenderId))
       output = HwOutputLatency(probe);
   }
-  if (KsCapture* hw = holder_ ? holder_->hwCapture() : nullptr) {
+  if (KsCapture* hw = reportedCapture()) {
     input = HwInputLatency(*hw, bufferSize_);
   } else if (hwIn) {
     KsCapture probe;
-    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwCaptureId))
+    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_,
+                   HwDeviceId(*slotTable_, true, firstIn)))
       input = HwInputLatency(probe, bufferSize_);
   }
   if (inputLatency) *inputLatency = input;
@@ -375,10 +448,12 @@ ASIOError WinHookMasterASIO::getChannelInfo(ASIOChannelInfo* info) {
   info->channelGroup = 0;
   info->type = ASIOSTFloat32LSB;
   char name[kNameLen];
+  const char* devices[kHwDevices];
+  for (int d = 0; d < kHwDevices; ++d) devices[d] = (isInput ? hwInNames_ : hwOutNames_)[d].c_str();
   if (isInput)
-    DawChannelName(slotTable_->masterIn, slotTable_->masterInCount, static_cast<uint32_t>(ch), true, hwInName_.c_str(), name);
+    DawChannelName(slotTable_->masterIn, slotTable_->masterInCount, static_cast<uint32_t>(ch), true, devices, name);
   else
-    DawChannelName(slotTable_->masterOut, slotTable_->masterOutCount, static_cast<uint32_t>(ch), false, hwOutName_.c_str(), name);
+    DawChannelName(slotTable_->masterOut, slotTable_->masterOutCount, static_cast<uint32_t>(ch), false, devices, name);
   TruncateCopy(info->name, sizeof(info->name), name);
   return ASE_OK;
 }
@@ -549,7 +624,7 @@ void WinHookMasterASIO::clockTick() {
   clockTicks_.fetch_add(1);
   // The HW input grew its backlog target after a starve: the DAW re-queries getLatencies.
   // The HW output's pacing moved its fill: the DAW re-queries getLatencies too.
-  KsCapture* in = holder_ ? holder_->hwCapture() : nullptr;
+  KsCapture* in = reportedCapture();
   const bool inChanged = in && in->takeLatencyChanged();
   const bool outChanged = hwOutLatencyChanged_.exchange(false);
   if ((inChanged || outChanged) && callbacks_.asioMessage &&
@@ -576,8 +651,16 @@ void WinHookMasterASIO::snapshotDawView() {
     resetPending_ = false;
   }
   // Automatic HW channel names carry the device's name ("Microphone L"); the DAW asks for them next.
-  hwInName_ = EndpointFriendlyName(eCapture, dawView_.general.hwCaptureId);
-  hwOutName_ = EndpointFriendlyName(eRender, dawView_.general.hwRenderId);
+  for (int d = 0; d < kHwDevices; ++d) {
+    hwInNames_[d] = HwDeviceListed(dawView_, true, d) ? EndpointFriendlyName(eCapture, HwDeviceId(dawView_, true, d)) : "";
+    hwOutNames_[d] = HwDeviceListed(dawView_, false, d) ? EndpointFriendlyName(eRender, HwDeviceId(dawView_, false, d)) : "";
+  }
+}
+
+KsCapture* WinHookMasterASIO::reportedCapture() const {
+  for (int d = 0; holder_ && d < kHwDevices; ++d)
+    if (KsCapture* in = holder_->hwCapture(d)) return in;
+  return nullptr;
 }
 
 void WinHookMasterASIO::onTableChanged() {

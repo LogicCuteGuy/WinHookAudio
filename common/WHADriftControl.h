@@ -47,6 +47,13 @@ class WHADriftControl {
     ema_ = ema2_ = setpoint;  // re-priming restarts the fill at the new target
   }
 
+  // New loop gains keeping the correction it has built up (the integral's share of it).
+  void setGains(double kp, double ki) {
+    if (ki > 0.0 && p_.ki > 0.0) integ_ *= p_.ki / ki;
+    p_.kp = kp;
+    p_.ki = ki;
+  }
+
   // One observation of the fill `dt` seconds after the previous one. Returns the ratio (output
   // frames per input frame) for the next input.
   double update(double fill, double dt) {

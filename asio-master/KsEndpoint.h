@@ -32,6 +32,10 @@ struct KsOpenResult {
 bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate, int32_t periodFrames,
                      int32_t blockFrames, KsOpenResult& out);
 
+// The endpoint an ID opens: the ID itself, or for empty/null the Windows default device of that flow
+// ("" if there is none). Two HW devices of the Slot Table that resolve alike are one device.
+std::string KsResolveEndpointId(EDataFlow flow, const char* endpointId);
+
 inline float KsClamp(float v) { return v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v); }
 
 inline void KsToDevice(KsSampleFormat format, float v, BYTE* buffer, int index) {

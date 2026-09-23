@@ -52,6 +52,10 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   if (std::strlen(table.general.virtualName) >= 32) return fail("general virtualName too long");
   if (strnlen(table.general.hwRenderId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwRenderId too long");
   if (strnlen(table.general.hwCaptureId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwCaptureId too long");
+  for (int d = 0; d + 1 < kHwDevices; ++d)
+    if (strnlen(table.hwMore.renderId[d], kEndpointIdLen) >= kEndpointIdLen ||
+        strnlen(table.hwMore.captureId[d], kEndpointIdLen) >= kEndpointIdLen)
+      return fail("general more HW device id too long");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -485,7 +489,16 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += "\"virtualCables\":" + std::to_string(t.general.virtualCables) + ",";
   out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName) + ",";
   out += "\"hwRenderId\":" + detail::EscapeJsonString(t.general.hwRenderId) + ",";
-  out += "\"hwCaptureId\":" + detail::EscapeJsonString(t.general.hwCaptureId);
+  out += "\"hwCaptureId\":" + detail::EscapeJsonString(t.general.hwCaptureId) + ",";
+  // HW devices 2..4 of each direction (WHAHwMore; "" = none).
+  for (int dir = 0; dir < 2; ++dir) {
+    out += dir == 0 ? "\"hwRenderMore\":[" : ",\"hwCaptureMore\":[";
+    for (int d = 0; d + 1 < kHwDevices; ++d) {
+      if (d) out += ",";
+      out += detail::EscapeJsonString(dir == 0 ? t.hwMore.renderId[d] : t.hwMore.captureId[d]);
+    }
+    out += "]";
+  }
   out += "},";
   out += "\"netTx\":[";
   for (int i = 0; i < WHA_NET_STREAMS; ++i) {
@@ -682,6 +695,17 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
           if (!detail::ParseString(s, p, v)) return fail(gkey.c_str());
           if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
           TruncateCopy(gkey == "hwRenderId" ? out.general.hwRenderId : out.general.hwCaptureId, kEndpointIdLen, v.c_str());
+        } else if (gkey == "hwRenderMore" || gkey == "hwCaptureMore") {  // optional: absent = one device each way
+          if (!detail::Expect(s, p, '[')) return fail("HW device list [");
+          for (int d = 0; d + 1 < kHwDevices; ++d) {
+            std::string v;
+            if (!detail::ParseString(s, p, v)) return fail("HW device list id");
+            if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
+            TruncateCopy(gkey == "hwRenderMore" ? out.hwMore.renderId[d] : out.hwMore.captureId[d], kEndpointIdLen, v.c_str());
+            detail::SkipWs(s, p);
+            if (d + 2 < kHwDevices && !detail::Expect(s, p, ',')) return fail("HW device list ,");
+          }
+          if (!detail::Expect(s, p, ']')) return fail("HW device list ]");
         } else return fail("unknown general key");
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == ',') {

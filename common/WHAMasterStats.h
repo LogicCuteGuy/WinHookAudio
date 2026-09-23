@@ -22,6 +22,31 @@ enum WHAHwFormat : int32_t {
 };
 
 constexpr int kStatsEndpointIdLen = 64;  // = kEndpointIdLen (WHASlotTable.h)
+constexpr int kStatsHwMore = 3;          // = kHwDevices - 1 (WHASlotTable.h)
+
+// One more HW device (index 1..3 of its direction).
+struct WHAHwDeviceStats {
+  char requestedId[kStatsEndpointIdLen];  // the list's ID when the Worker opened the HW ("" = not listed)
+  char id[kStatsEndpointIdLen];           // endpoint open ("" while none)
+  int32_t used;           // a HW slot uses it: the Worker opened it or tried to
+  int32_t open;           // open and started
+  int32_t sameAs;         // -1, or the device index it plays / records through (listed twice)
+  int32_t lastError;      // HRESULT of a failed open, 0 if none
+  int32_t period;         // device period, frames
+  int32_t format;         // WHAHwFormat
+  int32_t latency;        // frames from the DAW's block to the device (out) / device to the DAW (in)
+  int32_t fill;           // backlog at the last tick, frames
+  int32_t target;         // backlog target, frames
+  int32_t driftPpmMilli;  // device clock vs Master Clock, ppm x 1000 (+ = device fast)
+  int32_t driftEngaged;   // drift resampling active
+  int32_t chunk;          // out: frames its position reports jump at once (0 = smooth)
+  uint64_t blocks;        // blocks passed to / from it
+  uint64_t underruns;     // out: device found empty; in: backlog ran empty
+  uint64_t gaps;          // out: silence written to catch up; in: device-flagged discontinuities
+  uint64_t trims;         // times frames were thrown away (backlog far above target / full)
+  uint64_t growths;       // in: backlog target grew
+  uint64_t skipped;       // in: frames dropped for Master Clock ticks the Worker missed
+};
 
 struct WHAMasterStats {
   uint64_t ticks;           // Master Clock bufferSwitch count
@@ -72,6 +97,9 @@ struct WHAMasterStats {
   // HW Master Clock pacing (HwClockPacer): ticks evenly spaced at the device's rate.
   int32_t hwChunk;            // frames the device's position reports jump at once (0 = smooth)
   uint64_t hwHurries;         // ticks taken at once because the device was nearly empty
+  // HW devices 2..4 of each direction (WHAHwMore): each on its own clock, resampled to the Master Clock.
+  WHAHwDeviceStats hwMoreOut[kStatsHwMore];
+  WHAHwDeviceStats hwMoreIn[kStatsHwMore];
 };
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.

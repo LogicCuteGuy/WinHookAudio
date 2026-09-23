@@ -18,6 +18,9 @@
 //   --loop: output 1 carries deterministic noise; expects it back on input 1 through a physical or
 //     virtual loopback (e.g. --render "CABLE Input" --capture "CABLE Output"), and checks the
 //     round-trip delay against the reported latencies and the signal quality.
+//   --loop-out N: the loop's noise on output N instead of 1 (e.g. an output on HW device #2, run
+//     through its own FIFO and resampler; set up with WINHOOKAUDIO_SLOTS_JSON): the round trip then
+//     crosses two resamplers, so it is checked for a steady delay (within 2 frames), not bit-exactness.
 //   --panel: open the driver's Control Panel while streaming (GENERAL shows requested vs actual);
 //     for a look by eye or screenshot, with --seconds long enough.
 
@@ -70,6 +73,7 @@ long gInputs = 0, gOutputs = 0, gBlock = 0;
 double gRate = 0;
 bool gTone = true;
 bool gLoop = false;
+long gLoopOut = 0;  // output (0-based) carrying the tone / loop noise
 std::vector<float> gIn1;  // input 1, every frame (--loop)
 std::atomic<long> gSwitches{0};
 std::atomic<bool> gPositionsOk{true};
@@ -112,7 +116,7 @@ void BufferSwitch(long index, ASIOBool) {
   for (long o = 0; o < gOutputs; ++o) {
     float* out = static_cast<float*>(gBufs[gInputs + o].buffers[index]);
     for (long f = 0; f < gBlock; ++f)
-      out[f] = o != 0 || !gTone ? 0.0f
+      out[f] = o != gLoopOut || !gTone ? 0.0f
                : gLoop           ? Noise(gSent + static_cast<uint64_t>(f))
                                  : static_cast<float>(0.1 * std::sin(2 * kPi * 1000.0 * static_cast<double>(gSent + f) / gRate));
   }
@@ -238,6 +242,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--render") && i + 1 < argc) renderName = argv[++i];
     else if (!std::strcmp(argv[i], "--capture") && i + 1 < argc) captureName = argv[++i];
     else if (!std::strcmp(argv[i], "--loop")) gLoop = true;
+    else if (!std::strcmp(argv[i], "--loop-out") && i + 1 < argc) gLoopOut = std::atol(argv[++i]) - 1;
     else if (!std::strcmp(argv[i], "--panel")) panel = true;
   }
 
@@ -407,6 +412,21 @@ int main(int argc, char** argv) {
     check("Reported output latency before start = while streaming (or the DAW was told it changed)",
           outLatency == outStreaming || gLatencyChanges.load() > 0);
     check("Reported output latency within one block of measured", std::abs(outStreaming - measuredOut) <= gBlock);
+    for (int k = 0; k < kStatsHwMore; ++k) {
+      for (int dir = 0; dir < 2; ++dir) {
+        const WHAHwDeviceStats& h = dir ? st.hwMoreIn[k] : st.hwMoreOut[k];
+        if (!h.used) continue;
+        std::printf("HW %s #%d: open=%d sameAs=%d lastError=0x%08lX %s period %d format %d latency %d (%.1f ms) fill %d target %d"
+                    " chunk %d drift %+.1f ppm (%s) blocks %llu underruns %llu gaps %llu trims %llu growths %llu\n",
+                    dir ? "input" : "output", k + 2, h.open, h.sameAs, static_cast<unsigned long>(h.lastError), h.id, h.period,
+                    h.format, h.latency, 1000.0 * h.latency / gRate, h.fill, h.target, h.chunk, h.driftPpmMilli / 1000.0,
+                    h.driftEngaged ? "resampling" : "bit-exact", static_cast<unsigned long long>(h.blocks),
+                    static_cast<unsigned long long>(h.underruns), static_cast<unsigned long long>(h.gaps),
+                    static_cast<unsigned long long>(h.trims), static_cast<unsigned long long>(h.growths));
+        check("More HW device open (or an alias)", h.open || h.sameAs >= 0);
+        if (!dir && h.open) check("More HW output: no gap after start", h.gaps == 0 && h.trims == 0);
+      }
+    }
     std::printf("HW input: open=%d lastError=0x%08lX reads=%llu starved=%llu trims=%llu glitches=%llu growths=%llu"
                 " drift %+.1f ppm (%s)\n",
                 st.hwInOpen, static_cast<unsigned long>(st.hwInLastError), st.hwInReads, st.hwInStarved, st.hwInTrims,
@@ -448,6 +468,8 @@ int main(int argc, char** argv) {
       loopSnr = err > 0 ? 10.0 * std::log10(sig / err) : 200.0;
     }
     // Delay per 250 ms window: a stable path shows one value; jumps show where the stream slipped.
+    // Through another device's resampler the delay may wander by a frame or two, never jump.
+    const long tolerance = gLoopOut > 0 ? 2 : 0;
     long firstDelay = -2;
     bool steady = true;
     std::printf("Loop delay per 250 ms:");
@@ -464,7 +486,7 @@ int main(int argc, char** argv) {
       if (bestD < 0) std::printf(" -"); else std::printf(" %ld", bestD);
       if (w >= static_cast<long>(gSettle) * gBlock) {  // after the settle, every window must agree
         if (firstDelay == -2) firstDelay = bestD;
-        steady = steady && bestD >= 0 && bestD == firstDelay;
+        steady = steady && bestD >= 0 && std::abs(bestD - firstDelay) <= tolerance;
       }
     }
     std::printf("\n");
@@ -472,10 +494,15 @@ int main(int argc, char** argv) {
     std::printf("Loop: round trip %ld frames (%.2f ms) = reported out %ld + in %ld + %ld outside the driver; SNR %.1f dB\n",
                 loopDelay, 1000.0 * loopDelay / gRate, outStreaming, inStreaming, loopDelay - reported, loopSnr);
     std::printf("      (a virtual cable adds its own unreported, run-dependent delay: VB-Cable measured 42-55 ms alone)\n");
-    check("Loop: output 1 comes back on input 1", loopDelay >= 0);
-    check("Loop: SNR >= 60 dB (bit-exact apart from 16-bit quantization)", loopSnr >= 60.0);
-    check("Loop: delay constant after settle (no slipped or repeated frames)", steady && firstDelay >= 0);
-    check("Loop: round trip not shorter than the reported latencies", loopDelay >= reported - gBlock);
+    check("Loop: the output comes back on input 1", loopDelay >= 0);
+    if (gLoopOut == 0) {
+      check("Loop: SNR >= 60 dB (bit-exact apart from 16-bit quantization)", loopSnr >= 60.0);
+      check("Loop: delay constant after settle (no slipped or repeated frames)", steady && firstDelay >= 0);
+      check("Loop: round trip not shorter than the reported latencies", loopDelay >= reported - gBlock);
+    } else {  // resampled twice: a fractional delay limits the SNR at the best whole-frame delay
+      check("Loop: SNR >= 20 dB through two resamplers", loopSnr >= 20.0);
+      check("Loop: delay steady within 2 frames after settle (no slipped or repeated blocks)", steady && firstDelay >= 0);
+    }
   }
 
   gAsio->disposeBuffers();

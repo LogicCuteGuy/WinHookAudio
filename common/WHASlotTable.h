@@ -86,6 +86,15 @@ struct WHANetworkStream {
   uint32_t channels = 2;
 };
 
+// HW devices per direction: device 0 is GENERAL hwRenderId / hwCaptureId (the output one is the
+// Master Clock), devices 1..3 are here ("" = not in the list). A HW slot's streamId is its device.
+// Appended after netRx, so every earlier field keeps its offset.
+constexpr int32_t kHwDevices = 4;
+struct WHAHwMore {
+  char renderId[kHwDevices - 1][kEndpointIdLen] = {};
+  char captureId[kHwDevices - 1][kEndpointIdLen] = {};
+};
+
 struct WHASlotTable {
   uint32_t version = 0;
   uint32_t masterInCount = 0;
@@ -95,8 +104,26 @@ struct WHASlotTable {
   WHAGeneral general = {};
   WHANetworkStream netTx[WHA_NET_STREAMS] = {};
   WHANetworkStream netRx[WHA_NET_STREAMS] = {};
+  WHAHwMore hwMore = {};
 };
 #pragma pack(pop)
+
+// Endpoint ID of HW device `device` of one direction (see WHAHwMore); nullptr out of range.
+inline const char* HwDeviceId(const WHASlotTable& t, bool isInput, int device) {
+  if (device == 0) return isInput ? t.general.hwCaptureId : t.general.hwRenderId;
+  if (device < 0 || device >= kHwDevices) return nullptr;
+  return isInput ? t.hwMore.captureId[device - 1] : t.hwMore.renderId[device - 1];
+}
+inline char* HwDeviceId(WHASlotTable& t, bool isInput, int device) {
+  return const_cast<char*>(HwDeviceId(static_cast<const WHASlotTable&>(t), isInput, device));
+}
+// Device 0 is always in the list ("" = the Windows default); 1..3 when they have an ID.
+inline bool HwDeviceListed(const WHASlotTable& t, bool isInput, int device) {
+  const char* id = HwDeviceId(t, isInput, device);
+  return id && (device == 0 || id[0]);
+}
+// A HW slot's device: its streamId; one out of range (older files) is device 0.
+inline int HwDeviceOf(const WHASlot& s) { return s.streamId > 0 && s.streamId < kHwDevices ? s.streamId : 0; }
 
 // ---- Offline validation (no I/O, no threads) ----
 
@@ -170,11 +197,14 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
   if (a.masterInCount != b.masterInCount || a.masterOutCount != b.masterOutCount) return true;
   if (a.general.sampleRate != b.general.sampleRate || a.general.asioBuffer != b.general.asioBuffer) return true;
   if (a.general.hwBuffer != b.general.hwBuffer) return true;
-  if (std::strncmp(a.general.hwRenderId, b.general.hwRenderId, kEndpointIdLen) != 0 ||
-      std::strncmp(a.general.hwCaptureId, b.general.hwCaptureId, kEndpointIdLen) != 0)
-    return true;
+  for (int d = 0; d < kHwDevices; ++d)
+    if (std::strncmp(HwDeviceId(a, false, d), HwDeviceId(b, false, d), kEndpointIdLen) != 0 ||
+        std::strncmp(HwDeviceId(a, true, d), HwDeviceId(b, true, d), kEndpointIdLen) != 0)
+      return true;
+  // A HW slot moved to another device may need that device opened (and changes its channel name).
   auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
-    return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0;
+    return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0 ||
+           (x.type == SLOT_HW && HwDeviceOf(x) != HwDeviceOf(y));
   };
   for (uint32_t i = 0; i < a.masterInCount && i < kMax; ++i)
     if (slotDiffers(a.masterIn[i], b.masterIn[i])) return true;
@@ -212,17 +242,20 @@ inline void ShortDeviceName(const char* friendly, char* out, std::size_t outLen)
 // The name a slot gets when its source is assigned and nobody named it: what it carries, so the DAW's
 // channel list reads "Microphone L" instead of "- empty -". `slots` is the slot's list (INPUTS or
 // OUTPUTS); a Bridge slot's channel is its order among that Bridge's slots (see MasterHolder).
-// hwDevice: friendly name of the HW device of this direction (nullptr/"" = unknown: "HW In L").
-inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput, const char* hwDevice,
-                         char* out) {
+// hwDevices: friendly names of this direction's HW devices, by device index (kHwDevices entries;
+// nullptr or a nullptr/"" entry = unknown: "HW In L", "HW In 2 L").
+inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput,
+                         const char* const* hwDevices, char* out) {
   const WHASlot& s = slots[index];
   const int ch = s.srcChannel + 1;
   switch (s.type) {
     case SLOT_NONE: std::snprintf(out, kNameLen, "- empty -"); break;
     case SLOT_HW: {
+      const int d = HwDeviceOf(s);
       char device[kNameLen];
-      ShortDeviceName(hwDevice, device, sizeof(device));
-      if (!device[0]) std::snprintf(device, sizeof(device), "HW %s", isInput ? "In" : "Out");
+      ShortDeviceName(hwDevices ? hwDevices[d] : nullptr, device, sizeof(device));
+      if (!device[0] && d == 0) std::snprintf(device, sizeof(device), "HW %s", isInput ? "In" : "Out");
+      else if (!device[0]) std::snprintf(device, sizeof(device), "HW %s %d", isInput ? "In" : "Out", d + 1);
       if (s.srcChannel == 0 || s.srcChannel == 1)
         std::snprintf(out, kNameLen, "%s %c", device, s.srcChannel == 0 ? 'L' : 'R');
       else
@@ -243,11 +276,11 @@ inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, b
 // The channel name a DAW gets (getChannelInfo): "- empty -" for an empty slot, the slot's own name,
 // or, when nobody named it, its automatic name. Automatic names are not stored, so they follow the
 // slot's type, source and order.
-inline void DawChannelName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput, const char* hwDevice,
-                           char* out) {
+inline void DawChannelName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput,
+                           const char* const* hwDevices, char* out) {
   const WHASlot& s = slots[index];
   if (s.type != SLOT_NONE && !IsPlaceholderName(s.name)) TruncateCopy(out, kNameLen, s.name);
-  else AutoSlotName(slots, count, index, isInput, hwDevice, out);
+  else AutoSlotName(slots, count, index, isInput, hwDevices, out);
 }
 
 inline void SetSlotName(WHASlot& slot, const char* text) {

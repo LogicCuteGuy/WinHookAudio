@@ -34,6 +34,27 @@ bool Fail(KsOpenResult& out, const char* step, HRESULT hr) {
 
 }  // namespace
 
+std::string KsResolveEndpointId(EDataFlow flow, const char* endpointId) {
+  if (endpointId && *endpointId) return endpointId;
+  std::string resolved;
+  IMMDeviceEnumerator* enumerator = nullptr;
+  if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator)))
+    return resolved;
+  IMMDevice* device = nullptr;
+  if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(flow, eConsole, &device))) {
+    LPWSTR id = nullptr;
+    if (SUCCEEDED(device->GetId(&id)) && id) {
+      char utf8[256] = {};
+      WideCharToMultiByte(CP_UTF8, 0, id, -1, utf8, sizeof(utf8), nullptr, nullptr);
+      resolved = utf8;
+      CoTaskMemFree(id);
+    }
+    device->Release();
+  }
+  enumerator->Release();
+  return resolved;
+}
+
 bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate, int32_t periodFrames,
                      int32_t blockFrames, KsOpenResult& out) {
   out = KsOpenResult{};
