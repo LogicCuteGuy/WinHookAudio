@@ -1,5 +1,6 @@
 #include "MasterHolder.h"
 #include "KsAudio.h"
+#include "network/WHANetworkEngine.h"
 #include "virtual/WHAIoctl.h"
 #include "virtual/WHARingBuffer.h"
 #include <cmath>
@@ -14,12 +15,14 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
   for (int i = 0; i < 4; ++i) bridges_[i] = bridges[i];
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
 }
-MasterHolder::~MasterHolder() { stop(); delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
+MasterHolder::~MasterHolder() { stop(); delete network_; delete ksAudio_; for (int i = 0; i < 8; ++i) delete virtualRings_[i]; }
 
 bool MasterHolder::start() {
   if (running_) return true;
   // Preallocate virtual rings at start, not per-tick
   for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+  if (!network_) network_ = new WHANetworkEngine(table_);
+  network_->start();  // socket opens only once a Network Stream is mapped
   stopRequested_ = false;
   running_ = true;
   DWORD id = 0;
@@ -33,6 +36,7 @@ void MasterHolder::stop() {
   if (masterTick_) SetEvent(masterTick_);
   if (tableChanged_) SetEvent(tableChanged_);
   if (thread_) { WaitForSingleObject(thread_, 1000); CloseHandle(thread_); thread_ = nullptr; }
+  if (network_) network_->stop();
   running_ = false;
 }
 DWORD WINAPI MasterHolder::threadProc(LPVOID param) { static_cast<MasterHolder*>(param)->run(); return 0; }
@@ -58,6 +62,7 @@ void MasterHolder::run() {
   while (!stopRequested_) {
     DWORD wait = (nHandles > 0) ? WaitForMultipleObjects(nHandles, handles, FALSE, INFINITE) : WaitForSingleObject(masterTick_, INFINITE);
     if (stopRequested_) break;
+    if (wait == WAIT_OBJECT_0 + 1 && network_) network_->requestReconfigure();  // TableChanged
     if (wait == WAIT_OBJECT_0 || wait == WAIT_OBJECT_0 + 1) {
       if (stopRequested_) break;
       doTick();
@@ -179,6 +184,12 @@ void MasterHolder::doTick() {
         }
       }
     }
+  }
+  // Network Streams: OUT slots -> Tx rings, Rx rings (jitter-primed) -> IN slots
+  if (network_) {
+    uint32_t frames = table_->general.asioBuffer;
+    if (frames > 4096) frames = 4096;
+    network_->processTick(masterAudio_, masterAudio_ + 512 * 4096, 4096, frames);
   }
   // KS write: DAW Out -> HW (if HW slots present)
   if (ksAudio_ && ksAudio_->opened()) {

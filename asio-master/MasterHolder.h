@@ -41,6 +41,7 @@ class MasterHolder {
   HMODULE avrtModule_ = nullptr;
   class KsAudio* ksAudio_ = nullptr;
   class WHARingBuffer* virtualRings_[8] = {};
+  class WHANetworkEngine* network_ = nullptr;  // WHAA Tx/Rx; its own thread does sockets + codecs
 };
 
 }  // namespace wha

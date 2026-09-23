@@ -64,6 +64,9 @@ else()
     message(STATUS "Control Panel: no popup (third_party/imgui not vendored)")
 endif()
 
+# WHAA Network Streams in the Worker (MasterHolder): sockets + codecs on their own thread
+set(WHA_NETWORK_SOURCES common/network/WHANetwork.cpp common/network/WHACodec.cpp common/network/WHANetworkEngine.cpp)
+
 add_executable(winhookaudio-probe
     src/probe/main.cpp
     src/probe/mmdevice.cpp
@@ -82,13 +85,13 @@ target_compile_options(winhookaudio-abi-check PRIVATE /W4 /WX /permissive- /utf-
 target_link_libraries(winhookaudio-abi-check PRIVATE wha_common)
 
 # 08 Master minimal — offline DLLs (no SDK required, stub IASIO)
-add_library(winhookaudio-master SHARED asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-master/DllMain.cpp)
+add_library(winhookaudio-master SHARED asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-master/DllMain.cpp ${WHA_NETWORK_SOURCES})
 target_compile_features(winhookaudio-master PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-master PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-master PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-master PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-master PRIVATE common)
-target_link_libraries(winhookaudio-master PRIVATE ole32 uuid wha_common)
+target_link_libraries(winhookaudio-master PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
 set_target_properties(winhookaudio-master PROPERTIES OUTPUT_NAME "WinHookAudioMasterASIO64")
 
 add_library(winhookaudio-bridge SHARED asio-bridge/WinHookBridgeASIO.cpp asio-bridge/DllMain.cpp)
@@ -110,13 +113,13 @@ if(TARGET wha_imgui)
 endif()
 
 # SDK host sample offline test (CoCreateInstance -> init -> getChannels -> getChannelInfo -> createBuffers -> start -> bufferSwitch)
-add_executable(winhookaudio-host-sample tests/host-sample/main.cpp asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-bridge/WinHookBridgeASIO.cpp common/virtual/WHARingBuffer.cpp)
+add_executable(winhookaudio-host-sample tests/host-sample/main.cpp asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-bridge/WinHookBridgeASIO.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
 target_compile_features(winhookaudio-host-sample PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-host-sample PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-host-sample PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-host-sample PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-host-sample PRIVATE common asio-master asio-bridge)
-target_link_libraries(winhookaudio-host-sample PRIVATE ole32 uuid wha_common)
+target_link_libraries(winhookaudio-host-sample PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
 
 install(TARGETS winhookaudio-probe RUNTIME DESTINATION bin)
 install(FILES docs/probe-vm.md DESTINATION . RENAME README.md)
@@ -134,13 +137,13 @@ if(BUILD_TESTING)
     add_test(NAME host-sample-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Host-Sample.ps1" -HostSample "$<TARGET_FILE:winhookaudio-host-sample>")
     set_tests_properties(host-sample-offline PROPERTIES TIMEOUT 30)
-    add_executable(winhookaudio-worker-test tests/worker-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp)
+    add_executable(winhookaudio-worker-test tests/worker-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
     target_compile_features(winhookaudio-worker-test PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-worker-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_definitions(winhookaudio-worker-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(winhookaudio-worker-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
     target_include_directories(winhookaudio-worker-test PRIVATE common asio-master)
-    target_link_libraries(winhookaudio-worker-test PRIVATE ole32 uuid wha_common)
+    target_link_libraries(winhookaudio-worker-test PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
     add_test(NAME worker-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Worker-Test.ps1" -WorkerTest "$<TARGET_FILE:winhookaudio-worker-test>")
     set_tests_properties(worker-offline PROPERTIES TIMEOUT 30)
@@ -174,13 +177,23 @@ if(BUILD_TESTING)
     add_test(NAME whaa-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Whaa-Test.ps1" -WhaaTest "$<TARGET_FILE:winhookaudio-whaa-test>")
     set_tests_properties(whaa-offline PROPERTIES TIMEOUT 30)
-    add_executable(winhookaudio-virtual-test tests/virtual-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp)
+    add_executable(winhookaudio-network-test tests/network-test/main.cpp ${WHA_NETWORK_SOURCES})
+    target_compile_features(winhookaudio-network-test PRIVATE cxx_std_20)
+    set_property(TARGET winhookaudio-network-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-network-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-network-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    target_include_directories(winhookaudio-network-test PRIVATE common common/network)
+    target_link_libraries(winhookaudio-network-test PRIVATE wha_common wha_codecs ws2_32 winmm)
+    add_test(NAME network-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Network-Test.ps1" -NetworkTest "$<TARGET_FILE:winhookaudio-network-test>")
+    set_tests_properties(network-offline PROPERTIES TIMEOUT 90)
+    add_executable(winhookaudio-virtual-test tests/virtual-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
     target_compile_features(winhookaudio-virtual-test PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-virtual-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_definitions(winhookaudio-virtual-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(winhookaudio-virtual-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
     target_include_directories(winhookaudio-virtual-test PRIVATE common common/virtual asio-master)
-    target_link_libraries(winhookaudio-virtual-test PRIVATE ole32 uuid wha_common ws2_32)
+    target_link_libraries(winhookaudio-virtual-test PRIVATE ole32 uuid wha_common ws2_32 wha_codecs)
     add_test(NAME virtual-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Virtual-Test.ps1" -VirtualTest "$<TARGET_FILE:winhookaudio-virtual-test>")
     set_tests_properties(virtual-offline PROPERTIES TIMEOUT 30)
