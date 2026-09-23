@@ -57,6 +57,11 @@ class WHANetworkEngine {
   bool rxActive(uint32_t stream) const;
   bool rxPrimed(uint32_t stream) const;
   uint32_t rxTargetFrames(uint32_t stream) const;
+  uint32_t rxFillFrames(uint32_t stream) const;
+  // Clock drift: engaged once the Rx fill drifts past the deadband; ppm is the estimated sender offset
+  // (+ = sender clock fast). Equal clocks stay disengaged and bit-exact.
+  bool rxDriftEngaged(uint32_t stream) const;
+  double rxDriftPpm(uint32_t stream) const;
   uint64_t unattributedMalformed() const { return malformed_.load(); }
   // Reconfigurations applied so far (lets callers wait for requestReconfigure()).
   uint64_t configGeneration() const { return generation_.load(); }

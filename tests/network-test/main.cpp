@@ -112,9 +112,16 @@ struct RunResult {
   uint64_t txPackets = 0;
   uint64_t rxPackets = 0;
   uint64_t overflows = 0;
+  uint64_t trimmed = 0;
+  bool driftEngaged = false;
+  double driftPpm = 0;
+  double fillEarly = 0;  // mean Rx fill, seconds 2..4
+  double fillLate = 0;   // mean Rx fill, last 3 s
+  double maxStep = 0;    // largest sample-to-sample jump on the sine channel after priming
 };
 
-RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs) {
+// senderPpm: sender Master Clock offset vs the receiver (+ = sender fast).
+RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs, double senderPpm = 0.0) {
   RunResult r;
   WHASlotTable ta, tb;
   SenderTable(ta, codec);
@@ -137,13 +144,22 @@ RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs) {
   QueryPerformanceCounter(&t0);
   uint64_t underrunsAtPrime = 0;
   bool primedOnce = false;
+  uint64_t sent = 0;       // sender frames so far
+  double senderDue = 0.0;  // fractional sender frames owed
+  double fillEarlySum = 0, fillLateSum = 0;
+  uint64_t fillEarlyN = 0, fillLateN = 0;
+  const uint64_t ticksPerSec = kRate / kBlock;
   for (uint64_t k = 0; k < ticks; ++k) {
-    for (uint32_t f = 0; f < kBlock; ++f) {
-      const uint64_t n = k * kBlock + f;
+    senderDue += kBlock * (1.0 + senderPpm * 1e-6);
+    const uint32_t sendFrames = static_cast<uint32_t>(senderDue);
+    senderDue -= sendFrames;
+    for (uint32_t f = 0; f < sendFrames; ++f) {
+      const uint64_t n = sent + f;
       outA[f] = Burst(n);
       outA[kStride + f] = Sine(n);
     }
-    a.processTick(outA.data(), inA.data(), kStride, kBlock);
+    sent += sendFrames;
+    a.processTick(outA.data(), inA.data(), kStride, sendFrames);
     b.processTick(outB.data(), inB.data(), kStride, kBlock);
     got0.insert(got0.end(), inB.begin(), inB.begin() + kBlock);
     got1.insert(got1.end(), inB.begin() + kStride, inB.begin() + kStride + kBlock);
@@ -151,6 +167,9 @@ RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs) {
       primedOnce = true;
       underrunsAtPrime = b.rxCounters(0).underruns.load();
     }
+    const double fill = b.rxFillFrames(0);
+    if (k >= 2 * ticksPerSec && k < 4 * ticksPerSec) { fillEarlySum += fill; ++fillEarlyN; }
+    if (k + 3 * ticksPerSec >= ticks) { fillLateSum += fill; ++fillLateN; }
     // Master Clock pacing
     const int64_t due = t0.QuadPart + static_cast<int64_t>((k + 1) * kBlock * freq.QuadPart / kRate);
     for (;;) {
@@ -166,6 +185,11 @@ RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs) {
   r.txPackets = a.txCounters(0).packets.load();
   r.rxPackets = b.rxCounters(0).packets.load();
   r.overflows = a.txCounters(0).overflows.load() + b.rxCounters(0).overflows.load();
+  r.trimmed = b.rxCounters(0).dropped.load();
+  r.driftEngaged = b.rxDriftEngaged(0);
+  r.driftPpm = b.rxDriftPpm(0);
+  r.fillEarly = fillEarlyN ? fillEarlySum / fillEarlyN : 0;
+  r.fillLate = fillLateN ? fillLateSum / fillLateN : 0;
   a.stop();
   b.stop();
 
@@ -188,6 +212,11 @@ RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs) {
       for (int64_t v : lat) std::printf(" %lld", static_cast<long long>(v));
       std::printf("\n");
     }
+  }
+  bool started = false;
+  for (size_t n = 1; n < got1.size(); ++n) {  // glitch detector: 1 kHz, 0.5 sine moves <= 0.066 per sample
+    started = started || std::abs(got1[n]) > 0.25f;
+    if (started) r.maxStep = std::max(r.maxStep, static_cast<double>(std::abs(got1[n] - got1[n - 1])));
   }
   if (r.latency >= 0) {
     double err = 0, noise = 0, ref = 0;
@@ -221,6 +250,25 @@ void Loopbacks() {
   check("PCM_F32 latency = jitter target .. + 2 ticks", f32.latency >= target && f32.latency <= target + 2 * kBlock);
   check("PCM_F32 stable, sample-exact", f32.stable && f32.maxErr < 1e-6);
   check("PCM_F32 no loss/underrun/overflow", f32.lost == 0 && f32.underrunsAfterPrime == 0 && f32.overflows == 0);
+  check("Equal clocks: drift compensation stays off", !f32.driftEngaged);
+
+  // Sender clock off by +/-2000 ppm (96 frames/s). Uncompensated, 20 s would drift 1920 frames:
+  // trims at +, underruns at -. Compensated: no trims/underruns/glitches, fill held, ppm estimated
+  // (the PI loop is still settling at 20 s: ~85% of the offset; ~99.7% after 45 s).
+  for (double ppm : {2000.0, -2000.0}) {
+    const RunResult d = RunLoopback(WHA_PCM_F32, 20.0, 20, ppm);
+    std::printf("PCM_F32 sender %+.0f ppm: engaged %s, estimated %+.0f ppm, fill %.0f -> %.0f frames, "
+                "underruns %llu, trimmed %llu, lost %llu, max step %.4f\n",
+                ppm, d.driftEngaged ? "yes" : "no", d.driftPpm, d.fillEarly, d.fillLate,
+                static_cast<unsigned long long>(d.underrunsAfterPrime), static_cast<unsigned long long>(d.trimmed),
+                static_cast<unsigned long long>(d.lost), d.maxStep);
+    char name[96];
+    std::snprintf(name, sizeof(name), "Drift %+.0f ppm: compensation engaged, estimate within 25%%", ppm);
+    check(name, d.driftEngaged && std::abs(d.driftPpm - ppm) <= 0.25 * std::abs(ppm));
+    std::snprintf(name, sizeof(name), "Drift %+.0f ppm: no underrun/trim/glitch, fill held within 250 frames", ppm);
+    check(name, d.underrunsAfterPrime == 0 && d.trimmed == 0 && d.lost == 0 && d.maxStep < 0.08 &&
+                    std::abs(d.fillLate - d.fillEarly) < 250.0);
+  }
 
   const RunResult i16 = RunLoopback(WHA_PCM_I16, 2.5, 20);
   Report("PCM_I16", i16, 20);

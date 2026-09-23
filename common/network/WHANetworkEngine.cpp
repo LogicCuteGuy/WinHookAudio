@@ -3,11 +3,14 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
 #include "WHANetwork.h"
+#include "WHADriftResampler.h"
 #include "WHAPacket.h"
 #include "WHASpscRing.h"
 
@@ -21,6 +24,15 @@ constexpr uint32_t kMaxTickFrames = 4096;        // Master audio slot stride
 constexpr uint32_t kVorbisFeedFrames = 1024;     // encoder input chunk
 constexpr uint64_t kCodebookRepeatMs = 2000;     // late joiners get the CODEBOOK within 2 s
 constexpr int32_t kSeqResync = 1024;            // ~2.7 s of 128-frame packets
+
+// Clock drift (sender crystal vs Master Clock). Fill is smoothed over kFillTauSec; the baseline is
+// taken kBaselineSec after priming; correction engages only once fill leaves the deadband, so equal
+// clocks never resample. PI gains are per frame of error, normalised by the sample rate.
+constexpr double kFillTauSec = 1.0;
+constexpr double kBaselineSec = 2.0;
+constexpr double kDriftKp = 0.5;     // x 1/rate per frame of error
+constexpr double kDriftKi = 0.25;    // x 1/rate per frame*second
+constexpr double kMaxDriftPpm = 2500.0;
 
 uint64_t Qpc() {
   LARGE_INTEGER v;
@@ -107,7 +119,19 @@ struct WHANetworkEngine::Impl {
     std::vector<uint8_t> codebookHeaders;
     WHAResampler src;
     bool resample = false;
-    std::vector<float> pcm, decoded, resampled;
+    std::vector<float> pcm, decoded, resampled, drifted;
+    // drift compensation (network thread)
+    WHADriftResampler drift;
+    double ratio = 1.0;
+    double fillEma = 0.0;
+    double baseline = 0.0;
+    bool baselineSet = false;
+    bool wasPrimed = false;
+    uint64_t primedQpc = 0;
+    uint64_t lastQpc = 0;
+    double integ = 0.0;
+    std::atomic<bool> driftEngaged{false};
+    std::atomic<int32_t> driftPpmMilli{0};  // estimated sender drift, ppm x 1000
   };
 
   WHANetworkEngine* owner = nullptr;
@@ -180,6 +204,18 @@ struct WHANetworkEngine::Impl {
     s.resample = false;
     s.haveSeq = false;
     s.primed.store(false);
+    ResetDrift(s);
+  }
+  void ResetDrift(Rx& s) {
+    s.drift.reset(s.cfg.channels ? s.cfg.channels : 1);
+    s.ratio = 1.0;
+    s.fillEma = 0.0;
+    s.baselineSet = false;
+    s.wasPrimed = false;
+    s.lastQpc = 0;
+    s.integ = 0.0;
+    s.driftEngaged.store(false);
+    s.driftPpmMilli.store(0);
   }
 
   uint32_t RingFrames(uint32_t rate) const { return rate * options.ringMs / 1000 + kMaxTickFrames; }
@@ -219,6 +255,7 @@ struct WHANetworkEngine::Impl {
         s.peerFilter = ParseIp(cfg.ip, &s.peer);
         if (want) {
           s.ring.allocate(cfg.channels, RingFrames(rate));
+          s.drift.reset(cfg.channels);
           s.scratch.assign(static_cast<size_t>(kMaxTickFrames) * cfg.channels, 0.0f);
           s.gate.active.store(true);
         }
@@ -346,8 +383,48 @@ struct WHANetworkEngine::Impl {
   // ---- Rx (network thread) ----
 
   void Push(Rx& s, const float* data, uint32_t frames) {
-    const uint32_t written = s.ring.write(data, frames);
-    if (written < frames) s.c.overflows.fetch_add(frames - written);
+    s.drifted.clear();
+    s.drift.process(data, frames, s.ratio, s.drifted);
+    const uint32_t out = static_cast<uint32_t>(s.drifted.size() / s.cfg.channels);
+    const uint32_t written = s.ring.write(s.drifted.data(), out);
+    if (written < out) s.c.overflows.fetch_add(out - written);
+    UpdateDrift(s);
+  }
+
+  // PI loop on smoothed ring fill -> resample ratio for the next packet.
+  void UpdateDrift(Rx& s) {
+    const uint64_t now = Qpc();
+    const double dt = s.lastQpc ? static_cast<double>(now - s.lastQpc) / static_cast<double>(qpcFreq) : 0.0;
+    s.lastQpc = now;
+    const bool primed = s.primed.load();
+    if (!primed) {  // (re)priming: fill is not meaningful; keep the drift estimate, re-take the baseline
+      s.wasPrimed = false;
+      s.baselineSet = false;
+      return;
+    }
+    const double fill = static_cast<double>(s.ring.readable());
+    if (!s.wasPrimed) {
+      s.wasPrimed = true;
+      s.primedQpc = now;
+      s.fillEma = fill;
+    }
+    s.fillEma += (fill - s.fillEma) * (dt < kFillTauSec ? dt / kFillTauSec : 1.0);
+    if (!s.baselineSet) {
+      if (static_cast<double>(now - s.primedQpc) / static_cast<double>(qpcFreq) < kBaselineSec) return;
+      s.baseline = s.fillEma;
+      s.baselineSet = true;
+    }
+    const double err = s.fillEma - s.baseline;
+    const double deadband = std::max(96.0, s.target.load() / 5.0);
+    if (!s.driftEngaged.load() && std::fabs(err) < deadband) return;
+    s.driftEngaged.store(true);
+    const double rate = static_cast<double>(s.rate);
+    const double maxCorr = kMaxDriftPpm * 1e-6;
+    double corr = -(kDriftKp * err + kDriftKi * (s.integ + err * dt)) / rate;
+    if (corr > -maxCorr && corr < maxCorr) s.integ += err * dt;  // anti-windup: freeze while clamped
+    corr = std::clamp(corr, -maxCorr, maxCorr);
+    s.ratio = 1.0 + corr;
+    s.driftPpmMilli.store(static_cast<int32_t>(-corr * 1e9));
   }
 
   void OnCodebook(const uint8_t* buf, int n) {
@@ -561,6 +638,14 @@ const WHANetworkCounters& WHANetworkEngine::rxCounters(uint32_t stream) const { 
 bool WHANetworkEngine::txActive(uint32_t stream) const { return impl_->tx[stream % kNetStreams].gate.active.load(); }
 bool WHANetworkEngine::rxActive(uint32_t stream) const { return impl_->rx[stream % kNetStreams].gate.active.load(); }
 bool WHANetworkEngine::rxPrimed(uint32_t stream) const { return impl_->rx[stream % kNetStreams].primed.load(); }
+bool WHANetworkEngine::rxDriftEngaged(uint32_t stream) const { return impl_->rx[stream % kNetStreams].driftEngaged.load(); }
+double WHANetworkEngine::rxDriftPpm(uint32_t stream) const {
+  return impl_->rx[stream % kNetStreams].driftPpmMilli.load() / 1000.0;
+}
+uint32_t WHANetworkEngine::rxFillFrames(uint32_t stream) const {
+  const auto& s = impl_->rx[stream % kNetStreams];
+  return s.gate.active.load() ? s.ring.readable() : 0;
+}
 uint32_t WHANetworkEngine::rxTargetFrames(uint32_t stream) const { return impl_->rx[stream % kNetStreams].target.load(); }
 std::string WHANetworkEngine::socketError() const {
   std::lock_guard<std::mutex> lock(impl_->errorMutex);

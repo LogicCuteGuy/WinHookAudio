@@ -186,7 +186,7 @@ if(BUILD_TESTING)
     target_link_libraries(winhookaudio-network-test PRIVATE wha_common wha_codecs ws2_32 winmm)
     add_test(NAME network-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Network-Test.ps1" -NetworkTest "$<TARGET_FILE:winhookaudio-network-test>")
-    set_tests_properties(network-offline PROPERTIES TIMEOUT 90)
+    set_tests_properties(network-offline PROPERTIES TIMEOUT 150)
     add_executable(winhookaudio-virtual-test tests/virtual-test/main.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp common/virtual/WHARingBuffer.cpp ${WHA_NETWORK_SOURCES})
     target_compile_features(winhookaudio-virtual-test PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-virtual-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
