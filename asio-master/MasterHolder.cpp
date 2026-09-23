@@ -56,8 +56,11 @@ void MasterHolder::run() {
   for (uint32_t i = 0; i < table_->masterInCount; ++i) if (table_->masterIn[i].type == SLOT_HW) { ksOpened = true; break; }
   for (uint32_t i = 0; i < table_->masterOutCount; ++i) if (table_->masterOut[i].type == SLOT_HW) { ksOpened = true; break; }
   if (ksOpened) {
-    ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer);
-    ksAudio_->start();
+    // Opened and started, the HW output becomes the Master Clock (see WinHookMasterASIO::runClock).
+    if (ksAudio_->open(table_->general.sampleRate, table_->general.hwBuffer, table_->general.asioBuffer) && ksAudio_->start())
+      hwMaster_ = ksAudio_;
+    else
+      hwOpenError_ = static_cast<int32_t>(ksAudio_->lastError());
   }
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
@@ -74,6 +77,7 @@ void MasterHolder::run() {
       if (wait == WAIT_OBJECT_0 && workerDone_) SetEvent(workerDone_);  // Master_Tick routed
     }
   }
+  hwMaster_ = nullptr;  // the Master Clock is already stopped; never hand out a closing device
   if (ksAudio_) { ksAudio_->stop(); ksAudio_->close(); }
   if (mmcssHandle_ && avrtModule_) {
     using AvRevertMmThreadCharacteristics = BOOL(WINAPI*)(HANDLE);

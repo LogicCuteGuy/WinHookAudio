@@ -1,5 +1,6 @@
 #include "WinHookMasterASIO.h"
 #include "MasterHolder.h"
+#include "KsAudio.h"
 #if WHA_HAVE_IMGUI
 #include "WHAControlPanelWindow.h"
 #endif
@@ -17,6 +18,11 @@ namespace wha {
 namespace {
 
 constexpr size_t kSlotFrames = 4096;  // Master audio SHM stride per slot
+// Internal timeline: after a stall shorter than this, tick back-to-back to catch up (the average
+// rate stays exact); after a longer one, resync instead of bursting.
+constexpr double kMaxCatchUpPeriods = 8;
+
+std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
 
 uint64_t NowNs() {
   LARGE_INTEGER f, c;
@@ -144,10 +150,34 @@ ASIOError WinHookMasterASIO::start() {
     return ASE_HWMalfunction;
   }
   running_ = true;
+  gStreaming = this;
   return ASE_OK;
 }
 
+WinHookMasterASIO* WinHookMasterASIO::streaming() { return gStreaming.load(); }
+
+void WinHookMasterASIO::stats(WHAMasterStats* out) const {
+  *out = WHAMasterStats{};
+  out->ticks = clockTicks_.load();
+  out->clockOverruns = clockOverruns_.load();
+  out->workerOverruns = workerOverruns_.load();
+  out->clockSource = clockSource_.load();
+  out->hwMinFill = -1;
+  if (!holder_) return;
+  out->hwLastError = holder_->hwOpenError();
+  if (KsAudio* hw = holder_->hwMaster()) {
+    out->hwOpen = 1;
+    out->hwWrites = hw->writes();
+    out->hwUnderruns = hw->underruns();
+    out->hwDrops = hw->drops();
+    out->hwCapacity = hw->capacity();
+    out->hwMinFill = hw->minFill();
+    out->hwMaxFill = hw->maxFill();
+  }
+}
+
 ASIOError WinHookMasterASIO::stop() {
+  if (gStreaming.load() == this) gStreaming = nullptr;
   if (clockThread_) {  // no bufferSwitch after stop() returns
     clockStop_ = true;
     WaitForSingleObject(clockThread_, INFINITE);
@@ -279,8 +309,11 @@ DWORD WINAPI WinHookMasterASIO::clockProc(LPVOID self) {
   return 0;
 }
 
-// Master Clock: one bufferSwitch per period, paced against absolute QPC time so it never drifts.
+// Master Clock: one bufferSwitch per period. With a HW output open, the hardware is the clock:
+// tick when its buffer has drained to the target fill, so the DAW produces exactly as fast as the
+// device consumes. Without one, an internal timeline paced against absolute QPC time.
 void WinHookMasterASIO::runClock() {
+  const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));  // reads the Worker's IAudioClient
   DWORD taskIndex = 0;
   HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
   if (mmcss) AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_HIGH);
@@ -289,35 +322,57 @@ void WinHookMasterASIO::runClock() {
 
   LARGE_INTEGER freq, now;
   QueryPerformanceFrequency(&freq);
-  const double periodQpc = static_cast<double>(bufferSize_) * static_cast<double>(freq.QuadPart) / sampleRate_;
+  const double qpcPerFrame = static_cast<double>(freq.QuadPart) / sampleRate_;
+  const double periodQpc = static_cast<double>(bufferSize_) * qpcPerFrame;
+  const DWORD periodMs = static_cast<DWORD>(std::ceil(1000.0 * static_cast<double>(bufferSize_) / sampleRate_));
+  auto sleepQpc = [&](double ticks) {
+    if (ticks <= 0 || !timer) return;
+    LARGE_INTEGER rel;
+    rel.QuadPart = -static_cast<LONGLONG>(ticks * 1e7 / static_cast<double>(freq.QuadPart));  // 100 ns units
+    if (SetWaitableTimer(timer, &rel, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, 1000);
+  };
   QueryPerformanceCounter(&now);
   double due = static_cast<double>(now.QuadPart);
   while (!clockStop_.load()) {
+    // Bounded wait for the Worker to route (and write to HW) the last tick; never block the DAW longer
+    // than one period. Before the fill check, or the fill would not yet include that block.
+    if (holder_ && !holder_->waitWorker(periodMs)) workerOverruns_.fetch_add(1);
+
+    KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr;
+    const long target = hw ? hw->capacity() - 2 * bufferSize_ : -1;  // 2 blocks of room above the target
+    long fill = target >= 0 ? hw->padding() : -1;
+    while (fill > target && !clockStop_.load()) {
+      sleepQpc(static_cast<double>(fill - target) * qpcPerFrame);
+      fill = hw->padding();
+    }
+    if (clockStop_.load()) break;
+    if (fill >= 0) {
+      clockSource_ = CLOCK_HARDWARE;
+      clockTick();
+      QueryPerformanceCounter(&now);
+      due = static_cast<double>(now.QuadPart) + periodQpc;  // internal timeline resumes from here if the HW goes
+      continue;
+    }
+
+    QueryPerformanceCounter(&now);
+    if (static_cast<double>(now.QuadPart) > due + kMaxCatchUpPeriods * periodQpc) {  // long stall: resync
+      clockOverruns_.fetch_add(1);
+      due = static_cast<double>(now.QuadPart);
+    }
+    sleepQpc(due - static_cast<double>(now.QuadPart));
+    clockSource_ = CLOCK_INTERNAL;
     clockTick();
     due += periodQpc;
-    QueryPerformanceCounter(&now);
-    if (static_cast<double>(now.QuadPart) > due + periodQpc) {  // fell more than a period behind: resync
-      clockOverruns_.fetch_add(1);
-      due = static_cast<double>(now.QuadPart) + periodQpc;
-    }
-    const double wait = due - static_cast<double>(now.QuadPart);
-    if (wait > 0 && timer) {
-      LARGE_INTEGER rel;
-      rel.QuadPart = -static_cast<LONGLONG>(wait * 1e7 / static_cast<double>(freq.QuadPart));  // 100 ns units
-      if (SetWaitableTimer(timer, &rel, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, 1000);
-    }
   }
   if (timer) CloseHandle(timer);
   if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
+  if (com) CoUninitialize();
 }
 
 void WinHookMasterASIO::clockTick() {
   const long index = bufferIndex_;
   bufferIndex_ ^= 1;
   const size_t bytes = sizeof(float) * static_cast<size_t>(bufferSize_);
-  // Bounded wait for the Worker to finish routing last tick; never block the DAW longer than one period.
-  const DWORD periodMs = static_cast<DWORD>(std::ceil(1000.0 * static_cast<double>(bufferSize_) / sampleRate_));
-  if (holder_ && !holder_->waitWorker(periodMs)) workerOverruns_.fetch_add(1);
   // SHM IN slots (routed by the Worker last tick) -> DAW inputs
   for (const Binding& b : bindings_) {
     if (!b.isInput) continue;

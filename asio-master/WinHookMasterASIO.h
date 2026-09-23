@@ -9,6 +9,7 @@
 #include "WHASlotTable.h"
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
+#include "WHAMasterStats.h"
 
 #include <atomic>
 #include <mutex>
@@ -58,6 +59,10 @@ class WinHookMasterASIO : public IASIO {
   uint64_t clockTicks() const { return clockTicks_.load(); }
   uint64_t clockOverruns() const { return clockOverruns_.load(); }
   uint64_t workerOverruns() const { return workerOverruns_.load(); }
+  // WHAGetMasterStats: the instance between start() and stop(), and its counters. Call from the
+  // thread that calls start()/stop().
+  static WinHookMasterASIO* streaming();
+  void stats(WHAMasterStats* out) const;
 
  private:
   struct Binding {  // one DAW channel's double buffer, created by createBuffers
@@ -106,8 +111,9 @@ class WinHookMasterASIO : public IASIO {
   std::atomic<uint64_t> samplePosition_{0};  // frames at the last bufferSwitch
   std::atomic<uint64_t> sampleTimeNs_{0};    // system time of the last bufferSwitch
   std::atomic<uint64_t> clockTicks_{0};
-  std::atomic<uint64_t> clockOverruns_{0};   // periods the clock thread started late (> 1 period)
+  std::atomic<uint64_t> clockOverruns_{0};   // internal timeline resyncs (stall > kMaxCatchUpPeriods)
   std::atomic<uint64_t> workerOverruns_{0};  // ticks the Worker had not routed within one period
+  std::atomic<int32_t> clockSource_{CLOCK_INTERNAL};  // WHAClockSource of the last tick
 };
 
 }  // namespace wha

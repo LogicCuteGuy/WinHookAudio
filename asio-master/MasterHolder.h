@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <functional>
 #include "WHASlotTable.h"
 #include "WHASharedMemory.h"
@@ -26,6 +27,11 @@ class MasterHolder {
   bool waitWorker(DWORD timeoutMs) const {
     return !running_ || WaitForSingleObject(workerDone_, timeoutMs) == WAIT_OBJECT_0;
   }
+
+  // The open, started HW output that paces the Master Clock; nullptr while none (internal timeline).
+  class KsAudio* hwMaster() const { return hwMaster_.load(); }
+  // HRESULT of the last failed HW open (0 if none), for WHAMasterStats.
+  int32_t hwOpenError() const { return hwOpenError_.load(); }
 
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
@@ -50,6 +56,8 @@ class MasterHolder {
   HANDLE mmcssHandle_ = nullptr;
   HMODULE avrtModule_ = nullptr;
   class KsAudio* ksAudio_ = nullptr;
+  std::atomic<class KsAudio*> hwMaster_{nullptr};
+  std::atomic<int32_t> hwOpenError_{0};
   class WHARingBuffer* virtualRings_[8] = {};
   class WHANetworkEngine* network_ = nullptr;
   std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs
