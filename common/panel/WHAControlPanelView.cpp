@@ -25,6 +25,7 @@ constexpr const char* kRxNames = "Rx1\0Rx2\0Rx3\0Rx4\0Rx5\0Rx6\0Rx7\0Rx8\0";
 
 constexpr uint32_t kRates[] = {44100, 48000, 96000};
 constexpr uint32_t kFrames[] = {64, 128, 256, 512, 1024};
+constexpr uint32_t kHwFrames[] = {0, 64, 128, 256, 512, 1024};  // 0 = Auto (device minimum)
 constexpr uint32_t kJitterPcmMs[] = {10, 20, 40, 80};
 constexpr uint32_t kJitterVorbisMs[] = {50, 80, 120, 200};
 constexpr uint32_t kCableCounts[] = {8, 64};
@@ -74,6 +75,25 @@ bool ComboU32(const char* label, uint32_t& value, const uint32_t* options, size_
       if (ImGui::Selectable(item, options[i] == value)) {
         changed = options[i] != value;
         value = options[i];
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+// HW period: "Auto" (0 = the device's minimum) or a frame count.
+bool BeginComboHwFrames(uint32_t& value) {
+  char preview[32];
+  if (value) std::snprintf(preview, sizeof(preview), "%u", value); else std::snprintf(preview, sizeof(preview), "Auto");
+  bool changed = false;
+  if (ImGui::BeginCombo("Hardware (KS Exclusive)", preview)) {
+    for (uint32_t option : kHwFrames) {
+      char item[32];
+      if (option) std::snprintf(item, sizeof(item), "%u", option); else std::snprintf(item, sizeof(item), "Auto (device minimum)");
+      if (ImGui::Selectable(item, option == value)) {
+        changed = option != value;
+        value = option;
       }
     }
     ImGui::EndCombo();
@@ -304,7 +324,32 @@ void DrawNetworkStreams(PanelModel& edit, bool tx, std::string& status) {
   ImGui::EndTable();
 }
 
-void DrawGeneral(PanelModel& edit) {
+// One HW device choice: "Windows default" or an endpoint. A saved ID that is not present shows as
+// not connected (the Worker will fail to open it, not fall back silently).
+bool ComboEndpoint(const char* label, const char* currentId, const std::vector<PanelEndpoint>* list, std::string& chosen) {
+  const char* name = !*currentId ? "Windows default" : list ? EndpointName(*list, currentId) : nullptr;
+  std::string preview = name ? name : std::string("(not connected) ") + currentId;
+  bool changed = false;
+  if (ImGui::BeginCombo(label, preview.c_str())) {
+    if (ImGui::Selectable("Windows default", !*currentId)) {
+      changed = *currentId != 0;
+      chosen.clear();
+    }
+    for (size_t i = 0; list && i < list->size(); ++i) {
+      const PanelEndpoint& e = (*list)[i];
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::Selectable(e.name.c_str(), e.id == currentId)) {
+        changed = e.id != currentId;
+        chosen = e.id;
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult& result) {
   WHAGeneral& g = edit.table.general;
   const bool readOnly = IsGeneralReadOnly(edit);
   if (readOnly) ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.3f, 1), "Follows Master %u/32/%u (read-only in Bridge)", g.sampleRate, g.asioBuffer);
@@ -323,10 +368,22 @@ void DrawGeneral(PanelModel& edit) {
   ImGui::TextDisabled("%.1f ms @ %u/%u", 1000.0 * g.asioBuffer / g.sampleRate, g.asioBuffer, g.sampleRate / 1000);
   ImGui::TextDisabled("Changing the Master Clock asks the DAW to reset on Save.");
 
-  ImGui::SeparatorText("2. PER-THING WORKER BUFFERS");
+  ImGui::SeparatorText("2. HARDWARE DEVICES");
+  std::string chosen;
+  ImGui::SetNextItemWidth(360);
+  if (ComboEndpoint("Output (HW OUT slots)", g.hwRenderId, state.devices ? &state.devices->render : nullptr, chosen))
+    SetHwRenderDevice(edit, chosen.c_str());
+  ImGui::SetNextItemWidth(360);
+  if (ComboEndpoint("Input (HW IN slots)", g.hwCaptureId, state.devices ? &state.devices->capture : nullptr, chosen))
+    SetHwCaptureDevice(edit, chosen.c_str());
+  if (ImGui::SmallButton("Refresh devices")) result.refreshDevices = true;
+  ImGui::SameLine();
+  ImGui::TextDisabled("Exclusive: other apps cannot use them while the DAW streams. Changing asks the DAW to reset on Save.");
+
+  ImGui::SeparatorText("3. PER-THING WORKER BUFFERS");
   uint32_t v = g.hwBuffer;
   ImGui::SetNextItemWidth(140);
-  if (ComboU32("Hardware (KS Exclusive)", v, kFrames, std::size(kFrames), "%u")) SetHwBuffer(edit, v);
+  if (BeginComboHwFrames(v)) SetHwBuffer(edit, v);
   v = g.virtualBuffer;
   ImGui::SetNextItemWidth(140);
   if (ComboU32("Virtual Cable", v, kFrames, std::size(kFrames), "%u")) SetVirtualBuffer(edit, v);
@@ -353,7 +410,7 @@ void DrawGeneral(PanelModel& edit) {
   ImGui::SetNextItemWidth(100);
   if (ComboU32("Jitter Vorbis", v, kJitterVorbisMs, std::size(kJitterVorbisMs), "%u ms")) SetJitterVorbis(edit, v);
 
-  ImGui::SeparatorText("3. VIRTUAL CABLES");
+  ImGui::SeparatorText("4. VIRTUAL CABLES");
   v = g.virtualCables;
   ImGui::SetNextItemWidth(140);
   if (ComboU32("Virtual Cables", v, kCableCounts, std::size(kCableCounts), "%u x Stereo")) SetVirtualCableCount(edit, v);
@@ -456,7 +513,7 @@ PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABri
     if (ImGui::BeginTabItem("GENERAL", nullptr, tabFlags(kTabGeneral))) {
       state.activeTab = kTabGeneral;
       ImGui::BeginChild("body", ImVec2(0, -footer));
-      DrawGeneral(edit);
+      DrawGeneral(edit, state, result);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

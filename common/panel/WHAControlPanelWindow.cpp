@@ -2,13 +2,17 @@
 
 #include <commdlg.h>
 #include <d3d11.h>
+#include <mmdeviceapi.h>  // before the devpkey header: brings the PROPERTYKEY definitions
+#include <functiondiscoverykeys_devpkey.h>
 
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <initializer_list>
 
 #include "WHAControlPanelView.h"
 #include "WHASharedMemory.h"
+#include "WHASlotsFile.h"
 #include "WHASlotsJson.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -19,6 +23,48 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 namespace wha {
 
 namespace {
+
+std::string Utf8(const wchar_t* w) {
+  char buf[512] = {};
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, buf, sizeof(buf), nullptr, nullptr);
+  return buf;
+}
+
+// Active render/capture endpoints for the GENERAL HW device choices (panel thread; its own COM init).
+PanelDevices EnumerateEndpoints() {
+  PanelDevices out;
+  const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  IMMDeviceEnumerator* e = nullptr;
+  if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&e))) {
+    for (EDataFlow flow : {eRender, eCapture}) {
+      IMMDeviceCollection* all = nullptr;
+      if (FAILED(e->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &all))) continue;
+      UINT count = 0;
+      all->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        IMMDevice* d = nullptr;
+        IPropertyStore* props = nullptr;
+        LPWSTR id = nullptr;
+        if (FAILED(all->Item(i, &d))) continue;
+        PROPVARIANT v;
+        PropVariantInit(&v);
+        if (SUCCEEDED(d->GetId(&id)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &props)) &&
+            SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR) {
+          PanelEndpoint ep{Utf8(id), Utf8(v.pwszVal)};
+          if (ep.id.size() < kEndpointIdLen) (flow == eRender ? out.render : out.capture).push_back(ep);
+        }
+        PropVariantClear(&v);
+        CoTaskMemFree(id);
+        if (props) props->Release();
+        d->Release();
+      }
+      all->Release();
+    }
+    e->Release();
+  }
+  if (SUCCEEDED(init)) CoUninitialize();  // RPC_E_CHANGED_MODE: the thread's own apartment, keep it
+  return out;
+}
 
 constexpr int kClientWidth = 1180;
 constexpr int kClientHeight = 720;
@@ -99,7 +145,7 @@ bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string
   std::snprintf(msg, sizeof(msg), "Saved v%u", after.version);
   std::string result = msg;
   std::string path;
-  if (!ExpandSlotsJsonPath(host.slotsJsonPath.empty() ? shm::kSlotsJsonPath : host.slotsJsonPath, &path)) {
+  if (host.slotsJsonPath.empty() ? (path = SlotsJsonPath()).empty() : !ExpandSlotsJsonPath(host.slotsJsonPath, &path)) {
     result += "; slots.json path invalid";
   } else {
     const size_t slash = path.find_last_of("\\/");
@@ -299,6 +345,8 @@ void ControlPanelWindow::Run() {
   WHASlotTable baseline = edit.table;
   PanelViewState state;
   state.bridgeIndex = host_.isMaster ? -1 : host_.bridgeIndex;
+  PanelDevices devices = EnumerateEndpoints();
+  state.devices = &devices;
   const float clear[4] = {0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f};
 
   bool running = true;
@@ -328,6 +376,7 @@ void ControlPanelWindow::Run() {
     const int frame = ++frames_;
     if (host_.testFrameHook) host_.testFrameHook(r, frame);
 
+    if (r.refreshDevices) devices = EnumerateEndpoints();
     if (r.save && CommitPanelSave(edit, host_, &state.status)) baseline = edit.table;
     if (r.revert) {
       edit.table = *host_.table;

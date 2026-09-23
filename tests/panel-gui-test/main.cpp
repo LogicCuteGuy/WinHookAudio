@@ -95,6 +95,13 @@ void HeadlessView() {
   check("INPUTS search filters rows", state.rowsDrawnIn == expected);
   state.inSearch[0] = '\0';
 
+  // GENERAL with enumerated devices: a known saved device, and one no longer present.
+  PanelDevices devices;
+  devices.render.push_back({"{render-a}", "Speakers (Test)"});
+  devices.capture.push_back({"{capture-a}", "Microphone (Test)"});
+  state.devices = &devices;
+  SetHwRenderDevice(edit, "{render-a}");
+  SetHwCaptureDevice(edit, "{unplugged}");
   const char* tabNames[] = {"INPUTS", "OUTPUTS", "NETWORK", "GENERAL", "ABOUT"};
   for (int tab = kTabInputs; tab <= kTabAbout; ++tab) {
     state.requestTab = tab;
@@ -166,14 +173,20 @@ void SaveContract(const std::string& dir) {
                                             std::strcmp(reread.masterIn[0].name, "SM58 Mic") == 0);
 
   edit.table = live;
-  SetHwBuffer(edit, 256);
+  SetVirtualBuffer(edit, 512);
   check("Save Per-Thing buffer commits", CommitPanelSave(edit, host, &status));
-  check("Per-Thing buffer does not reset DAW", saves == 2 && !lastReset && live.general.hwBuffer == 256);
+  check("Per-Thing buffer does not reset DAW", saves == 2 && !lastReset && live.general.virtualBuffer == 512);
+  // The HW period does: the Worker opens the device with it at start, and it sets the latencies.
+  edit.table = live;
+  SetHwBuffer(edit, live.general.hwBuffer == 256 ? 512 : 256);
+  check("Save HW buffer commits", CommitPanelSave(edit, host, &status));
+  check("HW buffer resets DAW", saves == 3 && lastReset);
+  edit.table = live;
 
   edit.table = live;
   SetMasterClock(edit, 96000, 256);
   check("Save Master Clock commits", CommitPanelSave(edit, host, &status));
-  check("Master Clock change resets DAW", saves == 3 && lastReset);
+  check("Master Clock change resets DAW", saves == 4 && lastReset);
 
   WaitForSingleObject(changed, 0);  // consume the Master Clock save's signal
   edit.table = live;
@@ -182,7 +195,7 @@ void SaveContract(const std::string& dir) {
   check("Invalid edit rejected", !CommitPanelSave(edit, host, &status));
   std::printf("  status: %s\n", status.c_str());
   check("Rejected Save leaves live table and event untouched",
-        std::memcmp(&beforeBad, &live, sizeof(WHASlotTable)) == 0 && saves == 3 &&
+        std::memcmp(&beforeBad, &live, sizeof(WHASlotTable)) == 0 && saves == 4 &&
             WaitForSingleObject(changed, 0) == WAIT_TIMEOUT);
   CloseHandle(changed);
 }

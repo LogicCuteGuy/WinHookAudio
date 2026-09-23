@@ -242,10 +242,27 @@ bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer)
   model.table.general.asioBuffer = asioBuffer;
   return true;
 }
+namespace {
+bool SetEndpointId(PanelModel& model, char* field, const char* id) {
+  if (IsGeneralReadOnly(model) || !id || std::strlen(id) >= kEndpointIdLen) return false;
+  TruncateCopy(field, kEndpointIdLen, id);
+  return true;
+}
+}  // namespace
+
+bool SetHwRenderDevice(PanelModel& model, const char* id) { return SetEndpointId(model, model.table.general.hwRenderId, id); }
+bool SetHwCaptureDevice(PanelModel& model, const char* id) { return SetEndpointId(model, model.table.general.hwCaptureId, id); }
+
+const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id) {
+  for (const PanelEndpoint& e : list)
+    if (e.id == id) return e.name.c_str();
+  return nullptr;
+}
+
 bool SetHwBuffer(PanelModel& model, uint32_t frames) {
   if (IsGeneralReadOnly(model)) return false;
-  if (frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
-  model.table.general.hwBuffer = frames;
+  if (frames != 0 && frames != 64 && frames != 128 && frames != 256 && frames != 512 && frames != 1024) return false;
+  model.table.general.hwBuffer = frames;  // 0 = Auto (device minimum period)
   return true;
 }
 bool SetVirtualBuffer(PanelModel& model, uint32_t frames) {

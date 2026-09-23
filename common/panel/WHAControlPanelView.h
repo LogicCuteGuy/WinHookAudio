@@ -22,6 +22,7 @@ struct PanelViewState {
   int rowsDrawnOut = 0;
   int requestTab = -1;      // PanelTab to select on the next frame, then reset to -1
   int activeTab = -1;       // PanelTab drawn last frame
+  const PanelDevices* devices = nullptr;  // HW endpoints for GENERAL, enumerated by the host
 };
 
 enum PanelTab : int { kTabInputs = 0, kTabOutputs, kTabNetwork, kTabGeneral, kTabAbout };
@@ -32,6 +33,7 @@ struct PanelViewResult {
   bool exportSlots = false;
   bool importSlots = false;
   bool close = false;
+  bool refreshDevices = false;  // re-enumerate HW endpoints
 };
 
 // Draws one frame of the full-window panel. Mutations go through the WHAControlPanelUI model

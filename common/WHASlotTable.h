@@ -59,7 +59,10 @@ struct WHAGeneral {
   uint32_t sampleRate = WHA_MASTER_CLOCK_RATE_DEFAULT;
   uint32_t bitDepth = WHA_MASTER_CLOCK_BITS_DEFAULT;
   uint32_t asioBuffer = WHA_MASTER_CLOCK_BUFFER_DEFAULT;
-  // Per-thing Worker FIFOs — Worker adapts to Master Clock, no DAW reset.
+  // Per-thing Worker FIFOs — Worker adapts to Master Clock, no DAW reset. Except hwBuffer: the HW
+  // device period, applied when the Worker opens the device, and part of the reported latencies.
+  // A request below the device's minimum period gets the minimum (the reported latency follows the
+  // period actually used); 0 = Auto = the minimum.
   uint32_t hwBuffer = 64;
   uint32_t virtualBuffer = 256;
   uint32_t bridgeBuffer[WHA_BRIDGE_COUNT] = {128, 128, 128, 128};
@@ -158,11 +161,17 @@ constexpr bool IsValidMasterClock(uint32_t rate, uint32_t buffer) {
   return rateOk && bufferOk;
 }
 
-// What the Master DAW sees through getChannels/getChannelInfo/getSampleRate/getBufferSize.
-// A change here needs hostCallback(ASIOResetRequest); Per-Thing buffers and routing fields do not.
+// What the Master DAW sees through getChannels/getChannelInfo/getSampleRate/getBufferSize/
+// getLatencies. A change here needs hostCallback(ASIOResetRequest). The HW devices and period count
+// too: the Worker opens them at start, and they set the reported latencies. Other Per-Thing buffers
+// and routing fields do not.
 inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
   if (a.masterInCount != b.masterInCount || a.masterOutCount != b.masterOutCount) return true;
   if (a.general.sampleRate != b.general.sampleRate || a.general.asioBuffer != b.general.asioBuffer) return true;
+  if (a.general.hwBuffer != b.general.hwBuffer) return true;
+  if (std::strncmp(a.general.hwRenderId, b.general.hwRenderId, kEndpointIdLen) != 0 ||
+      std::strncmp(a.general.hwCaptureId, b.general.hwCaptureId, kEndpointIdLen) != 0)
+    return true;
   auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
     return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0;
   };

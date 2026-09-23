@@ -2,6 +2,7 @@
 #include "MasterHolder.h"
 #include "KsAudio.h"
 #include "KsCapture.h"
+#include "WHASlotsFile.h"
 #if WHA_HAVE_IMGUI
 #include "WHAControlPanelWindow.h"
 #endif
@@ -90,25 +91,11 @@ ASIOBool WinHookMasterASIO::init(void* sysHandle) {
     std::snprintf(errorText_, sizeof(errorText_), "MapViewOfFile SlotTable failed %lu", GetLastError());
     return ASIOFalse;
   }
-  // Initialize default table if version==0
-  if (slotTable_->version == 0) {
-    slotTable_->masterInCount = 2;
-    slotTable_->masterOutCount = 2;
-    slotTable_->masterIn[0].type = SLOT_HW;
-    slotTable_->masterIn[0].enabled = 1;
-    TruncateCopy(slotTable_->masterIn[0].name, kNameLen, "Mic 1");
-    slotTable_->masterIn[1].type = SLOT_NONE;
-    slotTable_->masterIn[1].enabled = 0;
-    TruncateCopy(slotTable_->masterIn[1].name, kNameLen, "- empty -");
-    slotTable_->masterOut[0].type = SLOT_HW;
-    slotTable_->masterOut[0].enabled = 1;
-    TruncateCopy(slotTable_->masterOut[0].name, kNameLen, "Main L");
-    slotTable_->masterOut[1].type = SLOT_NONE;
-    slotTable_->masterOut[1].enabled = 0;
-    TruncateCopy(slotTable_->masterOut[1].name, kNameLen, "- empty -");
-    slotTable_->general.sampleRate = kMasterClockRateDefault;
-    slotTable_->general.asioBuffer = kMasterClockBufferDefault;
-    slotTable_->version = 1;
+  // First process to map the table: the saved Slot Table (Control Panel Save), else defaults.
+  if (slotTable_->version == 0 && LoadSlotsFile(*slotTable_, nullptr)) {
+    // loaded: routing, names and HW devices as last saved
+  } else if (slotTable_->version == 0) {
+    FillDefaultSlotTable(*slotTable_);
   }
   bufferSize_ = static_cast<long>(slotTable_->general.asioBuffer);
   sampleRate_ = static_cast<double>(slotTable_->general.sampleRate);

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include "WHASlotTable.h"
 #include "WHABridgeShared.h"
 
@@ -109,6 +110,21 @@ bool SetNetworkVorbisBuffer(PanelModel& model, uint32_t frames);
 bool SetJitterPcm(PanelModel& model, uint32_t ms);
 bool SetJitterVorbis(PanelModel& model, uint32_t ms);
 bool IsGeneralReadOnly(const PanelModel& model);  // true if !isMaster
+
+// GENERAL HW devices: the endpoints HW slots use. The host enumerates them (MMDevice); the model
+// only stores IDs. Empty ID = the Windows default device of that direction.
+struct PanelEndpoint {
+  std::string id;    // IMMDevice ID (UTF-8)
+  std::string name;  // friendly name (UTF-8)
+};
+struct PanelDevices {
+  std::vector<PanelEndpoint> render;
+  std::vector<PanelEndpoint> capture;
+};
+bool SetHwRenderDevice(PanelModel& model, const char* id);   // requires host reset
+bool SetHwCaptureDevice(PanelModel& model, const char* id);  // requires host reset
+// Friendly name for an ID among `list`; nullptr if the device is not present.
+const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id);
 
 // Helpers
 const char* SlotDisplayName(const WHASlot& slot);  // "- empty -" for SLOT_NONE else name

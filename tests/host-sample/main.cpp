@@ -6,6 +6,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include "WHASharedMemory.h"
+#include "WHASlotsJson.h"
 #include "WinHookMasterASIO.h"
 #include "WinHookBridgeASIO.h"
 
@@ -34,10 +37,54 @@ int main() {
     if (!ok) pass = false;
   };
 
+  // A saved Slot Table (Control Panel Save) as the Master's starting point: the default layout with
+  // a renamed input and a chosen HW input device. WINHOOKAUDIO_SLOTS_JSON keeps the real
+  // %ProgramData% file out of the test.
+  char savedPath[MAX_PATH];
+  GetTempPathA(MAX_PATH, savedPath);
+  strcat_s(savedPath, "winhookaudio-host-sample-slots.json");
+  const char* savedDevice = "{0.0.1.00000000}.{saved-capture-device}";
+  {
+    WHASlotTable saved{};
+    saved.masterInCount = 2;
+    saved.masterOutCount = 2;
+    saved.masterIn[0].type = SLOT_HW;
+    saved.masterIn[0].enabled = 1;
+    SetSlotName(saved.masterIn[0], "Saved Mic");
+    SetSlotName(saved.masterIn[1], "- empty -");
+    saved.masterOut[0].type = SLOT_HW;
+    saved.masterOut[0].enabled = 1;
+    SetSlotName(saved.masterOut[0], "Main L");
+    SetSlotName(saved.masterOut[1], "- empty -");
+    TruncateCopy(saved.general.hwCaptureId, kEndpointIdLen, savedDevice);
+    saved.version = 5;
+    std::string error;
+    check("saved table is valid", ValidateSlots(saved, &error));
+    FILE* f = nullptr;
+    const std::string json = SerializeSlots(saved);
+    if (fopen_s(&f, savedPath, "wb") == 0 && f) {
+      std::fwrite(json.data(), 1, json.size(), f);
+      std::fclose(f);
+    }
+    SetEnvironmentVariableA("WINHOOKAUDIO_SLOTS_JSON", savedPath);
+  }
+
   // Master: init -> getChannels -> getChannelInfo -> createBuffers -> start -> bufferSwitch
   {
     auto* master = new WinHookMasterASIO();
     check("master init returns ASIOTrue", master->init(nullptr) == ASIOTrue);
+    {
+      ASIOChannelInfo first{};
+      first.channel = 0;
+      first.isInput = ASIOTrue;
+      HANDLE savedMap = OpenFileMappingA(FILE_MAP_READ, FALSE, shm::kSlotTableName + 7);
+      auto* live = savedMap ? static_cast<const WHASlotTable*>(MapViewOfFile(savedMap, FILE_MAP_READ, 0, 0, shm::kSlotTableSize)) : nullptr;
+      check("fresh Slot Table loaded from the saved file (names, HW device survive restart)",
+            master->getChannelInfo(&first) == ASE_OK && std::strcmp(first.name, "Saved Mic") == 0 && live &&
+                std::strcmp(live->general.hwCaptureId, savedDevice) == 0 && live->version == 5);
+      if (live) UnmapViewOfFile(live);
+      if (savedMap) CloseHandle(savedMap);
+    }
     long in = 0, out = 0;
     ASIOError err = master->getChannels(&in, &out);
     check("master getChannels 1..512", err == ASE_OK && in >= 1 && in <= 512 && out >= 1 && out <= 512);
@@ -100,7 +147,7 @@ int main() {
     auto* other = map ? static_cast<WHASlotTable*>(MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize)) : nullptr;
     check("other process opens Slot Table + TableChanged", other && changed);
     if (other && changed) {
-      other->general.hwBuffer = other->general.hwBuffer == 64 ? 128 : 64;  // Per-Thing only
+      other->general.virtualBuffer = other->general.virtualBuffer == 256 ? 512 : 256;  // Per-Thing only
       SetEvent(changed);
       check("Per-Thing change from other process: no DAW reset", WaitResets(0));
       SetSlotName(other->masterIn[0], "Renamed by Bridge");
@@ -114,6 +161,11 @@ int main() {
       other->masterOutCount = other->masterOutCount > 1 ? other->masterOutCount - 1 : 2;
       SetEvent(changed);
       check("Change after DAW re-query: reset again", WaitResets(2));
+      master->getChannels(&in2, &out2);
+      // The HW device is opened at start and sets the latencies: choosing another one resets too.
+      TruncateCopy(other->general.hwCaptureId, kEndpointIdLen, "{0.0.1.00000000}.{another-device}");
+      SetEvent(changed);
+      check("HW device change from other process: DAW reset", WaitResets(3));
     }
     if (other) UnmapViewOfFile(other);
     if (map) CloseHandle(map);

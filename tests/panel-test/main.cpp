@@ -1,6 +1,11 @@
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 #include "WHAControlPanelUI.h"
+#include "WHASlotsJson.h"
+#include "WHASlotsFile.h"
+#include <memory>
 
 using namespace wha;
 
@@ -119,6 +124,23 @@ int main() {
   check("SetMasterClock invalid", SetMasterClock(genModel, 22050, 128) == false);
   check("SetHwBuffer ok", SetHwBuffer(genModel, 64) == true && genModel.table.general.hwBuffer == 64);
   check("SetHwBuffer invalid", SetHwBuffer(genModel, 100) == false);
+  check("SetHwBuffer Auto (0 = device minimum)", SetHwBuffer(genModel, 0) == true && genModel.table.general.hwBuffer == 0);
+  SetHwBuffer(genModel, 64);
+  {  // The Master's first-run table from a freshly mapped (zeroed) Slot Table must be Saveable.
+    auto fresh = std::make_unique<WHASlotTable>();
+    std::memset(fresh.get(), 0, sizeof(WHASlotTable));
+    FillDefaultSlotTable(*fresh);
+    std::string err;
+    const bool valid = ValidateSlots(*fresh, &err);
+    if (!valid) std::printf("  default table invalid: %s\n", err.c_str());
+    check("first-run default table validates (panel can Save)", valid && fresh->general.hwBuffer == 64 && fresh->general.bitDepth == 32);
+    std::memset(fresh.get(), 0, sizeof(WHASlotTable));
+    fresh->general.hwBuffer = 512;
+    TruncateCopy(fresh->general.hwRenderId, kEndpointIdLen, "{pre-filled}");
+    FillDefaultSlotTable(*fresh);
+    check("first-run defaults keep pre-filled HW fields", fresh->general.hwBuffer == 512 &&
+                                                            std::strcmp(fresh->general.hwRenderId, "{pre-filled}") == 0);
+  }
   check("SetVirtualBuffer", SetVirtualBuffer(genModel, 256) == true);
   check("SetBridgeBuffer", SetBridgeBuffer(genModel, 0, 128) == true);
   check("SetBridgeBuffer invalid index", SetBridgeBuffer(genModel, 4, 128) == false);
@@ -131,6 +153,36 @@ int main() {
   check("GENERAL read-only Bridge", IsGeneralReadOnly(bridgeGen) == true);
   check("SetMasterClock Bridge fail", SetMasterClock(bridgeGen, 48000, 128) == false);
   check("SetHwBuffer Bridge fail", SetHwBuffer(bridgeGen, 64) == false);
+
+  // GENERAL HW devices: IDs stored, empty = Windows default, too long rejected, Bridge read-only,
+  // and a change asks the DAW to reset (devices are opened at start, latencies depend on them).
+  {
+    PanelModel dev = genModel;
+    const WHASlotTable original = dev.table;
+    const char* cable = "{0.0.0.00000000}.{7ecc6d7b-2fe2-4c5e-8d04-95893ed9ae03}";
+    check("SetHwRenderDevice", SetHwRenderDevice(dev, cable) && std::strcmp(dev.table.general.hwRenderId, cable) == 0);
+    check("HW device change is DAW-visible (reset)", DawVisibleChanged(original, dev.table));
+    check("SetHwRenderDevice default (empty)", SetHwRenderDevice(dev, "") && dev.table.general.hwRenderId[0] == 0);
+    check("back to default: no reset", !DawVisibleChanged(original, dev.table));
+    const std::string tooLong(kEndpointIdLen, 'x');
+    check("SetHwCaptureDevice too long rejected", !SetHwCaptureDevice(dev, tooLong.c_str()) && dev.table.general.hwCaptureId[0] == 0);
+    check("SetHwCaptureDevice Bridge fail", !SetHwCaptureDevice(bridgeGen, cable));
+    PanelModel hb = genModel;
+    SetHwBuffer(hb, 512);
+    check("HW buffer change is DAW-visible (reset)", DawVisibleChanged(genModel.table, hb.table) == (genModel.table.general.hwBuffer != 512));
+    const std::vector<PanelEndpoint> list{{cable, "CABLE Input"}};
+    check("EndpointName found", EndpointName(list, cable) && std::strcmp(EndpointName(list, cable), "CABLE Input") == 0);
+    check("EndpointName missing -> nullptr", EndpointName(list, "{nope}") == nullptr);
+    // JSON round trip keeps the IDs.
+    SetHwRenderDevice(dev, cable);
+    WHASlotTable back{};
+    std::string err;
+    dev.table.masterInCount = dev.table.masterOutCount = 1;  // a valid table has >= 1 slot each way
+    const bool parsed = DeserializeSlots(SerializeSlots(dev.table), back, &err);
+    if (!parsed) std::printf("  JSON error: %s\n", err.c_str());
+    check("JSON round trip keeps HW device IDs", parsed &&
+                                                     std::strcmp(back.general.hwRenderId, cable) == 0 && back.general.hwCaptureId[0] == 0);
+  }
 
   // ABOUT + Save contract (13)
   PanelModel aboutModel{};
