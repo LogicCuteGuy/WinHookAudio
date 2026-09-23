@@ -1,0 +1,491 @@
+#include "WHAControlPanelView.h"
+
+#include <windows.h>
+
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <iterator>
+#include <vector>
+
+#include "imgui.h"
+
+thread_local ImGuiContext* WhaImGuiTls = nullptr;
+
+namespace wha {
+
+namespace {
+
+std::atomic<int> gAssertCount{0};
+
+constexpr const char* kTypeNames = "NONE\0HW\0VIRTUAL\0NETWORK\0BRIDGE1\0BRIDGE2\0BRIDGE3\0BRIDGE4\0";
+constexpr const char* kFilterNames = "All\0HW\0VIRTUAL\0NETWORK\0BRIDGE1\0BRIDGE2\0BRIDGE3\0BRIDGE4\0";
+constexpr const char* kCodecNames = "PCM_F32\0PCM_I16\0VORBIS\0";
+constexpr const char* kRxNames = "Rx1\0Rx2\0Rx3\0Rx4\0Rx5\0Rx6\0Rx7\0Rx8\0";
+
+constexpr uint32_t kRates[] = {44100, 48000, 96000};
+constexpr uint32_t kFrames[] = {64, 128, 256, 512, 1024};
+constexpr uint32_t kJitterPcmMs[] = {10, 20, 40, 80};
+constexpr uint32_t kJitterVorbisMs[] = {50, 80, 120, 200};
+constexpr uint32_t kCableCounts[] = {8, 64};
+
+// One set of model operations per list, so INPUTS and OUTPUTS share the row code
+// while keeping independent indices (12).
+struct SlotListOps {
+  bool isInput;
+  const char* label;
+  const char* prefix;
+  const char* dragType;
+  const char* addLabel;
+  bool (*add)(PanelModel&);
+  bool (*insertAbove)(PanelModel&, uint32_t);
+  bool (*insertBelow)(PanelModel&, uint32_t);
+  bool (*duplicate)(PanelModel&, uint32_t);
+  bool (*remove)(PanelModel&, uint32_t);
+  bool (*move)(PanelModel&, uint32_t, uint32_t);
+  bool (*setLoopback)(PanelModel&, uint32_t, bool);
+  bool (*setEnabled)(PanelModel&, uint32_t, bool);
+  bool (*setName)(PanelModel&, uint32_t, const char*);
+  bool (*setType)(PanelModel&, uint32_t, WHASlotType);
+};
+
+const SlotListOps kInputOps{true, "INPUTS", "In", "WHA_IN", "+Add Input", AddInput, InsertEmptyAbove, InsertEmptyBelow,
+                            DuplicateInput, DeleteInput, MoveInput, SetInputLoopback, SetInputEnabled, SetInputName,
+                            SetInputType};
+const SlotListOps kOutputOps{false, "OUTPUTS", "Out", "WHA_OUT", "+Add Output", AddOutput, InsertEmptyAboveOutput,
+                             InsertEmptyBelowOutput, DuplicateOutput, DeleteOutput, MoveOutput, SetOutputLoopback,
+                             SetOutputEnabled, SetOutputName, SetOutputType};
+
+// Structural edits are deferred until the clipper loop ends.
+struct PendingOp {
+  enum Kind { None, Add, InsertAbove, InsertBelow, Duplicate, Remove, Move } kind = None;
+  uint32_t a = 0;
+  uint32_t b = 0;
+};
+
+bool ComboU32(const char* label, uint32_t& value, const uint32_t* options, size_t count, const char* fmt) {
+  char preview[32];
+  std::snprintf(preview, sizeof(preview), fmt, value);
+  bool changed = false;
+  if (ImGui::BeginCombo(label, preview)) {
+    for (size_t i = 0; i < count; ++i) {
+      char item[32];
+      std::snprintf(item, sizeof(item), fmt, options[i]);
+      if (ImGui::Selectable(item, options[i] == value)) {
+        changed = options[i] != value;
+        value = options[i];
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter, char* search, size_t searchLen,
+                  int& rowsDrawn, int bridgeIndex, const AboutInfo& about) {
+  WHASlotTable& t = edit.table;
+  const uint32_t count = ops.isInput ? t.masterInCount : t.masterOutCount;
+  WHASlot* slots = ops.isInput ? t.masterIn : t.masterOut;
+  const bool locked = bridgeIndex >= 0;  // filter already forced by DrawControlPanel
+
+  PendingOp op;
+  ImGui::Text("%s: [%u/%u]", ops.label, count, kMax);
+  for (const std::string& b : about.bridgeClients) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", b.c_str());
+  }
+  int f = static_cast<int>(filter);
+  ImGui::SetNextItemWidth(110);
+  ImGui::BeginDisabled(locked);
+  if (ImGui::Combo("Filter", &f, kFilterNames)) filter = static_cast<PanelFilter>(f);
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(200);
+  ImGui::InputTextWithHint("##search", "Search name", search, searchLen);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(count >= kMax);
+  if (ImGui::Button(ops.addLabel)) op.kind = PendingOp::Add;
+  ImGui::EndDisabled();
+
+  std::vector<uint32_t> visible;
+  visible.reserve(count);
+  const std::string searchText(search);
+  for (uint32_t i = 0; i < count; ++i)
+    if (MatchesFilter(slots[i], filter) && MatchesSearch(slots[i], searchText)) visible.push_back(i);
+
+  rowsDrawn = 0;
+  constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                          ImGuiTableFlags_SizingFixedFit;
+  if (ImGui::BeginTable("slots", 8, kTableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("::", ImGuiTableColumnFlags_WidthFixed, 22);
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 48);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 110);
+    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 110);
+    ImGui::TableSetupColumn("Name in DAW", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthFixed, 40);
+    ImGui::TableSetupColumn("En", ImGuiTableColumnFlags_WidthFixed, 32);
+    ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 28);
+    ImGui::TableHeadersRow();
+
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(visible.size()));
+    while (clipper.Step()) {
+      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+        const uint32_t idx = visible[static_cast<size_t>(row)];
+        WHASlot& s = slots[idx];
+        ++rowsDrawn;
+        ImGui::PushID(static_cast<int>(idx));
+        ImGui::TableNextRow();
+
+        // :: drag handle spanning the row; drag = memmove within this list only
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Selectable("::", false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+        if (ImGui::BeginDragDropSource()) {
+          ImGui::SetDragDropPayload(ops.dragType, &idx, sizeof(idx));
+          ImGui::Text("Move %s%02u", ops.prefix, idx + 1);
+          ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(ops.dragType)) {
+            uint32_t from = 0;
+            std::memcpy(&from, p->Data, sizeof(from));
+            op = {PendingOp::Move, from, idx};
+          }
+          ImGui::EndDragDropTarget();
+        }
+        if (ImGui::BeginPopupContextItem("row")) {
+          const bool full = count >= kMax;
+          if (ImGui::MenuItem("Insert Empty Above", nullptr, false, !full)) op = {PendingOp::InsertAbove, idx, 0};
+          if (ImGui::MenuItem("Insert Empty Below", nullptr, false, !full)) op = {PendingOp::InsertBelow, idx, 0};
+          if (ImGui::MenuItem("Duplicate", nullptr, false, !full)) op = {PendingOp::Duplicate, idx, 0};
+          if (ImGui::MenuItem("Delete", nullptr, false, count > 1)) op = {PendingOp::Remove, idx, 0};
+          ImGui::EndPopup();
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%s%02u", ops.prefix, idx + 1);
+
+        ImGui::TableSetColumnIndex(2);
+        int type = static_cast<int>(s.type);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##type", &type, kTypeNames)) ops.setType(edit, idx, static_cast<WHASlotType>(type));
+
+        ImGui::TableSetColumnIndex(3);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (s.type == SLOT_NONE) {
+          ImGui::TextDisabled("-");
+        } else if (s.type == SLOT_NETWORK) {
+          int stream = s.streamId;
+          if (ImGui::Combo("##rx", &stream, kRxNames)) s.streamId = stream;
+        } else {
+          int ch = s.srcChannel + 1;
+          if (ImGui::DragInt("##src", &ch, 0.2f, 1, static_cast<int>(kMax), "Ch %d", ImGuiSliderFlags_AlwaysClamp))
+            s.srcChannel = ch - 1;
+        }
+
+        ImGui::TableSetColumnIndex(4);
+        char name[kNameLen];
+        std::memcpy(name, s.name, sizeof(name));
+        name[kNameLen - 1] = '\0';
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("##name", name, sizeof(name))) ops.setName(edit, idx, name);
+
+        ImGui::TableSetColumnIndex(5);
+        bool loop = s.loopback != 0;
+        ImGui::BeginDisabled(!IsLoopbackEditable(s));
+        if (ImGui::Checkbox("##loop", &loop)) ops.setLoopback(edit, idx, loop);
+        ImGui::EndDisabled();
+
+        ImGui::TableSetColumnIndex(6);
+        bool en = s.enabled != 0;
+        if (ImGui::Checkbox("##en", &en)) ops.setEnabled(edit, idx, en);
+
+        ImGui::TableSetColumnIndex(7);
+        ImGui::BeginDisabled(count <= 1);
+        if (ImGui::SmallButton("x")) op = {PendingOp::Remove, idx, 0};
+        ImGui::EndDisabled();
+
+        ImGui::PopID();
+      }
+    }
+    ImGui::EndTable();
+  }
+
+  switch (op.kind) {
+    case PendingOp::Add: ops.add(edit); break;
+    case PendingOp::InsertAbove: ops.insertAbove(edit, op.a); break;
+    case PendingOp::InsertBelow: ops.insertBelow(edit, op.a); break;
+    case PendingOp::Duplicate: ops.duplicate(edit, op.a); break;
+    case PendingOp::Remove: ops.remove(edit, op.a); break;
+    case PendingOp::Move: ops.move(edit, op.a, op.b); break;
+    case PendingOp::None: break;
+  }
+}
+
+void DrawNetworkStreams(PanelModel& edit, bool tx, std::string& status) {
+  const char* id = tx ? "tx" : "rx";
+  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit;
+  if (!ImGui::BeginTable(id, tx ? 7 : 8, kFlags)) return;
+  ImGui::TableSetupColumn(tx ? "Tx" : "Rx", ImGuiTableColumnFlags_WidthFixed, 36);
+  ImGui::TableSetupColumn(tx ? "Destination IP" : "Peer IP", ImGuiTableColumnFlags_WidthFixed, 150);
+  ImGui::TableSetupColumn("Port", ImGuiTableColumnFlags_WidthFixed, 90);
+  ImGui::TableSetupColumn("Codec", ImGuiTableColumnFlags_WidthFixed, 110);
+  ImGui::TableSetupColumn("Q", ImGuiTableColumnFlags_WidthFixed, 110);
+  ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 90);
+  ImGui::TableSetupColumn("BW", ImGuiTableColumnFlags_WidthFixed, 110);
+  if (!tx) ImGui::TableSetupColumn("Linked INPUTS", ImGuiTableColumnFlags_WidthStretch);
+  ImGui::TableHeadersRow();
+
+  for (uint32_t i = 0; i < kNetStreams; ++i) {
+    WHANetworkStream s = tx ? GetNetworkTx(edit, i) : GetNetworkRx(edit, i);
+    bool changed = false;
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("%s%u", tx ? "Tx" : "Rx", i + 1);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::InputTextWithHint("##ip", "192.168.1.50", s.ip, sizeof(s.ip), ImGuiInputTextFlags_CharsDecimal);
+    ImGui::TableSetColumnIndex(2);
+    int port = s.port;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputInt("##port", &port, 0, 0)) {
+      s.port = static_cast<uint16_t>(port < 1 ? 1 : (port > 65535 ? 65535 : port));
+      changed = true;
+    }
+    ImGui::TableSetColumnIndex(3);
+    int codec = static_cast<int>(s.codec);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("##codec", &codec, kCodecNames)) {
+      s.codec = static_cast<WHACodec>(codec);
+      const uint32_t maxCh = s.codec == WHA_VORBIS ? kMaxVorbisChannels : kMaxPcmChannels;
+      if (s.channels > maxCh) s.channels = maxCh;
+      changed = true;
+    }
+    ImGui::TableSetColumnIndex(4);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::BeginDisabled(s.codec != WHA_VORBIS);
+    float q = s.quality;  // WHANetworkStream is packed: never take &s.quality
+    if (ImGui::SliderFloat("##q", &q, 0.1f, 1.0f, "Q%.1f", ImGuiSliderFlags_AlwaysClamp)) {
+      s.quality = q;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::TableSetColumnIndex(5);
+    int ch = static_cast<int>(s.channels);
+    const int maxCh = static_cast<int>(s.codec == WHA_VORBIS ? kMaxVorbisChannels : kMaxPcmChannels);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragInt("##ch", &ch, 0.2f, 1, maxCh, "Ch %d", ImGuiSliderFlags_AlwaysClamp)) {
+      s.channels = static_cast<uint32_t>(ch);
+      changed = true;
+    }
+    ImGui::TableSetColumnIndex(6);
+    const double mbps = NetworkBandwidthMbps(s);
+    if (mbps < 1.0) ImGui::Text("%.0f kbps", mbps * 1000.0);
+    else ImGui::Text("%.1f Mbps", mbps);
+    if (!tx) {
+      ImGui::TableSetColumnIndex(7);
+      int linked = 0;
+      for (uint32_t j = 0; j < edit.table.masterInCount; ++j) {
+        const WHASlot& in = edit.table.masterIn[j];
+        if (in.type == SLOT_NETWORK && in.streamId == static_cast<int32_t>(i)) ++linked;
+      }
+      if (linked) ImGui::Text("%d input(s)", linked);
+      else ImGui::TextDisabled("none");
+    }
+    if (changed && !(tx ? SetNetworkTx(edit, i, s) : SetNetworkRx(edit, i, s))) {
+      char msg[48];
+      std::snprintf(msg, sizeof(msg), "%s%u: rejected", tx ? "Tx" : "Rx", i + 1);
+      status = msg;
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndTable();
+}
+
+void DrawGeneral(PanelModel& edit) {
+  WHAGeneral& g = edit.table.general;
+  const bool readOnly = IsGeneralReadOnly(edit);
+  if (readOnly) ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.3f, 1), "Follows Master %u/32/%u (read-only in Bridge)", g.sampleRate, g.asioBuffer);
+  ImGui::BeginDisabled(readOnly);
+
+  ImGui::SeparatorText("1. MASTER CLOCK");
+  uint32_t rate = g.sampleRate;
+  uint32_t buf = g.asioBuffer;
+  ImGui::SetNextItemWidth(140);
+  if (ComboU32("Sample Rate", rate, kRates, std::size(kRates), "%u")) SetMasterClock(edit, rate, g.asioBuffer);
+  ImGui::SetNextItemWidth(140);
+  ImGui::LabelText("Bit Depth", "32 Float");
+  ImGui::SetNextItemWidth(140);
+  if (ComboU32("ASIO Buffer", buf, kFrames, std::size(kFrames), "%u")) SetMasterClock(edit, g.sampleRate, buf);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%.1f ms @ %u/%u", 1000.0 * g.asioBuffer / g.sampleRate, g.asioBuffer, g.sampleRate / 1000);
+  ImGui::TextDisabled("Changing the Master Clock asks the DAW to reset on Save.");
+
+  ImGui::SeparatorText("2. PER-THING WORKER BUFFERS");
+  uint32_t v = g.hwBuffer;
+  ImGui::SetNextItemWidth(140);
+  if (ComboU32("Hardware (KS Exclusive)", v, kFrames, std::size(kFrames), "%u")) SetHwBuffer(edit, v);
+  v = g.virtualBuffer;
+  ImGui::SetNextItemWidth(140);
+  if (ComboU32("Virtual Cable", v, kFrames, std::size(kFrames), "%u")) SetVirtualBuffer(edit, v);
+  for (int b = 0; b < static_cast<int>(kBridgeCount); ++b) {
+    char label[16];
+    std::snprintf(label, sizeof(label), "Bridge%d", b + 1);
+    v = g.bridgeBuffer[b];
+    ImGui::SetNextItemWidth(100);
+    if (ComboU32(label, v, kFrames, std::size(kFrames), "%u")) SetBridgeBuffer(edit, b, v);
+    if (b + 1 < static_cast<int>(kBridgeCount)) ImGui::SameLine();
+  }
+  v = g.networkPcmBuffer;
+  ImGui::SetNextItemWidth(100);
+  if (ComboU32("Network PCM", v, kFrames, std::size(kFrames), "%u")) SetNetworkPcmBuffer(edit, v);
+  ImGui::SameLine();
+  v = g.networkVorbisBuffer;
+  ImGui::SetNextItemWidth(100);
+  if (ComboU32("Vorbis", v, kFrames, std::size(kFrames), "%u")) SetNetworkVorbisBuffer(edit, v);
+  v = g.jitterPcm;
+  ImGui::SetNextItemWidth(100);
+  if (ComboU32("Jitter PCM", v, kJitterPcmMs, std::size(kJitterPcmMs), "%u ms")) SetJitterPcm(edit, v);
+  ImGui::SameLine();
+  v = g.jitterVorbis;
+  ImGui::SetNextItemWidth(100);
+  if (ComboU32("Jitter Vorbis", v, kJitterVorbisMs, std::size(kJitterVorbisMs), "%u ms")) SetJitterVorbis(edit, v);
+
+  ImGui::SeparatorText("3. VIRTUAL CABLES");
+  v = g.virtualCables;
+  ImGui::SetNextItemWidth(140);
+  if (ComboU32("Virtual Cables", v, kCableCounts, std::size(kCableCounts), "%u x Stereo")) SetVirtualCableCount(edit, v);
+  char vname[sizeof(g.virtualName)];
+  std::memcpy(vname, g.virtualName, sizeof(vname));
+  vname[sizeof(vname) - 1] = '\0';
+  ImGui::SetNextItemWidth(260);
+  if (ImGui::InputText("Name", vname, sizeof(vname))) SetVirtualCableName(edit, vname);
+
+  ImGui::EndDisabled();
+}
+
+void DrawAbout(PanelModel& edit, const AboutInfo& info, PanelViewResult& result) {
+  ImGui::Text("WinHookAudio %s", info.version.c_str());
+  ImGui::Text("WinHookAudio.sys: %s", info.sysRunning ? "running" : "not detected");
+  ImGui::Text("ASIO CLSIDs: %d (Master + Bridge1..4)", info.clsidCount);
+  ImGui::Text("Slots: %s", info.slotsJsonPath.c_str());
+  ImGui::SeparatorText("Bridge clients");
+  for (const std::string& b : info.bridgeClients) ImGui::BulletText("%s", b.c_str());
+  ImGui::Separator();
+  if (ImGui::Button("Export...")) result.exportSlots = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Import...")) result.importSlots = true;
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!edit.isMaster);
+  if (ImGui::Button("Reset Default")) ResetToDefault(edit);
+  ImGui::EndDisabled();
+}
+
+}  // namespace
+
+void ImGuiAssertFailed(const char* expr, const char* file, int line) {
+  gAssertCount.fetch_add(1, std::memory_order_relaxed);
+  char msg[512];
+  std::snprintf(msg, sizeof(msg), "WinHookAudio ImGui assert: %s (%s:%d)\n", expr, file, line);
+  OutputDebugStringA(msg);
+  std::fputs(msg, stderr);
+}
+
+int ImGuiAssertCount() { return gAssertCount.load(std::memory_order_relaxed); }
+
+void ApplyPanelStyle() {
+  ImGui::StyleColorsDark();
+  ImGuiStyle& style = ImGui::GetStyle();
+  style.WindowRounding = 0.0f;
+  style.FrameRounding = 3.0f;
+  style.Colors[ImGuiCol_WindowBg] = ImVec4(0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f);
+  style.Colors[ImGuiCol_ChildBg] = style.Colors[ImGuiCol_WindowBg];
+}
+
+PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABridgeShared* bridges[4]) {
+  PanelViewResult result;
+  const ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(io.DisplaySize);
+  constexpr ImGuiWindowFlags kRoot = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+  ImGui::Begin("WinHookAudio", nullptr, kRoot);
+
+  if (state.bridgeIndex >= 0) {  // Bridge popup: both lists locked to BRIDGE(n), whatever tab is open
+    const auto locked = static_cast<PanelFilter>(static_cast<uint32_t>(PanelFilter::Bridge1) + state.bridgeIndex);
+    state.inFilter = locked;
+    state.outFilter = locked;
+  }
+  const AboutInfo about = GetAboutInfo(edit, bridges);
+  const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+  state.rowsDrawnIn = 0;
+  state.rowsDrawnOut = 0;
+  state.activeTab = -1;
+  const int requested = state.requestTab;
+  state.requestTab = -1;
+  auto tabFlags = [requested](int tab) { return requested == tab ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None; };
+  if (ImGui::BeginTabBar("tabs")) {
+    if (ImGui::BeginTabItem("INPUTS 512", nullptr, tabFlags(kTabInputs))) {
+      state.activeTab = kTabInputs;
+      ImGui::BeginChild("body", ImVec2(0, -footer));
+      DrawSlotList(edit, kInputOps, state.inFilter, state.inSearch, sizeof(state.inSearch), state.rowsDrawnIn,
+                   state.bridgeIndex, about);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("OUTPUTS 512", nullptr, tabFlags(kTabOutputs))) {
+      state.activeTab = kTabOutputs;
+      ImGui::BeginChild("body", ImVec2(0, -footer));
+      DrawSlotList(edit, kOutputOps, state.outFilter, state.outSearch, sizeof(state.outSearch), state.rowsDrawnOut,
+                   state.bridgeIndex, about);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("NETWORK 8", nullptr, tabFlags(kTabNetwork))) {
+      state.activeTab = kTabNetwork;
+      ImGui::BeginChild("body", ImVec2(0, -footer));
+      ImGui::SeparatorText("Tx (Master OUT -> UDP 6980)");
+      DrawNetworkStreams(edit, true, state.status);
+      ImGui::SeparatorText("Rx (UDP 6980 -> INPUTS Type=NETWORK)");
+      DrawNetworkStreams(edit, false, state.status);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("GENERAL", nullptr, tabFlags(kTabGeneral))) {
+      state.activeTab = kTabGeneral;
+      ImGui::BeginChild("body", ImVec2(0, -footer));
+      DrawGeneral(edit);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("ABOUT", nullptr, tabFlags(kTabAbout))) {
+      state.activeTab = kTabAbout;
+      ImGui::BeginChild("body", ImVec2(0, -footer));
+      DrawAbout(edit, about, result);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+
+  ImGui::Separator();
+  ImGui::BeginDisabled(!state.dirty);
+  if (ImGui::Button("Save")) result.save = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Revert")) result.revert = true;
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Close")) result.close = true;
+  ImGui::SameLine();
+  if (state.dirty) ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.3f, 1), "* unsaved changes");
+  if (!state.status.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", state.status.c_str());
+  }
+  ImGui::End();
+  return result;
+}
+
+}  // namespace wha

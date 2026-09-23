@@ -1,4 +1,7 @@
 #include "WinHookBridgeASIO.h"
+#if WHA_HAVE_IMGUI
+#include "WHAControlPanelWindow.h"
+#endif
 #include <cstring>
 #include <cstdio>
 
@@ -6,6 +9,10 @@ namespace wha {
 
 WinHookBridgeASIO::WinHookBridgeASIO(int bridgeIndex) : bridgeIndex_(bridgeIndex) {}
 WinHookBridgeASIO::~WinHookBridgeASIO() {
+#if WHA_HAVE_IMGUI
+  delete panel_;  // joins the popup thread before the Slot Table view goes away
+#endif
+  if (tableChanged_) CloseHandle(tableChanged_);
   if (bridgeShared_ && clientId_ >= 0) {
     // Best effort: decrement not required for offline test
   }
@@ -128,9 +135,27 @@ ASIOError WinHookBridgeASIO::getChannelInfo(ASIOChannelInfo* info) {
   else TruncateCopy(info->name, sizeof(info->name), slot->name);
   return ASE_OK;
 }
-ASIOError WinHookBridgeASIO::createBuffers(ASIOChannelInfo* infos,int32_t numChannels,int32_t bufferSize,ASIOCallbacks* cb){(void)infos;(void)numChannels; (void)cb; bufferSize_=bufferSize; return ASE_OK;}
+ASIOError WinHookBridgeASIO::createBuffers(ASIOChannelInfo* infos,int32_t numChannels,int32_t bufferSize,ASIOCallbacks* cb){(void)infos;(void)numChannels; if(cb) callbacks_=*cb; bufferSize_=bufferSize; return ASE_OK;}
 ASIOError WinHookBridgeASIO::disposeBuffers(){return ASE_OK;}
-ASIOError WinHookBridgeASIO::controlPanel(){return ASE_OK;}
+ASIOError WinHookBridgeASIO::controlPanel() {
+#if WHA_HAVE_IMGUI
+  if (!initialized_ || !slotTable_) return ASE_NotPresent;
+  if (!panel_) panel_ = new ControlPanelWindow();
+  if (!tableChanged_) tableChanged_ = OpenEventA(EVENT_MODIFY_STATE, FALSE, shm::kTableChangedName + 7);  // Master owns it
+  ControlPanelHost host;
+  host.table = slotTable_;
+  host.tableChanged = tableChanged_;
+  host.bridges[bridgeIndex_] = bridgeShared_;
+  host.isMaster = false;
+  host.bridgeIndex = bridgeIndex_;
+  host.onSaved = [this](bool reset) {
+    if (reset && callbacks_.asioMessage) callbacks_.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+  };
+  return panel_->Open(host) ? ASE_OK : ASE_NotPresent;
+#else
+  return ASE_OK;  // offline build without ImGui: no popup
+#endif
+}
 ASIOError WinHookBridgeASIO::future(int32_t s,void* o){(void)s;(void)o; return ASE_OK;}
 ASIOError WinHookBridgeASIO::outputReady(){
   // Bridge: Slave DAW OUT -> clientIn[clientId][active] and wait on Bridge_Tick

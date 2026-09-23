@@ -8,7 +8,11 @@
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
 
+#include <atomic>
+
 namespace wha {
+
+class ControlPanelWindow;
 
 class WinHookMasterASIO : public IASIO {
  public:
@@ -48,6 +52,8 @@ class WinHookMasterASIO : public IASIO {
   void clearResetRequest() { resetRequested_ = false; }
 
  private:
+  void requestReset();  // hostCallback(ASIOResetRequest): DAW re-queries channels/clock
+
   ULONG refCount_ = 1;
   bool initialized_ = false;
   bool running_ = false;
@@ -62,9 +68,10 @@ class WinHookMasterASIO : public IASIO {
   HANDLE bridgeTicks_[4][4] = {};
   ASIOCallbacks callbacks_ = {};
   int32_t bufferSize_ = 128;
-  bool resetRequested_ = false;
+  std::atomic<bool> resetRequested_{false};  // set from DAW thread or Control Panel thread
   char errorText_[128] = {};
   class MasterHolder* holder_ = nullptr;
+  ControlPanelWindow* panel_ = nullptr;  // Popup Type 1, created on first controlPanel()
 };
 
 }  // namespace wha

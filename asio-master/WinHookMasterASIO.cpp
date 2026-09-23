@@ -1,5 +1,8 @@
 #include "WinHookMasterASIO.h"
 #include "MasterHolder.h"
+#if WHA_HAVE_IMGUI
+#include "WHAControlPanelWindow.h"
+#endif
 
 #include <cstring>
 #include <cstdio>
@@ -8,6 +11,9 @@ namespace wha {
 
 WinHookMasterASIO::WinHookMasterASIO() = default;
 WinHookMasterASIO::~WinHookMasterASIO() {
+#if WHA_HAVE_IMGUI
+  delete panel_;  // joins the popup thread before the Slot Table view goes away
+#endif
   stop();
   if (slotTableMapping_) CloseHandle(slotTableMapping_);
   if (masterAudioMapping_) CloseHandle(masterAudioMapping_);
@@ -173,7 +179,28 @@ ASIOError WinHookMasterASIO::createBuffers(ASIOChannelInfo* infos, int32_t numCh
   return ASE_OK;
 }
 ASIOError WinHookMasterASIO::disposeBuffers() { return ASE_OK; }
-ASIOError WinHookMasterASIO::controlPanel() { return ASE_OK; }
+void WinHookMasterASIO::requestReset() {
+  resetRequested_ = true;
+  if (callbacks_.asioMessage) callbacks_.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+}
+
+ASIOError WinHookMasterASIO::controlPanel() {
+#if WHA_HAVE_IMGUI
+  if (!initialized_ || !slotTable_) return ASE_NotPresent;
+  if (!panel_) panel_ = new ControlPanelWindow();
+  ControlPanelHost host;
+  host.table = slotTable_;
+  host.tableChanged = tableChanged_;
+  for (int i = 0; i < 4; ++i) host.bridges[i] = bridgeShared_[i];
+  host.isMaster = true;
+  host.onSaved = [this](bool reset) {
+    if (reset) requestReset();
+  };
+  return panel_->Open(host) ? ASE_OK : ASE_NotPresent;
+#else
+  return ASE_OK;  // offline build without ImGui: no popup
+#endif
+}
 ASIOError WinHookMasterASIO::future(int32_t selector, void* opt) {
   (void)selector; (void)opt;
   if (selector == kAsioResetRequest) resetRequested_ = true;

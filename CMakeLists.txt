@@ -43,6 +43,27 @@ else()
     message(STATUS "WHAA SRC: stub (third_party/r8brain not vendored)")
 endif()
 
+# Control Panel Popup Type 1 (ADR 0008): ImGui 1.90 Win32 + DX11 when vendored, no popup otherwise.
+set(WHA_IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui CACHE PATH "Vendored Dear ImGui 1.90")
+if(EXISTS ${WHA_IMGUI_DIR}/imgui.h AND EXISTS ${WHA_IMGUI_DIR}/backends/imgui_impl_dx11.cpp)
+    add_library(wha_imgui STATIC
+        ${WHA_IMGUI_DIR}/imgui.cpp ${WHA_IMGUI_DIR}/imgui_draw.cpp ${WHA_IMGUI_DIR}/imgui_tables.cpp
+        ${WHA_IMGUI_DIR}/imgui_widgets.cpp ${WHA_IMGUI_DIR}/backends/imgui_impl_win32.cpp
+        ${WHA_IMGUI_DIR}/backends/imgui_impl_dx11.cpp)
+    target_include_directories(wha_imgui SYSTEM PUBLIC ${WHA_IMGUI_DIR} ${WHA_IMGUI_DIR}/backends)
+    target_include_directories(wha_imgui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/common/panel)
+    target_compile_definitions(wha_imgui PUBLIC IMGUI_USER_CONFIG="wha_imconfig.h" UNICODE _UNICODE)
+    target_compile_features(wha_imgui PUBLIC cxx_std_20)
+    set_property(TARGET wha_imgui PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_options(wha_imgui PRIVATE /W1 /utf-8)
+    target_link_libraries(wha_imgui PUBLIC d3d11 d3dcompiler dxgi dwmapi comdlg32)
+    set(WHA_PANEL_GUI_SOURCES common/panel/WHAControlPanelUI.cpp common/panel/WHAControlPanelView.cpp
+        common/panel/WHAControlPanelWindow.cpp)
+    message(STATUS "Control Panel: ImGui vendored")
+else()
+    message(STATUS "Control Panel: no popup (third_party/imgui not vendored)")
+endif()
+
 add_executable(winhookaudio-probe
     src/probe/main.cpp
     src/probe/mmdevice.cpp
@@ -78,6 +99,15 @@ target_compile_options(winhookaudio-bridge PRIVATE /W4 /WX /permissive- /utf-8 /
 target_include_directories(winhookaudio-bridge PRIVATE common)
 target_link_libraries(winhookaudio-bridge PRIVATE ole32 uuid wha_common)
 set_target_properties(winhookaudio-bridge PROPERTIES OUTPUT_NAME "WinHookAudioBridgeASIO64")
+
+if(TARGET wha_imgui)
+    foreach(t winhookaudio-master winhookaudio-bridge)
+        target_sources(${t} PRIVATE ${WHA_PANEL_GUI_SOURCES})
+        target_include_directories(${t} PRIVATE common/panel)
+        target_compile_definitions(${t} PRIVATE WHA_HAVE_IMGUI=1)
+        target_link_libraries(${t} PRIVATE wha_imgui)
+    endforeach()
+endif()
 
 # SDK host sample offline test (CoCreateInstance -> init -> getChannels -> getChannelInfo -> createBuffers -> start -> bufferSwitch)
 add_executable(winhookaudio-host-sample tests/host-sample/main.cpp asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/KsAudio.cpp asio-bridge/WinHookBridgeASIO.cpp common/virtual/WHARingBuffer.cpp)
@@ -174,6 +204,18 @@ if(BUILD_TESTING)
     add_test(NAME installer-elevated-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Installer-Elevated-Test.ps1" -InstallerElevatedTest "$<TARGET_FILE:winhookaudio-installer-elevated-test>")
     set_tests_properties(installer-elevated-offline PROPERTIES TIMEOUT 30)
+    if(TARGET wha_imgui)
+        add_executable(winhookaudio-panel-gui-test tests/panel-gui-test/main.cpp ${WHA_PANEL_GUI_SOURCES})
+        target_compile_features(winhookaudio-panel-gui-test PRIVATE cxx_std_20)
+        set_property(TARGET winhookaudio-panel-gui-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        target_compile_definitions(winhookaudio-panel-gui-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_options(winhookaudio-panel-gui-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+        target_include_directories(winhookaudio-panel-gui-test PRIVATE common common/panel)
+        target_link_libraries(winhookaudio-panel-gui-test PRIVATE wha_common wha_imgui)
+        add_test(NAME panel-gui-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Panel-Gui-Test.ps1" -PanelGuiTest "$<TARGET_FILE:winhookaudio-panel-gui-test>")
+        set_tests_properties(panel-gui-offline PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 set(CPACK_GENERATOR ZIP)

@@ -7,6 +7,8 @@
 
 namespace wha {
 
+class ControlPanelWindow;
+
 class WinHookBridgeASIO : public IASIO {
  public:
   explicit WinHookBridgeASIO(int bridgeIndex);
@@ -53,6 +55,9 @@ class WinHookBridgeASIO : public IASIO {
   HANDLE bridgeTick_ = nullptr;
   int32_t bufferSize_ = 128;
   char errorText_[128] = {};
+  ASIOCallbacks callbacks_ = {};
+  ControlPanelWindow* panel_ = nullptr;  // Popup Type 1 filtered to BRIDGE(n)
+  HANDLE tableChanged_ = nullptr;
 };
 
 }  // namespace wha
