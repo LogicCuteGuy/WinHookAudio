@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace wha {
@@ -101,6 +102,8 @@ class WinHookMasterASIO : public IASIO {
   std::mutex dawViewMutex_;
   WHASlotTable dawView_{};      // table as last seen by the DAW (getChannels)
   bool resetPending_ = false;   // sent ASIOResetRequest, DAW has not re-queried yet
+  std::string hwInName_;        // HW device friendly names at getChannels (DAW thread), for channel names
+  std::string hwOutName_;
 
   // Buffers + Master Clock
   bool buffersCreated_ = false;

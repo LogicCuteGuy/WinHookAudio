@@ -151,11 +151,40 @@ bool SetInputName(PanelModel& model, uint32_t index, const char* name) {
   return true;
 }
 
+namespace {
+
+// A HW slot's source is L or R of the stereo device: a channel left over from another type is reset.
+void ClampHwSource(WHASlot& s) {
+  if (s.type == SLOT_HW && (s.srcChannel < 0 || s.srcChannel >= kHwSlotChannels)) s.srcChannel = 0;
+}
+
+bool IsValidSource(WHASlotType type, int32_t srcChannel, int32_t streamId) {
+  switch (type) {
+    case SLOT_HW: return srcChannel >= 0 && srcChannel < kHwSlotChannels;
+    case SLOT_NETWORK:
+      return streamId >= 0 && streamId < static_cast<int32_t>(kNetStreams) && srcChannel >= 0 &&
+             srcChannel < static_cast<int32_t>(kMaxPcmChannels);
+    default: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kMax);
+  }
+}
+
+}  // namespace
+
 bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type) {
   if (index >= model.table.masterInCount) return false;
   if (type > SLOT_BRIDGE4) return false;
   model.table.masterIn[index].type = type;
   if (type != SLOT_VIRTUAL) model.table.masterIn[index].loopback = 0;
+  ClampHwSource(model.table.masterIn[index]);
+  return true;
+}
+
+bool SetInputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int32_t streamId) {
+  if (index >= model.table.masterInCount) return false;
+  WHASlot& s = model.table.masterIn[index];
+  if (!IsValidSource(s.type, srcChannel, streamId)) return false;
+  s.srcChannel = srcChannel;
+  s.streamId = streamId;
   return true;
 }
 
@@ -235,6 +264,16 @@ bool SetOutputType(PanelModel& model, uint32_t index, WHASlotType type) {
   if (type > SLOT_BRIDGE4) return false;
   model.table.masterOut[index].type = type;
   if (type != SLOT_VIRTUAL) model.table.masterOut[index].loopback = 0;
+  ClampHwSource(model.table.masterOut[index]);
+  return true;
+}
+
+bool SetOutputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int32_t streamId) {
+  if (index >= model.table.masterOutCount) return false;
+  WHASlot& s = model.table.masterOut[index];
+  if (!IsValidSource(s.type, srcChannel, streamId)) return false;
+  s.srcChannel = srcChannel;
+  s.streamId = streamId;
   return true;
 }
 
@@ -371,6 +410,51 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
                      "Saved HW settings are not in use yet: they apply when the DAW resets the driver "
                      "(restart audio in the DAW if it does not)."});
   return lines;
+}
+
+const char* HwDeviceName(const PanelDevices* devices, const WHAGeneral& general, bool isInput) {
+  if (!devices) return nullptr;
+  const char* id = isInput ? general.hwCaptureId : general.hwRenderId;
+  if (!id[0]) id = (isInput ? devices->defaultCaptureId : devices->defaultRenderId).c_str();
+  return id[0] ? EndpointName(isInput ? devices->capture : devices->render, id) : nullptr;
+}
+
+bool AssignSource(PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t srcChannel, int32_t streamId) {
+  const uint32_t count = isInput ? model.table.masterInCount : model.table.masterOutCount;
+  if (index >= count || type > SLOT_BRIDGE4 || !IsValidSource(type, srcChannel, streamId)) return false;
+  if (isInput) return SetInputType(model, index, type) && SetInputSource(model, index, srcChannel, streamId);
+  return SetOutputType(model, index, type) && SetOutputSource(model, index, srcChannel, streamId);
+}
+
+bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* deviceId, int32_t side) {
+  const uint32_t count = isInput ? model.table.masterInCount : model.table.masterOutCount;
+  if (index >= count || !deviceId || std::strlen(deviceId) >= kEndpointIdLen || IsGeneralReadOnly(model)) return false;
+  if (!IsValidSource(SLOT_HW, side, 0)) return false;
+  const bool deviceSet = isInput ? SetHwCaptureDevice(model, deviceId) : SetHwRenderDevice(model, deviceId);
+  return deviceSet && AssignSource(model, isInput, index, SLOT_HW, side, 0);
+}
+
+std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDevice) {
+  char buf[96];
+  switch (slot.type) {
+    case SLOT_NONE: return "- empty -";
+    case SLOT_HW: {
+      char device[kNameLen];
+      ShortDeviceName(hwDevice, device, sizeof(device));
+      const char side = slot.srcChannel == 0 ? 'L' : (slot.srcChannel == 1 ? 'R' : '?');
+      std::snprintf(buf, sizeof(buf), "%s \xC2\xB7 %c", device[0] ? device : (isInput ? "HW In" : "HW Out"), side);
+      return buf;
+    }
+    case SLOT_VIRTUAL:
+      std::snprintf(buf, sizeof(buf), "Virtual Cable %d", (slot.srcChannel < 0 ? 0 : slot.srcChannel % 8) + 1);
+      return buf;
+    case SLOT_NETWORK:
+      std::snprintf(buf, sizeof(buf), "%s%d \xC2\xB7 Ch%d", isInput ? "Rx" : "Tx", slot.streamId + 1, slot.srcChannel + 1);
+      return buf;
+    default:
+      std::snprintf(buf, sizeof(buf), "Bridge%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1);
+      return buf;
+  }
 }
 
 bool SetHwBuffer(PanelModel& model, uint32_t frames) {

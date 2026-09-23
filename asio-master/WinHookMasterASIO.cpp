@@ -8,6 +8,8 @@
 #endif
 
 #include <avrt.h>
+#include <mmdeviceapi.h>
+#include <functiondiscoverykeys_devpkey.h>
 
 #include <cmath>
 #include <cstring>
@@ -36,6 +38,39 @@ long HwOutputLatency(const KsAudio& hw) { return hw.targetFill() + hw.streamLate
 long HwInputLatency(const KsCapture& hw, long block) { return hw.latency() + block; }
 
 std::atomic<WinHookMasterASIO*> gStreaming{nullptr};
+
+// Friendly name of a HW endpoint (UTF-8), "" if unknown. id "" = the Windows default of `flow`.
+std::string EndpointFriendlyName(EDataFlow flow, const char* id) {
+  std::string name;
+  const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  IMMDeviceEnumerator* e = nullptr;
+  IMMDevice* d = nullptr;
+  IPropertyStore* props = nullptr;
+  HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&e);
+  if (SUCCEEDED(hr)) {
+    if (id && *id) {
+      wchar_t wid[128] = {};
+      MultiByteToWideChar(CP_UTF8, 0, id, -1, wid, 128);
+      hr = e->GetDevice(wid, &d);
+    } else {
+      hr = e->GetDefaultAudioEndpoint(flow, eConsole, &d);
+    }
+  }
+  PROPVARIANT v;
+  PropVariantInit(&v);
+  if (SUCCEEDED(hr) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &props)) &&
+      SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR) {
+    char utf8[256] = {};
+    WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, utf8, sizeof(utf8), nullptr, nullptr);
+    name = utf8;
+  }
+  PropVariantClear(&v);
+  if (props) props->Release();
+  if (d) d->Release();
+  if (e) e->Release();
+  if (SUCCEEDED(init)) CoUninitialize();  // RPC_E_CHANGED_MODE: the DAW's apartment, keep it
+  return name;
+}
 
 uint64_t NowNs() {
   LARGE_INTEGER f, c;
@@ -322,21 +357,19 @@ ASIOError WinHookMasterASIO::getChannelInfo(ASIOChannelInfo* info) {
   if (!info || !slotTable_) return ASE_InvalidParameter;
   bool isInput = info->isInput != 0;
   long ch = info->channel;
-  const WHASlot* slot = nullptr;
-  if (isInput) {
-    if (ch < 0 || ch >= static_cast<long>(slotTable_->masterInCount)) return ASE_InvalidParameter;
-    slot = &slotTable_->masterIn[ch];
-  } else {
-    if (ch < 0 || ch >= static_cast<long>(slotTable_->masterOutCount)) return ASE_InvalidParameter;
-    slot = &slotTable_->masterOut[ch];
-  }
+  const long count = static_cast<long>(isInput ? slotTable_->masterInCount : slotTable_->masterOutCount);
+  if (ch < 0 || ch >= count) return ASE_InvalidParameter;
   info->isActive = ASIOFalse;
   for (const Binding& b : bindings_)
     if (b.isInput == isInput && b.channel == ch) info->isActive = ASIOTrue;  // SDK: active = has buffers
   info->channelGroup = 0;
   info->type = ASIOSTFloat32LSB;
-  if (slot->type == SLOT_NONE) strcpy_s(info->name, sizeof(info->name), "- empty -");
-  else TruncateCopy(info->name, sizeof(info->name), slot->name);
+  char name[kNameLen];
+  if (isInput)
+    DawChannelName(slotTable_->masterIn, slotTable_->masterInCount, static_cast<uint32_t>(ch), true, hwInName_.c_str(), name);
+  else
+    DawChannelName(slotTable_->masterOut, slotTable_->masterOutCount, static_cast<uint32_t>(ch), false, hwOutName_.c_str(), name);
+  TruncateCopy(info->name, sizeof(info->name), name);
   return ASE_OK;
 }
 
@@ -482,9 +515,14 @@ void WinHookMasterASIO::requestReset() {
 }
 
 void WinHookMasterASIO::snapshotDawView() {
-  std::lock_guard<std::mutex> lock(dawViewMutex_);
-  dawView_ = *slotTable_;
-  resetPending_ = false;
+  {
+    std::lock_guard<std::mutex> lock(dawViewMutex_);
+    dawView_ = *slotTable_;
+    resetPending_ = false;
+  }
+  // Automatic HW channel names carry the device's name ("Microphone L"); the DAW asks for them next.
+  hwInName_ = EndpointFriendlyName(eCapture, dawView_.general.hwCaptureId);
+  hwOutName_ = EndpointFriendlyName(eRender, dawView_.general.hwRenderId);
 }
 
 void WinHookMasterASIO::onTableChanged() {

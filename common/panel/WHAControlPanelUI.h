@@ -46,7 +46,10 @@ bool MoveInput(PanelModel& model, uint32_t from, uint32_t to);  // memmove INPUT
 bool SetInputLoopback(PanelModel& model, uint32_t index, bool loopback);  // VIRTUAL only
 bool SetInputEnabled(PanelModel& model, uint32_t index, bool enabled);
 bool SetInputName(PanelModel& model, uint32_t index, const char* name);
-bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type);
+bool SetInputType(PanelModel& model, uint32_t index, WHASlotType type);  // HW: source reset to L if not L/R
+// Source of a slot for its type: HW 0 = L / 1 = R of the GENERAL input device; VIRTUAL cable channel;
+// NETWORK Rx stream + channel in it. Names left unset follow it (DawChannelName in WHASlotTable.h).
+bool SetInputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int32_t streamId);
 
 // Operations on OUTPUTS only (12) — independent indices
 bool AddOutput(PanelModel& model);
@@ -59,6 +62,7 @@ bool SetOutputLoopback(PanelModel& model, uint32_t index, bool loopback);
 bool SetOutputEnabled(PanelModel& model, uint32_t index, bool enabled);
 bool SetOutputName(PanelModel& model, uint32_t index, const char* name);
 bool SetOutputType(PanelModel& model, uint32_t index, WHASlotType type);
+bool SetOutputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int32_t streamId);
 
 // ABOUT + Save contract (13)
 struct AboutInfo {
@@ -121,11 +125,24 @@ struct PanelEndpoint {
 struct PanelDevices {
   std::vector<PanelEndpoint> render;
   std::vector<PanelEndpoint> capture;
+  std::string defaultRenderId;   // the Windows default devices (what an empty GENERAL ID opens)
+  std::string defaultCaptureId;
 };
 bool SetHwRenderDevice(PanelModel& model, const char* id);   // requires host reset
 bool SetHwCaptureDevice(PanelModel& model, const char* id);  // requires host reset
 // Friendly name for an ID among `list`; nullptr if the device is not present.
 const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id);
+// Friendly name of the device HW slots of one direction use (GENERAL; "" = the Windows default);
+// nullptr if unknown.
+const char* HwDeviceName(const PanelDevices* devices, const WHAGeneral& general, bool isInput);
+
+// Source menu (INPUTS/OUTPUTS "Source" column): one pick sets type and source together.
+// AssignHw also sets the GENERAL device of that direction ("" = Windows default): a direction has one
+// HW device, so every HW slot of it follows. Master only (a Bridge popup cannot change GENERAL).
+bool AssignSource(PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t srcChannel, int32_t streamId);
+bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* deviceId, int32_t side);
+// What a slot carries, for the Source column: "Microphone · L", "Virtual Cable 2", "Rx3 · Ch1", "Bridge1".
+std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* hwDevice);
 
 // GENERAL HW status: requested versus actual. `stats` is the streaming Master's (nullptr: the DAW has
 // not started the driver); `saved` is the Slot Table's GENERAL now. HW settings are read when the

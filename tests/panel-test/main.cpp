@@ -184,6 +184,90 @@ int main() {
                                                      std::strcmp(back.general.hwRenderId, cable) == 0 && back.general.hwCaptureId[0] == 0);
   }
 
+  // Automatic names: an assigned slot nobody named reaches the DAW as what it carries, not "- empty -".
+  {
+    auto dawName = [](const PanelModel& m, uint32_t i, bool in, const char* hwDevice = nullptr) {
+      char n[kNameLen];
+      if (in) DawChannelName(m.table.masterIn, m.table.masterInCount, i, true, hwDevice, n);
+      else DawChannelName(m.table.masterOut, m.table.masterOutCount, i, false, hwDevice, n);
+      return std::string(n);
+    };
+    auto nmHeap = std::make_unique<PanelModel>();  // ~50 KB each: main's stack is nearly full of them
+    PanelModel& nm = *nmHeap;
+    nm.table.masterInCount = 1;
+    nm.table.masterOutCount = 1;
+    AddInput(nm);  // In02: "- empty -"
+    AddInput(nm);  // In03
+    AddOutput(nm);
+    check("empty slot -> '- empty -' in the DAW", dawName(nm, 1, true) == "- empty -");
+    SetInputType(nm, 1, SLOT_HW);
+    check("assigned HW IN, unnamed -> 'HW In L'", dawName(nm, 1, true) == "HW In L");
+    check("the stored name stays unset (automatic)", IsPlaceholderName(nm.table.masterIn[1].name));
+    check("SetInputSource HW R", SetInputSource(nm, 1, 1, 0) && dawName(nm, 1, true) == "HW In R");
+    check("SetInputSource HW channel 3 rejected (stereo device)", !SetInputSource(nm, 1, 2, 0) && nm.table.masterIn[1].srcChannel == 1);
+    SetOutputType(nm, 1, SLOT_HW);
+    check("assigned HW OUT -> 'HW Out L'", dawName(nm, 1, false) == "HW Out L");
+    nm.table.masterIn[2].srcChannel = 5;  // left over from another type
+    SetInputType(nm, 2, SLOT_HW);
+    check("SetInputType HW resets a non-L/R source to L", nm.table.masterIn[2].srcChannel == 0 && dawName(nm, 2, true) == "HW In L");
+    SetInputType(nm, 2, SLOT_VIRTUAL);
+    SetInputSource(nm, 2, 3, 0);
+    check("VIRTUAL -> 'Virtual 4'", dawName(nm, 2, true) == "Virtual 4");
+    SetInputType(nm, 2, SLOT_NETWORK);
+    check("NETWORK stream 2 ch 1 -> 'Rx3 Ch1'", SetInputSource(nm, 2, 0, 2) && dawName(nm, 2, true) == "Rx3 Ch1");
+    check("NETWORK stream 8 rejected", !SetInputSource(nm, 2, 0, 8));
+    SetInputType(nm, 0, SLOT_BRIDGE1);
+    SetInputType(nm, 2, SLOT_BRIDGE1);
+    check("BRIDGE1 slots named by their order", dawName(nm, 0, true) == "Bridge1 Ch1" && dawName(nm, 2, true) == "Bridge1 Ch2");
+    SetInputName(nm, 1, "Vocal Mic");
+    check("a name the user typed is kept", dawName(nm, 1, true) == "Vocal Mic");
+    SetInputSource(nm, 1, 0, 0);
+    SetInputType(nm, 1, SLOT_VIRTUAL);
+    check("...through source and type changes", dawName(nm, 1, true) == "Vocal Mic");
+    SetInputName(nm, 1, "");
+    check("clearing the name goes back to automatic", dawName(nm, 1, true) == "Virtual 1");
+    SetInputType(nm, 1, SLOT_NONE);
+    check("back to NONE -> '- empty -'", dawName(nm, 1, true) == "- empty -");
+
+    // With the device's name: "Microphone L", short enough for ASIO's 32 characters.
+    SetInputType(nm, 1, SLOT_HW);
+    check("HW name carries the device's short name",
+          dawName(nm, 1, true, "Microphone (High Definition Audio Device)") == "Microphone L");
+    const std::string longName = dawName(nm, 1, true, "An Extremely Long Audio Interface Product Name 18i20");
+    check("long device name still fits with its side", longName.size() < kNameLen && longName.back() == 'L');
+    char shortName[kNameLen];
+    ShortDeviceName("CABLE Output (VB-Audio Virtual Cable)", shortName, sizeof(shortName));
+    check("ShortDeviceName drops the driver part", std::string(shortName) == "CABLE Output");
+
+    // Source menu: one pick sets type + source; HW also picks the GENERAL device of that direction.
+    const char* mic = "{0.0.1.00000000}.{aaaaaaaa-0000-0000-0000-000000000002}";
+    const char* usb = "{0.0.1.00000000}.{aaaaaaaa-0000-0000-0000-000000000003}";
+    PanelDevices devs;
+    devs.capture.push_back({mic, "Microphone (Realtek Audio)"});
+    devs.capture.push_back({usb, "Line In (USB Interface)"});
+    devs.defaultCaptureId = mic;
+    check("HwDeviceName: empty ID = the Windows default's name",
+          HwDeviceName(&devs, nm.table.general, true) && std::string(HwDeviceName(&devs, nm.table.general, true)) == "Microphone (Realtek Audio)");
+    check("AssignHw: USB interface R", AssignHw(nm, true, 2, usb, 1) && nm.table.masterIn[2].type == SLOT_HW &&
+                                            nm.table.masterIn[2].srcChannel == 1 && std::strcmp(nm.table.general.hwCaptureId, usb) == 0);
+    check("...and the DAW name follows the device",
+          dawName(nm, 2, true, HwDeviceName(&devs, nm.table.general, true)) == "Line In R");
+    check("Source label names the device", SlotSourceLabel(nm.table.masterIn[2], true, "Line In (USB Interface)") == "Line In \xC2\xB7 R");
+    check("AssignHw side 2 rejected", !AssignHw(nm, true, 2, usb, 2));
+    check("AssignHw from a Bridge popup rejected (GENERAL is read-only there)", [&] {
+      auto bridgeHeap = std::make_unique<PanelModel>(nm);
+      bridgeHeap->isMaster = false;
+      return !AssignHw(*bridgeHeap, true, 2, mic, 0);
+    }());
+    check("AssignSource Virtual Cable 3", AssignSource(nm, true, 2, SLOT_VIRTUAL, 2, 0) && nm.table.masterIn[2].type == SLOT_VIRTUAL &&
+                                              SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual Cable 3");
+    check("AssignSource Tx2 Ch2 on an output", AssignSource(nm, false, 1, SLOT_NETWORK, 1, 1) &&
+                                                   SlotSourceLabel(nm.table.masterOut[1], false, nullptr) == "Tx2 \xC2\xB7 Ch2");
+    check("AssignSource invalid source leaves the slot", !AssignSource(nm, true, 2, SLOT_NETWORK, 0, 9) &&
+                                                             nm.table.masterIn[2].type == SLOT_VIRTUAL);
+    check("AssignSource empty", AssignSource(nm, true, 2, SLOT_NONE, 0, 0) && SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "- empty -");
+  }
+
   // GENERAL HW status: requested versus actual, from the streaming Master's WHAMasterStats.
   {
     auto has = [](const std::vector<HwStatusLine>& lines, HwStatusLevel level, const char* text) {

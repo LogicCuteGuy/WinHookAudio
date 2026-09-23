@@ -59,6 +59,12 @@ PanelDevices EnumerateEndpoints() {
         d->Release();
       }
       all->Release();
+      IMMDevice* def = nullptr;  // what an empty GENERAL device ID opens
+      LPWSTR defId = nullptr;
+      if (SUCCEEDED(e->GetDefaultAudioEndpoint(flow, eConsole, &def)) && SUCCEEDED(def->GetId(&defId)))
+        (flow == eRender ? out.defaultRenderId : out.defaultCaptureId) = Utf8(defId);
+      CoTaskMemFree(defId);
+      if (def) def->Release();
     }
     e->Release();
   }

@@ -205,7 +205,12 @@ ASIOError WinHookBridgeASIO::getChannelInfo(ASIOChannelInfo* info) {
     if (b.isInput == isInput && b.channel == info->channel) info->isActive = ASIOTrue;
   info->channelGroup = 0;
   info->type = ASIOSTFloat32LSB;
-  TruncateCopy(info->name, sizeof(info->name), slot->name);
+  // Client inputs come from Master OUT slots, client outputs feed Master IN slots.
+  const WHASlot* slots = isInput ? slotTable_->masterOut : slotTable_->masterIn;
+  const uint32_t count = isInput ? slotTable_->masterOutCount : slotTable_->masterInCount;
+  char name[kNameLen];
+  DawChannelName(slots, count, static_cast<uint32_t>(slot - slots), !isInput, nullptr, name);  // Bridge slots only
+  TruncateCopy(info->name, sizeof(info->name), name);
   return ASE_OK;
 }
 ASIOError WinHookBridgeASIO::createBuffers(ASIOBufferInfo* bufferInfos, long numChannels, long bufferSize,

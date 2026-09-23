@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace wha {
@@ -180,6 +181,67 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
   for (uint32_t i = 0; i < a.masterOutCount && i < kMax; ++i)
     if (slotDiffers(a.masterOut[i], b.masterOut[i])) return true;
   return false;
+}
+
+// HW slots take one channel of a stereo device (KsEndpoint kKsDeviceChannels): srcChannel 0 = L, 1 = R.
+constexpr int32_t kHwSlotChannels = 2;
+
+// A name nobody chose: what an empty slot shows.
+inline bool IsPlaceholderName(const char* name) {
+  return name == nullptr || name[0] == '\0' || std::strncmp(name, "- empty -", kNameLen) == 0;
+}
+
+// A device's friendly name without the driver part, short enough for "<name> R" in an ASIO channel
+// name: "Microphone (High Definition Audio Device)" -> "Microphone". Empty in, empty out.
+inline void ShortDeviceName(const char* friendly, char* out, std::size_t outLen) {
+  constexpr std::size_t kMaxShort = kNameLen - 3;  // room for " L" and the terminator
+  std::size_t n = 0;
+  if (friendly)
+    while (friendly[n] && n < kMaxShort && !(friendly[n] == ' ' && friendly[n + 1] == '(')) ++n;
+  if (n >= outLen) n = outLen - 1;
+  if (friendly && n) std::memcpy(out, friendly, n);
+  out[n] = '\0';
+}
+
+// The name a slot gets when its source is assigned and nobody named it: what it carries, so the DAW's
+// channel list reads "Microphone L" instead of "- empty -". `slots` is the slot's list (INPUTS or
+// OUTPUTS); a Bridge slot's channel is its order among that Bridge's slots (see MasterHolder).
+// hwDevice: friendly name of the HW device of this direction (nullptr/"" = unknown: "HW In L").
+inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput, const char* hwDevice,
+                         char* out) {
+  const WHASlot& s = slots[index];
+  const int ch = s.srcChannel + 1;
+  switch (s.type) {
+    case SLOT_NONE: std::snprintf(out, kNameLen, "- empty -"); break;
+    case SLOT_HW: {
+      char device[kNameLen];
+      ShortDeviceName(hwDevice, device, sizeof(device));
+      if (!device[0]) std::snprintf(device, sizeof(device), "HW %s", isInput ? "In" : "Out");
+      if (s.srcChannel == 0 || s.srcChannel == 1)
+        std::snprintf(out, kNameLen, "%s %c", device, s.srcChannel == 0 ? 'L' : 'R');
+      else
+        std::snprintf(out, kNameLen, "%s Ch%d", device, ch);
+      break;
+    }
+    case SLOT_VIRTUAL: std::snprintf(out, kNameLen, "Virtual %d", (s.srcChannel < 0 ? 0 : s.srcChannel % 8) + 1); break;
+    case SLOT_NETWORK: std::snprintf(out, kNameLen, "%s%d Ch%d", isInput ? "Rx" : "Tx", s.streamId + 1, ch); break;
+    default: {  // SLOT_BRIDGE1..4
+      int k = 1;
+      for (uint32_t i = 0; i < index && i < count; ++i) k += slots[i].type == s.type ? 1 : 0;
+      std::snprintf(out, kNameLen, "Bridge%d Ch%d", static_cast<int>(s.type - SLOT_BRIDGE1) + 1, k);
+      break;
+    }
+  }
+}
+
+// The channel name a DAW gets (getChannelInfo): "- empty -" for an empty slot, the slot's own name,
+// or, when nobody named it, its automatic name. Automatic names are not stored, so they follow the
+// slot's type, source and order.
+inline void DawChannelName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput, const char* hwDevice,
+                           char* out) {
+  const WHASlot& s = slots[index];
+  if (s.type != SLOT_NONE && !IsPlaceholderName(s.name)) TruncateCopy(out, kNameLen, s.name);
+  else AutoSlotName(slots, count, index, isInput, hwDevice, out);
 }
 
 inline void SetSlotName(WHASlot& slot, const char* text) {

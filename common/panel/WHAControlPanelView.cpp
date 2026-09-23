@@ -18,10 +18,8 @@ namespace {
 
 std::atomic<int> gAssertCount{0};
 
-constexpr const char* kTypeNames = "NONE\0HW\0VIRTUAL\0NETWORK\0BRIDGE1\0BRIDGE2\0BRIDGE3\0BRIDGE4\0";
 constexpr const char* kFilterNames = "All\0HW\0VIRTUAL\0NETWORK\0BRIDGE1\0BRIDGE2\0BRIDGE3\0BRIDGE4\0";
 constexpr const char* kCodecNames = "PCM_F32\0PCM_I16\0VORBIS\0";
-constexpr const char* kRxNames = "Rx1\0Rx2\0Rx3\0Rx4\0Rx5\0Rx6\0Rx7\0Rx8\0";
 
 constexpr uint32_t kRates[] = {44100, 48000, 96000};
 constexpr uint32_t kFrames[] = {64, 128, 256, 512, 1024};
@@ -48,14 +46,95 @@ struct SlotListOps {
   bool (*setEnabled)(PanelModel&, uint32_t, bool);
   bool (*setName)(PanelModel&, uint32_t, const char*);
   bool (*setType)(PanelModel&, uint32_t, WHASlotType);
+  bool (*setSource)(PanelModel&, uint32_t, int32_t, int32_t);
 };
 
 const SlotListOps kInputOps{true, "INPUTS", "In", "WHA_IN", "+Add Input", AddInput, InsertEmptyAbove, InsertEmptyBelow,
                             DuplicateInput, DeleteInput, MoveInput, SetInputLoopback, SetInputEnabled, SetInputName,
-                            SetInputType};
+                            SetInputType, SetInputSource};
 const SlotListOps kOutputOps{false, "OUTPUTS", "Out", "WHA_OUT", "+Add Output", AddOutput, InsertEmptyAboveOutput,
                              InsertEmptyBelowOutput, DuplicateOutput, DeleteOutput, MoveOutput, SetOutputLoopback,
-                             SetOutputEnabled, SetOutputName, SetOutputType};
+                             SetOutputEnabled, SetOutputName, SetOutputType, SetOutputSource};
+
+// The Source cell: one menu picks what a slot carries (type and source together), with HW devices
+// by name, so nobody has to know that "HW" + "L" means the left channel of the GENERAL device.
+void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDevices* devices, const char* hwName) {
+  WHASlot& s = (isInput ? edit.table.masterIn : edit.table.masterOut)[idx];
+  const std::string preview = SlotSourceLabel(s, isInput, hwName);
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  if (!ImGui::BeginCombo("##source", preview.c_str(), ImGuiComboFlags_HeightLargest)) {
+    if (s.type == SLOT_HW && ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s %s", isInput ? "From" : "To", hwName ? hwName : "the Windows default device");
+    return;
+  }
+  if (ImGui::Selectable("- empty -", s.type == SLOT_NONE)) AssignSource(edit, isInput, idx, SLOT_NONE, 0, 0);
+
+  if (ImGui::BeginMenu("Hardware", !IsGeneralReadOnly(edit))) {
+    ImGui::TextDisabled(isInput ? "All HW inputs share one device (2 channels)." : "All HW outputs share one device (2 channels).");
+    const WHAGeneral& g = edit.table.general;
+    const char* current = isInput ? g.hwCaptureId : g.hwRenderId;
+    const std::vector<PanelEndpoint>* list = devices ? (isInput ? &devices->capture : &devices->render) : nullptr;
+    auto deviceMenu = [&](const char* id, const std::string& label) {
+      ImGui::PushID(id[0] ? id : "default");
+      const bool isCurrent = s.type == SLOT_HW && std::strcmp(current, id) == 0;
+      if (ImGui::BeginMenu(label.c_str())) {
+        for (int side = 0; side < kHwSlotChannels; ++side)
+          if (ImGui::MenuItem(side == 0 ? "L (left)" : "R (right)", nullptr, isCurrent && s.srcChannel == side))
+            AssignHw(edit, isInput, idx, id, side);
+        ImGui::EndMenu();
+      }
+      ImGui::PopID();
+    };
+    const char* defName =
+        list ? EndpointName(*list, (isInput ? devices->defaultCaptureId : devices->defaultRenderId).c_str()) : nullptr;
+    deviceMenu("", defName ? std::string("Windows default (") + defName + ")" : std::string("Windows default"));
+    if (list)
+      for (const PanelEndpoint& e : *list) deviceMenu(e.id.c_str(), e.name);
+    if (current[0] && (!list || !EndpointName(*list, current)))  // saved device not connected: keep it visible
+      deviceMenu(current, std::string("not connected: ") + current);
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Virtual Cable")) {
+    for (int c = 0; c < 8; ++c) {
+      char label[32];
+      std::snprintf(label, sizeof(label), "Cable %d", c + 1);
+      if (ImGui::MenuItem(label, nullptr, s.type == SLOT_VIRTUAL && s.srcChannel % 8 == c))
+        AssignSource(edit, isInput, idx, SLOT_VIRTUAL, c, 0);
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu(isInput ? "Network (receive)" : "Network (send)")) {
+    for (int st = 0; st < static_cast<int>(kNetStreams); ++st) {
+      const WHANetworkStream& ns = isInput ? edit.table.netRx[st] : edit.table.netTx[st];
+      const int channels = ns.channels ? static_cast<int>(ns.channels) : 2;
+      char label[48];
+      std::snprintf(label, sizeof(label), "%s%d%s", isInput ? "Rx" : "Tx", st + 1, ns.ip[0] ? "" : "  (not set up)");
+      if (ImGui::BeginMenu(label)) {
+        for (int ch = 0; ch < channels; ++ch) {
+          char item[16];
+          std::snprintf(item, sizeof(item), "Ch %d", ch + 1);
+          if (ImGui::MenuItem(item, nullptr, s.type == SLOT_NETWORK && s.streamId == st && s.srcChannel == ch))
+            AssignSource(edit, isInput, idx, SLOT_NETWORK, ch, st);
+        }
+        ImGui::EndMenu();
+      }
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Bridge")) {
+    for (int b = 0; b < 4; ++b) {
+      char label[16];
+      std::snprintf(label, sizeof(label), "Bridge%d", b + 1);
+      const auto type = static_cast<WHASlotType>(SLOT_BRIDGE1 + b);
+      if (ImGui::MenuItem(label, nullptr, s.type == type)) AssignSource(edit, isInput, idx, type, 0, 0);
+    }
+    ImGui::EndMenu();
+  }
+  ImGui::EndCombo();
+}
 
 // Structural edits are deferred until the clipper loop ends.
 struct PendingOp {
@@ -102,7 +181,7 @@ bool BeginComboHwFrames(uint32_t& value) {
 }
 
 void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter, char* search, size_t searchLen,
-                  int& rowsDrawn, int bridgeIndex, const AboutInfo& about) {
+                  int& rowsDrawn, int bridgeIndex, const AboutInfo& about, const PanelDevices* devices) {
   WHASlotTable& t = edit.table;
   const uint32_t count = ops.isInput ? t.masterInCount : t.masterOutCount;
   WHASlot* slots = ops.isInput ? t.masterIn : t.masterOut;
@@ -127,6 +206,8 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
   if (ImGui::Button(ops.addLabel)) op.kind = PendingOp::Add;
   ImGui::EndDisabled();
 
+  const char* hwName = HwDeviceName(devices, t.general, ops.isInput);
+
   std::vector<uint32_t> visible;
   visible.reserve(count);
   const std::string searchText(search);
@@ -136,12 +217,11 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
   rowsDrawn = 0;
   constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                           ImGuiTableFlags_SizingFixedFit;
-  if (ImGui::BeginTable("slots", 8, kTableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+  if (ImGui::BeginTable("slots", 7, kTableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("::", ImGuiTableColumnFlags_WidthFixed, 22);
     ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 48);
-    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 110);
-    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 110);
+    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 250);
     ImGui::TableSetupColumn("Name in DAW", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthFixed, 40);
     ImGui::TableSetupColumn("En", ImGuiTableColumnFlags_WidthFixed, 32);
@@ -187,41 +267,35 @@ void DrawSlotList(PanelModel& edit, const SlotListOps& ops, PanelFilter& filter,
         ImGui::Text("%s%02u", ops.prefix, idx + 1);
 
         ImGui::TableSetColumnIndex(2);
-        int type = static_cast<int>(s.type);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##type", &type, kTypeNames)) ops.setType(edit, idx, static_cast<WHASlotType>(type));
+        DrawSourceCell(edit, ops.isInput, idx, devices, hwName);
 
         ImGui::TableSetColumnIndex(3);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (s.type == SLOT_NONE) {
-          ImGui::TextDisabled("-");
-        } else if (s.type == SLOT_NETWORK) {
-          int stream = s.streamId;
-          if (ImGui::Combo("##rx", &stream, kRxNames)) s.streamId = stream;
-        } else {
-          int ch = s.srcChannel + 1;
-          if (ImGui::DragInt("##src", &ch, 0.2f, 1, static_cast<int>(kMax), "Ch %d", ImGuiSliderFlags_AlwaysClamp))
-            s.srcChannel = ch - 1;
-        }
-
-        ImGui::TableSetColumnIndex(4);
         char name[kNameLen];
         std::memcpy(name, s.name, sizeof(name));
         name[kNameLen - 1] = '\0';
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::InputText("##name", name, sizeof(name))) ops.setName(edit, idx, name);
+        if (s.type != SLOT_NONE && IsPlaceholderName(name)) {
+          // Nobody named it: the DAW gets the automatic name, shown greyed; typing sets a name,
+          // clearing it goes back to automatic.
+          char autoName[kNameLen];
+          AutoSlotName(slots, count, idx, ops.isInput, hwName, autoName);
+          name[0] = '\0';
+          if (ImGui::InputTextWithHint("##name", autoName, name, sizeof(name))) ops.setName(edit, idx, name);
+        } else if (ImGui::InputText("##name", name, sizeof(name))) {
+          ops.setName(edit, idx, name);
+        }
 
-        ImGui::TableSetColumnIndex(5);
+        ImGui::TableSetColumnIndex(4);
         bool loop = s.loopback != 0;
         ImGui::BeginDisabled(!IsLoopbackEditable(s));
         if (ImGui::Checkbox("##loop", &loop)) ops.setLoopback(edit, idx, loop);
         ImGui::EndDisabled();
 
-        ImGui::TableSetColumnIndex(6);
+        ImGui::TableSetColumnIndex(5);
         bool en = s.enabled != 0;
         if (ImGui::Checkbox("##en", &en)) ops.setEnabled(edit, idx, en);
 
-        ImGui::TableSetColumnIndex(7);
+        ImGui::TableSetColumnIndex(6);
         ImGui::BeginDisabled(count <= 1);
         if (ImGui::SmallButton("x")) op = {PendingOp::Remove, idx, 0};
         ImGui::EndDisabled();
@@ -501,7 +575,7 @@ PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABri
       state.activeTab = kTabInputs;
       ImGui::BeginChild("body", ImVec2(0, -footer));
       DrawSlotList(edit, kInputOps, state.inFilter, state.inSearch, sizeof(state.inSearch), state.rowsDrawnIn,
-                   state.bridgeIndex, about);
+                   state.bridgeIndex, about, state.devices);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
@@ -509,7 +583,7 @@ PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABri
       state.activeTab = kTabOutputs;
       ImGui::BeginChild("body", ImVec2(0, -footer));
       DrawSlotList(edit, kOutputOps, state.outFilter, state.outSearch, sizeof(state.outSearch), state.rowsDrawnOut,
-                   state.bridgeIndex, about);
+                   state.bridgeIndex, about, state.devices);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
