@@ -29,32 +29,20 @@ KSDATARANGE g_bridgeRange = {
     STATICGUIDOF(KSDATAFORMAT_SPECIFIER_NONE)};
 PKSDATARANGE g_bridgeRanges[] = {&g_bridgeRange};
 
-// Stereo 16-bit, 24-bit PCM and 32-bit float at the two common DAW rates. The ring holds float; the
-// stream converts. (Windows did not bring up the endpoints while the pins offered float only.)
-#define WHA_STREAM_RANGE(staticSubtype, bits, rate)                                                             \
-  {{sizeof(KSDATARANGE_AUDIO), 0, 0, 0, STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO), staticSubtype,       \
-    STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)},                                                    \
-   2, bits, bits, rate, rate}
-KSDATARANGE_AUDIO g_streamRange[] = {
-    WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_PCM, 16, 48000),        WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_PCM, 24, 48000),
-    WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 32, 48000), WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_PCM, 16, 44100),
-    WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_PCM, 24, 44100),        WHA_STREAM_RANGE(STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 32, 44100),
-};
-PKSDATARANGE g_streamRanges[] = {PKSDATARANGE(&g_streamRange[0]), PKSDATARANGE(&g_streamRange[1]),
-                                 PKSDATARANGE(&g_streamRange[2]), PKSDATARANGE(&g_streamRange[3]),
-                                 PKSDATARANGE(&g_streamRange[4]), PKSDATARANGE(&g_streamRange[5])};
-
 #define WHA_PIN(maxInstances, ranges, flow, communication, category, name)                                \
   {maxInstances, maxInstances, 0, nullptr,                                                               \
    {0, nullptr, 0, nullptr, SIZEOF_ARRAY(ranges), ranges, flow, communication, category, name, 0}}
+// A wave filter's streaming pin: its data range and automation are the cable's (WHAWaveMiniport).
+#define WHA_STREAM_PIN(flow) \
+  {1, 1, 0, nullptr, {0, nullptr, 0, nullptr, 0, nullptr, flow, KSPIN_COMMUNICATION_SINK, &KSCATEGORY_AUDIO, nullptr, 0}}
 
 const PCPIN_DESCRIPTOR g_waveRenderPins[] = {
-    WHA_PIN(1, g_streamRanges, KSPIN_DATAFLOW_IN, KSPIN_COMMUNICATION_SINK, &KSCATEGORY_AUDIO, nullptr),
+    WHA_STREAM_PIN(KSPIN_DATAFLOW_IN),
     WHA_PIN(0, g_bridgeRanges, KSPIN_DATAFLOW_OUT, KSPIN_COMMUNICATION_NONE, &KSCATEGORY_AUDIO, nullptr),
 };
 const PCPIN_DESCRIPTOR g_waveCapturePins[] = {
     WHA_PIN(0, g_bridgeRanges, KSPIN_DATAFLOW_IN, KSPIN_COMMUNICATION_NONE, &KSCATEGORY_AUDIO, nullptr),
-    WHA_PIN(1, g_streamRanges, KSPIN_DATAFLOW_OUT, KSPIN_COMMUNICATION_SINK, &KSCATEGORY_AUDIO, nullptr),
+    WHA_STREAM_PIN(KSPIN_DATAFLOW_OUT),
 };
 const PCPIN_DESCRIPTOR g_topoRenderPins[] = {
     WHA_PIN(0, g_bridgeRanges, KSPIN_DATAFLOW_IN, KSPIN_COMMUNICATION_NONE, &KSCATEGORY_AUDIO, nullptr),
@@ -112,13 +100,15 @@ const GUID g_waveCategories[] = {STATICGUIDOF(KSCATEGORY_AUDIO), STATICGUIDOF(KS
                                  STATICGUIDOF(KSCATEGORY_CAPTURE), STATICGUIDOF(KSCATEGORY_REALTIME)};
 const GUID g_topoCategories[] = {STATICGUIDOF(KSCATEGORY_AUDIO), STATICGUIDOF(KSCATEGORY_TOPOLOGY)};
 
+// A Windows stream's format.
 struct StreamFormat {
   ULONG rate;
+  ULONG channels;
   WHASampleKind kind;
 };
 
-// A stream format we accept: stereo 16/24-bit PCM or 32-bit float, 44100 or 48000 Hz, WAVEFORMATEX or
-// EXTENSIBLE (all bits valid).
+// A format the stream can convert: 32-bit float, 16/24/32-bit PCM or 24 bits in 32, 1..8 channels (more
+// than 2 only as EXTENSIBLE), WAVEFORMATEX or EXTENSIBLE. Whether the cable offers it: Offers().
 bool ParseFormat(const KSDATAFORMAT* format, StreamFormat* out) {
   if (!format || format->FormatSize < sizeof(KSDATAFORMAT_WAVEFORMATEX)) return false;
   if (!IsEqualGUIDAligned(format->MajorFormat, KSDATAFORMAT_TYPE_AUDIO) ||
@@ -128,26 +118,50 @@ bool ParseFormat(const KSDATAFORMAT* format, StreamFormat* out) {
   const bool subPcm = IsEqualGUIDAligned(format->SubFormat, KSDATAFORMAT_SUBTYPE_PCM) != 0;
   const WAVEFORMATEX& w = reinterpret_cast<const KSDATAFORMAT_WAVEFORMATEX*>(format)->WaveFormatEx;
   bool isFloat = w.wFormatTag == WAVE_FORMAT_IEEE_FLOAT, isPcm = w.wFormatTag == WAVE_FORMAT_PCM;
+  ULONG valid = w.wBitsPerSample;
   if (w.wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
     if (w.cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) ||
         format->FormatSize < sizeof(KSDATAFORMAT) + sizeof(WAVEFORMATEXTENSIBLE))
       return false;
     const auto& x = reinterpret_cast<const WAVEFORMATEXTENSIBLE&>(w);
-    if (x.Samples.wValidBitsPerSample != w.wBitsPerSample) return false;
+    valid = x.Samples.wValidBitsPerSample;
     isFloat = IsEqualGUIDAligned(x.SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != 0;
     isPcm = IsEqualGUIDAligned(x.SubFormat, KSDATAFORMAT_SUBTYPE_PCM) != 0;
+  } else if (w.nChannels > 2) {
+    return false;
   }
+  const ULONG bits = w.wBitsPerSample;
   WHASampleKind kind;
-  if (isFloat && subFloat && w.wBitsPerSample == 32) kind = WHASampleKind::Float32;
-  else if (isPcm && subPcm && w.wBitsPerSample == 16) kind = WHASampleKind::Pcm16;
-  else if (isPcm && subPcm && w.wBitsPerSample == 24) kind = WHASampleKind::Pcm24;
+  if (isFloat && subFloat && bits == 32 && valid == 32) kind = WHASampleKind::Float32;
+  else if (isPcm && subPcm && bits == 16 && valid == 16) kind = WHASampleKind::Pcm16;
+  else if (isPcm && subPcm && bits == 24 && valid == 24) kind = WHASampleKind::Pcm24;
+  else if (isPcm && subPcm && bits == 32 && valid == 32) kind = WHASampleKind::Pcm32;
+  else if (isPcm && subPcm && bits == 32 && valid == 24) kind = WHASampleKind::Pcm24in32;
   else return false;
-  if (w.nChannels != 2 || w.nBlockAlign != FrameBytes(kind)) return false;
-  if (w.nSamplesPerSec != 44100 && w.nSamplesPerSec != 48000) return false;
+  if (w.nChannels < 1 || w.nChannels > kCableChannels || w.nBlockAlign != FrameBytes(kind, w.nChannels) || !w.nSamplesPerSec)
+    return false;
   out->rate = w.nSamplesPerSec;
+  out->channels = w.nChannels;
   out->kind = kind;
   return true;
 }
+
+// A cable offers exactly one format (WHACable::format): the Master's rate, the cable's channels and
+// sample format. Windows gets no other, so what the panel sets is what Windows streams.
+bool Offers(const WHACableFormat& cable, const StreamFormat& f) {
+  return f.rate == cable.rate && f.channels == cable.channels && f.kind == cable.kind;
+}
+
+WHACableFormat CurrentFormat(WHACable& c) {
+  KIRQL irql;
+  KeAcquireSpinLock(&c.lock, &irql);
+  const WHACableFormat format = c.format;
+  KeReleaseSpinLock(&c.lock, irql);
+  return format;
+}
+
+// The cable of the wave filter a property or event request is for (its MajorTarget).
+WHACable& CableOf(PUNKNOWN majorTarget);
 
 // KSPROPERTY_PIN_PROPOSEDATAFORMAT on a wave filter's streaming pin: the audio engine asks it to pick
 // the device format (the endpoint stays "not present" without an answer). PortCls does not answer it
@@ -191,16 +205,16 @@ NTSTATUS ProposeFormat(PPCPROPERTY_REQUEST request, ULONG streamPin) {
     return audio && sub && specifier ? STATUS_SUCCESS : STATUS_NO_MATCH;
   }
   StreamFormat parsed;
-  return ParseFormat(format, &parsed) ? STATUS_SUCCESS : STATUS_NO_MATCH;
+  return ParseFormat(format, &parsed) && Offers(CurrentFormat(CableOf(request->MajorTarget)), parsed) ? STATUS_SUCCESS
+                                                                                                     : STATUS_NO_MATCH;
 }
 NTSTATUS ProposeRenderFormat(PPCPROPERTY_REQUEST request) { return ProposeFormat(request, kWaveRenderStreamPin); }
 NTSTATUS ProposeCaptureFormat(PPCPROPERTY_REQUEST request) { return ProposeFormat(request, kWaveCaptureStreamPin); }
 
-// `format` as a stereo WAVEFORMATEXTENSIBLE of `kind` at `rate`.
-void FillFormat(KSDATAFORMAT_WAVEFORMATEXTENSIBLE* f, ULONG rate, WHASampleKind kind) {
-  const ULONG frameBytes = FrameBytes(kind);
-  const WORD bits = static_cast<WORD>(frameBytes / 2 * 8);
-  const GUID& subFormat = kind == WHASampleKind::Float32 ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+// `f` as the WAVEFORMATEXTENSIBLE of the cable's format `cf`.
+void FillFormat(KSDATAFORMAT_WAVEFORMATEXTENSIBLE* f, const WHACableFormat& cf) {
+  const ULONG frameBytes = FrameBytes(cf.kind, cf.channels);
+  const GUID& subFormat = cf.kind == WHASampleKind::Float32 ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
   RtlZeroMemory(f, sizeof(*f));
   f->DataFormat.FormatSize = sizeof(*f);
   f->DataFormat.SampleSize = frameBytes;
@@ -209,21 +223,21 @@ void FillFormat(KSDATAFORMAT_WAVEFORMATEXTENSIBLE* f, ULONG rate, WHASampleKind 
   f->DataFormat.Specifier = KSDATAFORMAT_SPECIFIER_WAVEFORMATEX;
   WAVEFORMATEXTENSIBLE& w = f->WaveFormatExt;
   w.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  w.Format.nChannels = 2;
-  w.Format.nSamplesPerSec = rate;
-  w.Format.wBitsPerSample = bits;
+  w.Format.nChannels = static_cast<WORD>(cf.channels);
+  w.Format.nSamplesPerSec = cf.rate;
+  w.Format.wBitsPerSample = static_cast<WORD>(SampleBytes(cf.kind) * 8);
   w.Format.nBlockAlign = static_cast<WORD>(frameBytes);
-  w.Format.nAvgBytesPerSec = rate * frameBytes;
+  w.Format.nAvgBytesPerSec = cf.rate * frameBytes;
   w.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-  w.Samples.wValidBitsPerSample = bits;
-  w.dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+  w.Samples.wValidBitsPerSample = static_cast<WORD>(ValidBits(cf.kind));
+  w.dwChannelMask = CableChannelMask(cf.channels);
   w.SubFormat = subFormat;
 }
 
 // KSPROPERTY_PIN_PROPOSEDATAFORMAT2 on a wave filter's streaming pin: the device's default format for
 // a signal processing mode (the instance's attribute list). We have no modes, so the default and raw
-// modes share one format: 48 kHz 16-bit, as Microsoft's sample. The reply is the format flagged with
-// attributes, then the attribute list back, 8-byte aligned.
+// modes share the cable's one format. The reply is the format flagged with attributes, then the
+// attribute list back, 8-byte aligned.
 NTSTATUS ProposeFormat2(PPCPROPERTY_REQUEST request, ULONG streamPin) {
   constexpr ULONG kPinFields = sizeof(KSP_PIN) - sizeof(KSPROPERTY);  // PinId, Reserved
   if (request->InstanceSize < kPinFields) return STATUS_INVALID_PARAMETER;
@@ -267,7 +281,7 @@ NTSTATUS ProposeFormat2(PPCPROPERTY_REQUEST request, ULONG streamPin) {
   if (request->ValueSize < size) return STATUS_BUFFER_TOO_SMALL;
   auto* format = static_cast<KSDATAFORMAT_WAVEFORMATEXTENSIBLE*>(request->Value);
   RtlZeroMemory(format, formatSize);
-  FillFormat(format, 48000, WHASampleKind::Pcm16);
+  FillFormat(format, CurrentFormat(CableOf(request->MajorTarget)));
   if (attributesSize) {
     format->DataFormat.Flags = KSDATAFORMAT_ATTRIBUTES;
     RtlCopyMemory(static_cast<BYTE*>(request->Value) + formatSize, attributes, attributes->Size);
@@ -293,6 +307,15 @@ const PCPROPERTY_ITEM g_waveCaptureProperties[] = {
 DEFINE_PCAUTOMATION_TABLE_PROP(g_waveRenderAutomation, g_waveRenderProperties);
 DEFINE_PCAUTOMATION_TABLE_PROP(g_waveCaptureAutomation, g_waveCaptureProperties);
 
+// KSEVENT_PINCAPS_FORMATCHANGE on a streaming pin: Windows listens, and re-reads the pin's formats
+// when the cable's format changes (NotifyCableFormatChange).
+NTSTATUS FormatChangeEvent(PPCEVENT_REQUEST request);
+const PCEVENT_ITEM g_streamPinEvents[] = {
+    {&KSEVENTSETID_PinCapsChange, KSEVENT_PINCAPS_FORMATCHANGE, KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT,
+     FormatChangeEvent},
+};
+DEFINE_PCAUTOMATION_TABLE_EVENT(g_streamPinAutomation, g_streamPinEvents);
+
 #define WHA_FILTER(automation, pins, nodes, connections, categories)                                       \
   {0, automation, sizeof(PCPIN_DESCRIPTOR), SIZEOF_ARRAY(pins), pins, sizeof(PCNODE_DESCRIPTOR), nodes, \
    SIZEOF_ARRAY(connections), connections, SIZEOF_ARRAY(categories), categories}
@@ -308,28 +331,29 @@ PCFILTER_DESCRIPTOR g_topoRenderFilter =
 PCFILTER_DESCRIPTOR g_topoCaptureFilter =
     WHA_FILTER(nullptr, g_topoCapturePins, WHA_NODES(g_topoCaptureNodes), g_topoConnections, g_topoCategories);
 
-// The format for a data range intersection on a streaming pin: `myRange`'s (one sample format, one
-// rate) as a stereo WAVEFORMATEXTENSIBLE, if `clientRange` allows it. PortCls' default answer for a
-// float range is a PCM tag with a float subformat, which no one can open.
-NTSTATUS StreamIntersection(PKSDATARANGE clientRange, PKSDATARANGE myRange, ULONG outputLength, PVOID result,
+// The format for a data range intersection on a streaming pin: the cable's one format as a
+// WAVEFORMATEXTENSIBLE, if `clientRange` allows it. PortCls' default answer for a float range is a PCM
+// tag with a float subformat, which no one can open. A client's bit range may name the container (32)
+// or the valid bits (24) of 24-in-32.
+NTSTATUS StreamIntersection(WHACable& cable, PKSDATARANGE clientRange, ULONG outputLength, PVOID result,
                             PULONG resultLength) {
-  const auto* mine = reinterpret_cast<const KSDATARANGE_AUDIO*>(myRange);
-  const ULONG rate = mine->MinimumSampleFrequency;
-  const ULONG bits = mine->MinimumBitsPerSample;
-  const bool isFloat = IsEqualGUIDAligned(myRange->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != 0;
-  const WHASampleKind kind = isFloat ? WHASampleKind::Float32 : bits == 24 ? WHASampleKind::Pcm24 : WHASampleKind::Pcm16;
+  const WHACableFormat cf = CurrentFormat(cable);
   if (IsEqualGUIDAligned(clientRange->Specifier, KSDATAFORMAT_SPECIFIER_WAVEFORMATEX) &&
       clientRange->FormatSize >= sizeof(KSDATARANGE_AUDIO)) {
     const auto* client = reinterpret_cast<const KSDATARANGE_AUDIO*>(clientRange);
-    if (client->MaximumChannels < 2 || client->MinimumBitsPerSample > bits || client->MaximumBitsPerSample < bits ||
-        client->MinimumSampleFrequency > rate || client->MaximumSampleFrequency < rate)
+    const ULONG container = SampleBytes(cf.kind) * 8, valid = ValidBits(cf.kind);
+    const auto inBits = [client](ULONG bits) {
+      return client->MinimumBitsPerSample <= bits && client->MaximumBitsPerSample >= bits;
+    };
+    if (client->MaximumChannels < cf.channels || (!inBits(container) && !inBits(valid)) ||
+        client->MinimumSampleFrequency > cf.rate || client->MaximumSampleFrequency < cf.rate)
       return STATUS_NO_MATCH;
   }
   const ULONG size = sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE);
   *resultLength = size;
   if (!outputLength) return STATUS_BUFFER_OVERFLOW;  // size query
   if (outputLength < size) return STATUS_BUFFER_TOO_SMALL;
-  FillFormat(static_cast<KSDATAFORMAT_WAVEFORMATEXTENSIBLE*>(result), rate, kind);
+  FillFormat(static_cast<KSDATAFORMAT_WAVEFORMATEXTENSIBLE*>(result), cf);
   return STATUS_SUCCESS;
 }
 
@@ -356,6 +380,7 @@ class WHATopologyMiniport : public IMiniportTopology, public CUnknown {
   }
   WHACableLevel& Level() const { return capture_ ? g_cables[cable_].recordLevel : g_cables[cable_].playLevel; }
   KSPIN_LOCK& Lock() const { return g_cables[cable_].lock; }
+  ULONG Channels() const { return CurrentFormat(g_cables[cable_]).channels; }  // the endpoint's, for its volume
   ULONG EndpointPin() const { return capture_ ? kTopoCaptureMicPin : kTopoRenderSpeakerPin; }
 
  private:
@@ -392,12 +417,12 @@ WHATopologyMiniport::DataRangeIntersection(ULONG, PKSDATARANGE, PKSDATARANGE, UL
   return STATUS_NOT_IMPLEMENTED;  // PortCls' default handler
 }
 
-// A BASICSUPPORT reply for a per-channel stepped range (volume, mute): the description, and the
-// ranges when they fit.
-NTSTATUS SteppedRangeSupport(PPCPROPERTY_REQUEST request, ULONG type, LONG minimum, LONG maximum, LONG step) {
-  constexpr ULONG kChannels = WHACableLevel::kChannels;
+// A BASICSUPPORT reply for a per-channel stepped range (volume, mute) of `channels` channels: the
+// description, and the ranges when they fit.
+NTSTATUS SteppedRangeSupport(PPCPROPERTY_REQUEST request, ULONG channels, ULONG type, LONG minimum, LONG maximum,
+                             LONG step) {
   const ULONG full =
-      sizeof(KSPROPERTY_DESCRIPTION) + sizeof(KSPROPERTY_MEMBERSHEADER) + kChannels * sizeof(KSPROPERTY_STEPPING_LONG);
+      sizeof(KSPROPERTY_DESCRIPTION) + sizeof(KSPROPERTY_MEMBERSHEADER) + channels * sizeof(KSPROPERTY_STEPPING_LONG);
   if (request->ValueSize >= sizeof(KSPROPERTY_DESCRIPTION)) {
     auto* d = static_cast<PKSPROPERTY_DESCRIPTION>(request->Value);
     d->AccessFlags = KSPROPERTY_TYPE_BASICSUPPORT | KSPROPERTY_TYPE_GET | KSPROPERTY_TYPE_SET;
@@ -411,10 +436,10 @@ NTSTATUS SteppedRangeSupport(PPCPROPERTY_REQUEST request, ULONG type, LONG minim
       auto* members = reinterpret_cast<PKSPROPERTY_MEMBERSHEADER>(d + 1);
       members->MembersFlags = KSPROPERTY_MEMBER_STEPPEDRANGES;
       members->MembersSize = sizeof(KSPROPERTY_STEPPING_LONG);
-      members->MembersCount = kChannels;
+      members->MembersCount = channels;
       members->Flags = KSPROPERTY_MEMBER_FLAG_BASICSUPPORT_MULTICHANNEL;
       auto* ranges = reinterpret_cast<PKSPROPERTY_STEPPING_LONG>(members + 1);
-      for (ULONG i = 0; i < kChannels; ++i) {
+      for (ULONG i = 0; i < channels; ++i) {
         ranges[i].SteppingDelta = ULONG(step);
         ranges[i].Reserved = 0;
         ranges[i].Bounds.SignedMinimum = minimum;
@@ -447,9 +472,11 @@ NTSTATUS TopologyNodeProperty(PPCPROPERTY_REQUEST request) {
   WHATopologyMiniport* miniport = WHATopologyMiniport::Of(request);
   const bool isVolume = request->PropertyItem->Id == KSPROPERTY_AUDIO_VOLUMELEVEL;
   if (request->Node != (isVolume ? kVolumeNode : kMuteNode)) return STATUS_INVALID_DEVICE_REQUEST;
-  if (request->Verb & KSPROPERTY_TYPE_BASICSUPPORT)
-    return isVolume ? SteppedRangeSupport(request, VT_I4, kVolumeMin, kVolumeMax, kVolumeStep)
-                    : SteppedRangeSupport(request, VT_BOOL, 0, 1, 1);
+  if (request->Verb & KSPROPERTY_TYPE_BASICSUPPORT) {
+    const ULONG channels = miniport->Channels();
+    return isVolume ? SteppedRangeSupport(request, channels, VT_I4, kVolumeMin, kVolumeMax, kVolumeStep)
+                    : SteppedRangeSupport(request, channels, VT_BOOL, 0, 1, 1);
+  }
   if (request->InstanceSize < sizeof(ULONG)) return STATUS_INVALID_PARAMETER;
   const ULONG channel = *static_cast<const ULONG*>(request->Instance);
   constexpr ULONG kAllChannels = ~0UL;
@@ -484,7 +511,7 @@ NTSTATUS TopologyNodeProperty(PPCPROPERTY_REQUEST request) {
   for (ULONG c = first; c < end; ++c) {
     if (isVolume) level.volume[c] = volume;
     else level.mute[c] = volume ? TRUE : FALSE;
-    level.gain[c] = level.mute[c] ? 0.0f : VolumeGain(level.volume[c]);  // at most 192 multiplies
+    level.gain[c] = level.mute[c] ? 0.0f : VolumeGain(level.volume[c]);  // at most 192 multiplies each
   }
   KeReleaseSpinLock(&miniport->Lock(), irql);
   return STATUS_SUCCESS;
@@ -514,11 +541,12 @@ class WHAWaveStream : public IMiniportWaveRTStream, public CUnknown {
   bool capture_ = false;
   PPORTWAVERTSTREAM portStream_ = nullptr;
   ULONG rate_ = 0;
+  ULONG channels_ = 0;
   WHASampleKind kind_ = WHASampleKind::Float32;
   ULONG frameBytes_ = 0;
   PEX_TIMER timer_ = nullptr;
   static constexpr ULONG kScratchFrames = 256;
-  float scratch_[2 * kScratchFrames] = {};  // integer <-> float conversion (under cable_->lock)
+  float scratch_[kCableChannels * kScratchFrames] = {};  // integer <-> float conversion (under cable_->lock)
   // Guarded by cable_->lock:
   PMDL mdl_ = nullptr;
   BYTE* buffer_ = nullptr;
@@ -538,8 +566,9 @@ NTSTATUS WHAWaveStream::Init(WHACable* cable, bool capture, PPORTWAVERTSTREAM po
   portStream_ = portStream;
   portStream_->AddRef();
   rate_ = format.rate;
+  channels_ = format.channels;
   kind_ = format.kind;
-  frameBytes_ = FrameBytes(format.kind);
+  frameBytes_ = FrameBytes(format.kind, format.channels);
   LARGE_INTEGER frequency;
   KeQueryPerformanceCounter(&frequency);
   qpcFrequency_ = frequency.QuadPart;
@@ -591,7 +620,9 @@ void WHAWaveStream::UpdateLocked() {
   }
   const unsigned prime = CablePrime(*cable_), slack = CableSlack(*cable_);
   const float* gain = (capture_ ? cable_->recordLevel : cable_->playLevel).gain;
-  const bool unity = gain[0] == 1.0f && gain[1] == 1.0f;
+  const ULONG ch = channels_;
+  bool unity = true;
+  for (ULONG c = 0; c < ch; ++c) unity = unity && gain[c] == 1.0f;
   while (pending) {
     const ULONG offset = ULONG(framesDone_ % bufferFrames_);
     ULONG chunk = bufferFrames_ - offset;
@@ -599,22 +630,20 @@ void WHAWaveStream::UpdateLocked() {
     BYTE* frames = buffer_ + ULONGLONG(offset) * frameBytes_;
     if (kind_ == WHASampleKind::Float32 && unity) {  // bit-exact, straight between buffer and ring
       if (capture_)
-        cable_->record.read(reinterpret_cast<float*>(frames), chunk, prime, slack);
+        cable_->record.read(reinterpret_cast<float*>(frames), chunk, ch, prime, slack);
       else
-        cable_->play.write(reinterpret_cast<const float*>(frames), chunk);
+        cable_->play.write(reinterpret_cast<const float*>(frames), chunk, ch);
     } else {
       for (ULONG done = 0; done < chunk;) {
         const ULONG n = chunk - done < kScratchFrames ? chunk - done : kScratchFrames;
         BYTE* at = frames + ULONGLONG(done) * frameBytes_;
-        if (capture_) cable_->record.read(scratch_, n, prime, slack);
-        else SamplesToFloat(at, scratch_, n, kind_);
+        if (capture_) cable_->record.read(scratch_, n, ch, prime, slack);
+        else SamplesToFloat(at, scratch_, n * ch, kind_);
         if (!unity)
-          for (ULONG i = 0; i < n; ++i) {
-            scratch_[2 * i] *= gain[0];
-            scratch_[2 * i + 1] *= gain[1];
-          }
-        if (capture_) FloatToSamples(scratch_, at, n, kind_);
-        else cable_->play.write(scratch_, n);
+          for (ULONG i = 0; i < n; ++i)
+            for (ULONG c = 0; c < ch; ++c) scratch_[ch * i + c] *= gain[c];
+        if (capture_) FloatToSamples(scratch_, at, n * ch, kind_);
+        else cable_->play.write(scratch_, n, ch);
         done += n;
       }
     }
@@ -736,13 +765,64 @@ STDMETHODIMP_(NTSTATUS) WHAWaveStream::GetClockRegister(KSRTAUDIO_HWREGISTER*) {
 class WHAWaveMiniport : public IMiniportWaveRT, public CUnknown {
  public:
   DECLARE_STD_UNKNOWN();
-  WHAWaveMiniport(PUNKNOWN outer, ULONG cable, bool capture) : CUnknown(outer), cable_(cable), capture_(capture) {}
+  // The side's filter, with the streaming pin listing the cable's data range and format-change event.
+  WHAWaveMiniport(PUNKNOWN outer, ULONG cable, bool capture) : CUnknown(outer), cable_(cable), capture_(capture) {
+    const PCFILTER_DESCRIPTOR& side = capture ? g_waveCaptureFilter : g_waveRenderFilter;
+    static_assert(SIZEOF_ARRAY(g_waveRenderPins) == 2 && SIZEOF_ARRAY(g_waveCapturePins) == 2, "pins_ size");
+    RtlCopyMemory(pins_, side.Pins, sizeof(pins_));
+    PCPIN_DESCRIPTOR& stream = pins_[StreamPin()];
+    stream.AutomationTable = &g_streamPinAutomation;
+    stream.KsPinDescriptor.DataRangesCount = SIZEOF_ARRAY(g_cables[cable].ranges);
+    stream.KsPinDescriptor.DataRanges = g_cables[cable].ranges;
+    filter_ = side;
+    filter_.Pins = pins_;
+  }
+  ~WHAWaveMiniport();
   IMP_IMiniportWaveRT;
+
+  static WHAWaveMiniport* Of(PUNKNOWN majorTarget) {
+    return static_cast<WHAWaveMiniport*>(static_cast<IMiniportWaveRT*>(majorTarget));
+  }
+  WHACable& Cable() const { return g_cables[cable_]; }
+  ULONG StreamPin() const { return capture_ ? kWaveCaptureStreamPin : kWaveRenderStreamPin; }
+  PPORTEVENTS Events() const { return events_; }
 
  private:
   ULONG cable_;
   bool capture_;
+  PPORTEVENTS events_ = nullptr;  // our port's, from Init; the cable borrows it (WHACable::events)
+  PCPIN_DESCRIPTOR pins_[2];
+  PCFILTER_DESCRIPTOR filter_;
 };
+
+WHACable& CableOf(PUNKNOWN majorTarget) { return WHAWaveMiniport::Of(majorTarget)->Cable(); }
+
+// The streaming pin's KSEVENT_PINCAPS_FORMATCHANGE: Windows enables it on the filter; PortCls keeps
+// the entry on our port's list, which NotifyCableFormatChange signals.
+NTSTATUS FormatChangeEvent(PPCEVENT_REQUEST request) {
+  WHAWaveMiniport* miniport = WHAWaveMiniport::Of(request->MajorTarget);
+  switch (request->Verb) {
+    case PCEVENT_VERB_SUPPORT:
+    case PCEVENT_VERB_REMOVE:
+      return STATUS_SUCCESS;
+    case PCEVENT_VERB_ADD:
+      if (!request->EventEntry || !miniport->Events()) return STATUS_INVALID_PARAMETER;
+      miniport->Events()->AddEventToEventList(request->EventEntry);
+      return STATUS_SUCCESS;
+    default:
+      return STATUS_INVALID_PARAMETER;
+  }
+}
+
+WHAWaveMiniport::~WHAWaveMiniport() {
+  if (!events_) return;
+  WHACable& c = Cable();
+  KIRQL irql;
+  KeAcquireSpinLock(&c.lock, &irql);
+  c.events[capture_ ? 1 : 0] = nullptr;
+  KeReleaseSpinLock(&c.lock, irql);
+  events_->Release();
+}
 
 STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::NonDelegatingQueryInterface(REFIID iid, PVOID* object) {
   if (IsEqualGUIDAligned(iid, IID_IUnknown)) {
@@ -759,19 +839,31 @@ STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::NonDelegatingQueryInterface(REFIID iid,
   return STATUS_SUCCESS;
 }
 
-STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::Init(PUNKNOWN, PRESOURCELIST, PPORTWAVERT) { return STATUS_SUCCESS; }
+// The port's events interface, to tell Windows when the cable's format changes. Without it the cable
+// still streams; a format change then shows up only when Windows next rebuilds the endpoint.
+STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::Init(PUNKNOWN, PRESOURCELIST, PPORTWAVERT port) {
+  PPORTEVENTS events = nullptr;
+  if (!port || !NT_SUCCESS(port->QueryInterface(IID_IPortEvents, reinterpret_cast<PVOID*>(&events))) || !events)
+    return STATUS_SUCCESS;
+  events_ = events;
+  WHACable& c = Cable();
+  KIRQL irql;
+  KeAcquireSpinLock(&c.lock, &irql);
+  c.events[capture_ ? 1 : 0] = events;
+  KeReleaseSpinLock(&c.lock, irql);
+  return STATUS_SUCCESS;
+}
 
 STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::GetDescription(PPCFILTER_DESCRIPTOR* description) {
-  *description = capture_ ? &g_waveCaptureFilter : &g_waveRenderFilter;
+  *description = &filter_;
   return STATUS_SUCCESS;
 }
 
 STDMETHODIMP_(NTSTATUS)
-WHAWaveMiniport::DataRangeIntersection(ULONG pin, PKSDATARANGE clientRange, PKSDATARANGE myRange, ULONG outputLength,
+WHAWaveMiniport::DataRangeIntersection(ULONG pin, PKSDATARANGE clientRange, PKSDATARANGE, ULONG outputLength,
                                        PVOID result, PULONG resultLength) {
-  const ULONG streamPin = capture_ ? kWaveCaptureStreamPin : kWaveRenderStreamPin;
-  if (pin != streamPin) return STATUS_NOT_IMPLEMENTED;  // bridge pin: PortCls' default handler
-  return StreamIntersection(clientRange, myRange, outputLength, result, resultLength);
+  if (pin != StreamPin()) return STATUS_NOT_IMPLEMENTED;  // bridge pin: PortCls' default handler
+  return StreamIntersection(Cable(), clientRange, outputLength, result, resultLength);
 }
 
 STDMETHODIMP_(NTSTATUS) WHAWaveMiniport::GetDeviceDescription(PDEVICE_DESCRIPTION description) {
@@ -789,14 +881,15 @@ STDMETHODIMP_(NTSTATUS)
 WHAWaveMiniport::NewStream(PMINIPORTWAVERTSTREAM* stream, PPORTWAVERTSTREAM portStream, ULONG pin,
                            BOOLEAN capture, PKSDATAFORMAT dataFormat) {
   *stream = nullptr;
-  const ULONG streamPin = capture_ ? kWaveCaptureStreamPin : kWaveRenderStreamPin;
-  if (pin != streamPin || bool(capture) != capture_) return STATUS_INVALID_PARAMETER;
+  if (pin != StreamPin() || bool(capture) != capture_) return STATUS_INVALID_PARAMETER;
+  // Only the cable's format: one opened in an older format (just before a change) is refused, and
+  // Windows reopens in the new one after the format-change event.
   StreamFormat format;
-  if (!ParseFormat(dataFormat, &format)) return STATUS_NO_MATCH;
+  if (!ParseFormat(dataFormat, &format) || !Offers(CurrentFormat(Cable()), format)) return STATUS_NO_MATCH;
   auto* s = new (POOL_FLAG_NON_PAGED, kPoolTag) WHAWaveStream(nullptr);
   if (!s) return STATUS_INSUFFICIENT_RESOURCES;
   s->AddRef();
-  const NTSTATUS status = s->Init(&g_cables[cable_], capture_, portStream, format);
+  const NTSTATUS status = s->Init(&Cable(), capture_, portStream, format);
   if (!NT_SUCCESS(status)) {
     s->Release();
     return status;
@@ -806,6 +899,40 @@ WHAWaveMiniport::NewStream(PMINIPORTWAVERTSTREAM* stream, PPORTWAVERTSTREAM port
 }
 
 }  // namespace
+
+bool SetCableFormatLocked(WHACable& c, const WHACableFormat& format) {
+  const bool changed = format.rate != c.format.rate || format.channels != c.format.channels || format.kind != c.format.kind;
+  c.format = format;
+  KSDATARANGE_AUDIO& r = c.range;
+  r.DataRange.FormatSize = sizeof(KSDATARANGE_AUDIO);
+  r.DataRange.Flags = 0;
+  r.DataRange.SampleSize = 0;
+  r.DataRange.Reserved = 0;
+  r.DataRange.MajorFormat = KSDATAFORMAT_TYPE_AUDIO;
+  r.DataRange.SubFormat = format.kind == WHASampleKind::Float32 ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+  r.DataRange.Specifier = KSDATAFORMAT_SPECIFIER_WAVEFORMATEX;
+  r.MaximumChannels = format.channels;
+  r.MinimumBitsPerSample = r.MaximumBitsPerSample = SampleBytes(format.kind) * 8;
+  r.MinimumSampleFrequency = r.MaximumSampleFrequency = format.rate;
+  c.ranges[0] = &r.DataRange;
+  return changed;
+}
+
+void NotifyCableFormatChange(WHACable& c) {
+  PPORTEVENTS events[2] = {};
+  KIRQL irql;
+  KeAcquireSpinLock(&c.lock, &irql);
+  for (int side = 0; side < 2; ++side)
+    if ((events[side] = c.events[side]) != nullptr) events[side]->AddRef();  // the miniport holds one: alive
+  KeReleaseSpinLock(&c.lock, irql);
+  GUID set = KSEVENTSETID_PinCapsChange;
+  for (int side = 0; side < 2; ++side) {
+    if (!events[side]) continue;
+    events[side]->GenerateEventList(&set, KSEVENT_PINCAPS_FORMATCHANGE, TRUE,
+                                    side ? kWaveCaptureStreamPin : kWaveRenderStreamPin, FALSE, ULONG(-1));
+    events[side]->Release();
+  }
+}
 
 NTSTATUS NewWaveMiniport(PUNKNOWN* out, ULONG cable, bool capture) {
   auto* m = new (POOL_FLAG_NON_PAGED, kPoolTag) WHAWaveMiniport(nullptr, cable, capture);

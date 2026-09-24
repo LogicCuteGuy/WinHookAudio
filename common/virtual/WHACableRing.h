@@ -1,15 +1,19 @@
 #pragma once
 
-// WHACableRing - one direction of a Virtual Cable: a stereo float FIFO between a Windows stream (the
-// driver's WaveRT stream) and the Worker. Plain C++ without the C++ library, so WinHookAudio.sys and
-// an offline test share it. Not thread-safe: the driver holds the cable's spin lock around each call.
+// WHACableRing - one direction of a Virtual Cable: a float FIFO between a Windows stream (the driver's
+// WaveRT stream) and the Worker. Every frame holds kCableChannels channels; each side writes and reads
+// its own channel count (the rest are silent / dropped), so a stereo stream and a 7.1 Worker block
+// share one ring. Plain C++ without the C++ library, so WinHookAudio.sys and an offline test share it.
+// Not thread-safe: the driver holds the cable's spin lock around each call.
 // Vocabulary: Virtual Cable, Worker.
+
+#include "WHACableFormat.h"
 
 namespace wha {
 
 class WHACableRing {
  public:
-  static constexpr unsigned kFrames = 8192;  // 64 KB of stereo float
+  static constexpr unsigned kFrames = 8192;  // 256 KB: 8 channels of float
 
   void clear() {
     read_ = 0;
@@ -21,10 +25,12 @@ class WHACableRing {
   unsigned underruns() const { return underruns_; }
   unsigned drops() const { return drops_; }
 
-  // Appends n frames (src nullptr: silence). When full, the oldest frames are dropped.
-  void write(const float* src, unsigned n) {
+  // Appends n frames of `channels` interleaved channels (src nullptr: silence); channels past
+  // `channels` are silent. When full, the oldest frames are dropped.
+  void write(const float* src, unsigned n, unsigned channels) {
+    if (channels > kCableChannels) channels = kCableChannels;
     if (n > kFrames) {
-      if (src) src += 2 * (n - kFrames);
+      if (src) src += channels * (n - kFrames);
       drops_ += n - kFrames;
       n = kFrames;
     }
@@ -36,23 +42,23 @@ class WHACableRing {
     }
     unsigned w = (read_ + fill_) % kFrames;
     for (unsigned i = 0; i < n; ++i) {
-      data_[2 * w] = src ? src[2 * i] : 0.0f;
-      data_[2 * w + 1] = src ? src[2 * i + 1] : 0.0f;
+      float* frame = data_ + kCableChannels * w;
+      for (unsigned c = 0; c < kCableChannels; ++c) frame[c] = src && c < channels ? src[channels * i + c] : 0.0f;
       w = w + 1 == kFrames ? 0 : w + 1;
     }
     fill_ += n;
   }
 
-  // Takes n frames into dst. The reader starts once `prime` frames are queued, silence before: that
-  // is the cable's latency, which absorbs both sides' block sizes and timing. A read that finds fewer
-  // than n frames gives what there is, then silence, and waits for `prime` again (an underrun). More
-  // than prime + slack frames queued (the two sides' clocks drift apart) drops the oldest down to
-  // prime.
-  void read(float* dst, unsigned n, unsigned prime, unsigned slack) {
+  // Takes n frames of `channels` interleaved channels into dst (channels past kCableChannels are
+  // silent). The reader starts once `prime` frames are queued, silence before: that is the cable's
+  // latency, which absorbs both sides' block sizes and timing. A read that finds fewer than n frames
+  // gives what there is, then silence, and waits for `prime` again (an underrun). More than
+  // prime + slack frames queued (the two sides' clocks drift apart) drops the oldest down to prime.
+  void read(float* dst, unsigned n, unsigned channels, unsigned prime, unsigned slack) {
     if (prime > kFrames) prime = kFrames;
     if (!primed_) {
       if (fill_ < prime || fill_ == 0) {
-        zero(dst, n);
+        zero(dst, n * channels);
         return;
       }
       primed_ = true;
@@ -66,25 +72,25 @@ class WHACableRing {
     const unsigned take = n < fill_ ? n : fill_;
     unsigned r = read_;
     for (unsigned i = 0; i < take; ++i) {
-      dst[2 * i] = data_[2 * r];
-      dst[2 * i + 1] = data_[2 * r + 1];
+      const float* frame = data_ + kCableChannels * r;
+      for (unsigned c = 0; c < channels; ++c) dst[channels * i + c] = c < kCableChannels ? frame[c] : 0.0f;
       r = r + 1 == kFrames ? 0 : r + 1;
     }
     read_ = r;
     fill_ -= take;
     if (take < n) {
-      zero(dst + 2 * take, n - take);
+      zero(dst + channels * take, channels * (n - take));
       ++underruns_;
       primed_ = false;
     }
   }
 
  private:
-  static void zero(float* dst, unsigned n) {
-    for (unsigned i = 0; i < 2 * n; ++i) dst[i] = 0.0f;
+  static void zero(float* dst, unsigned samples) {
+    for (unsigned i = 0; i < samples; ++i) dst[i] = 0.0f;
   }
 
-  float data_[2 * kFrames] = {};
+  float data_[kCableChannels * kFrames] = {};
   unsigned read_ = 0;  // frame index of the oldest queued frame
   unsigned fill_ = 0;  // frames queued
   bool primed_ = false;

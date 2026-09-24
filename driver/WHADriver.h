@@ -10,6 +10,7 @@
 #include <stdunk.h>
 #include <ksmedia.h>
 
+#include "../common/virtual/WHACableFormat.h"
 #include "../common/virtual/WHACableRing.h"
 
 // Kernel C++ allocation (WHAAdapter.cpp): ExAllocatePool2, so zeroed.
@@ -26,10 +27,19 @@ constexpr ULONG kSubdevicesPerCable = 4;  // wave + topology, for playback and f
 // One side's Windows volume and mute (the topology filter's volume and mute nodes), per channel.
 // The stream applies `gain` (0 when muted); Windows does not, since the endpoint has its own nodes.
 struct WHACableLevel {
-  static constexpr ULONG kChannels = 2;
+  static constexpr ULONG kChannels = kCableChannels;
   LONG volume[kChannels] = {};  // 1/65536 dB, kVolumeMin..0
   BOOL mute[kChannels] = {};
-  float gain[kChannels] = {1.0f, 1.0f};
+  float gain[kChannels] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+// The one format a cable's endpoints offer (both sides): the Master's rate, the cable's channels and
+// sample format, as the Worker last sent them (WHACableExchange). Until a Worker connects: 48 kHz
+// stereo float.
+struct WHACableFormat {
+  ULONG rate = 48000;
+  ULONG channels = 2;
+  WHASampleKind kind = WHASampleKind::Float32;
 };
 
 // One Virtual Cable. `lock` guards everything here and the state of the streams on it.
@@ -41,9 +51,21 @@ struct WHACable {
   ULONG recordRate;
   ULONG workerFrames;   // frames per Worker exchange (the last one): sets the rings' latency
   WHACableLevel playLevel, recordLevel;
+  WHACableFormat format;
+  // Both wave filters' streaming pins list this one data range (the format above; SetCableFormatLocked
+  // rewrites it in place, PortCls reads it through the pointer on each request).
+  KSDATARANGE_AUDIO range;
+  PKSDATARANGE ranges[1];
+  // Each wave filter's port events (null while it is not registered), to tell Windows the format changed.
+  PPORTEVENTS events[2];  // [0] playback (render), [1] recording (capture)
 };
 
 extern WHACable* g_cables;  // kCables entries, nonpaged; lives as long as the driver
+
+// Sets cable `c`'s format and its data range (c.lock held). False if nothing changed.
+bool SetCableFormatLocked(WHACable& c, const WHACableFormat& format);
+// Tells Windows that cable `c`'s formats changed (both endpoints); PASSIVE_LEVEL, lock not held.
+void NotifyCableFormatChange(WHACable& c);
 
 // The ring latency for one side: two blocks of the side that delivers in the largest steps (the
 // Worker's block; a WaveRT stream is copied every millisecond).

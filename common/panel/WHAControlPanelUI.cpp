@@ -8,6 +8,9 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
+#include <memory>
+
+#include "WHASlotsFile.h"
 
 namespace wha {
 
@@ -166,7 +169,7 @@ bool IsValidSource(WHASlotType type, int32_t srcChannel, int32_t streamId) {
     case SLOT_NETWORK:
       return streamId >= 0 && streamId < static_cast<int32_t>(kNetStreams) && srcChannel >= 0 &&
              srcChannel < static_cast<int32_t>(kMaxPcmChannels);
-    case SLOT_VIRTUAL: return srcChannel >= 0 && srcChannel < 2 * kVirtualSlotCables;  // cable * 2 + side
+    case SLOT_VIRTUAL: return srcChannel >= 0 && srcChannel < kVirtualCableChannels * kVirtualSlotCables;  // cable * 8 + channel
     case SLOT_NONE: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kMax);
     default: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kBridgeChannels);  // Bridge app channel
   }
@@ -604,14 +607,17 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const
       std::snprintf(buf, sizeof(buf), "%s \xC2\xB7 %c", device, side);
       return buf;
     }
-    case SLOT_VIRTUAL:
-      std::snprintf(buf, sizeof(buf), "Virtual %d \xC2\xB7 %c", VirtualCableOf(slot) + 1, VirtualSideOf(slot) ? 'R' : 'L');
+    case SLOT_VIRTUAL: {
+      const int c = VirtualChannelOf(slot);
+      if (c < 2) std::snprintf(buf, sizeof(buf), "Virtual %d \xC2\xB7 %c", VirtualCableOf(slot) + 1, c ? 'R' : 'L');
+      else std::snprintf(buf, sizeof(buf), "Virtual %d \xC2\xB7 Ch%d", VirtualCableOf(slot) + 1, c + 1);
       return buf;
+    }
     case SLOT_NETWORK:
       std::snprintf(buf, sizeof(buf), "%s%d \xC2\xB7 Ch%d", isInput ? "Rx" : "Tx", slot.streamId + 1, slot.srcChannel + 1);
       return buf;
     default:
-      std::snprintf(buf, sizeof(buf), "Bridge%d Â· Ch%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1, slot.srcChannel + 1);
+      std::snprintf(buf, sizeof(buf), "Bridge%d \xC2\xB7 Ch%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1, slot.srcChannel + 1);
       return buf;
   }
 }
@@ -714,7 +720,7 @@ AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   info.version = "1.0.0";
   info.sysRunning = false;
   info.clsidCount = 5;
-  info.slotsJsonPath = "%ProgramData%\\WinHookAudio\\slots.json";
+  info.configPath = ConfigDir() + "\\ (" + shm::kRoutesFile + ", " + shm::kSettingsFile + ")";
   (void)model;
   for (int i = 0; i < 4; ++i) {
     char buf[32];
@@ -730,7 +736,8 @@ AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   return info;
 }
 
-bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested) {
+bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* routesOut, std::string* settingsOut,
+               bool* resetRequested) {
   if (!pTable) return false;
   std::string err;
   if (!ValidateSlots(editCopy.table, &err)) return false;
@@ -738,32 +745,37 @@ bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut,
                              editCopy.table.general.asioBuffer != pTable->general.asioBuffer);
   editCopy.table.version = pTable->version + 1;
   *pTable = editCopy.table;
-  std::string json = SerializeSlots(*pTable);
-  if (jsonOut) *jsonOut = json;
+  if (routesOut) *routesOut = SerializeRoutes(*pTable);
+  if (settingsOut) *settingsOut = SerializeSettings(*pTable);
   if (resetRequested) *resetRequested = masterClockChanged;
   return true;
 }
 
-bool ExportSlots(const WHASlotTable& table, const std::string& path) {
-  std::string json = SerializeSlots(table);
+namespace {
+bool WriteText(const std::string& path, const std::string& text) {
   FILE* f = nullptr;
   if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) return false;
-  std::fwrite(json.c_str(), 1, json.size(), f);
-  std::fclose(f);
-  return true;
+  const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+  return std::fclose(f) == 0 && ok;
 }
+}  // namespace
 
-bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error) {
-  FILE* f = nullptr;
-  if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) { if (error) *error = "open failed"; return false; }
-  std::fseek(f, 0, SEEK_END);
-  long len = std::ftell(f);
-  std::fseek(f, 0, SEEK_SET);
-  std::string json;
-  json.resize(len);
-  std::fread(json.data(), 1, len, f);
-  std::fclose(f);
-  return DeserializeSlots(json, table, error);
+bool ExportRoutes(const WHASlotTable& table, const std::string& path) { return WriteText(path, SerializeRoutes(table)); }
+bool ExportSettings(const WHASlotTable& table, const std::string& path) { return WriteText(path, SerializeSettings(table)); }
+bool ExportEverything(const WHASlotTable& table, const std::string& path) { return WriteText(path, SerializeEverything(table)); }
+
+bool ImportConfig(WHASlotTable& table, const std::string& path, std::string* what, std::string* error) {
+  std::string text;
+  if (!ReadWholeFile(path, text)) {
+    if (error) *error = "open failed";
+    return false;
+  }
+  auto scratch = std::make_unique<WHASlotTable>(table);  // a half-read file must not reach `table`
+  ConfigKind kind = ConfigKind::Everything;
+  if (!DeserializeConfigText(text, *scratch, &kind, error)) return false;
+  table = *scratch;
+  if (what) *what = ConfigKindWord(kind);
+  return true;
 }
 
 bool ResetToDefault(PanelModel& model) {
@@ -797,6 +809,29 @@ bool SetVirtualCableName(PanelModel& model, const char* name) {
 }
 uint32_t GetVirtualCableCount(const PanelModel& model) { return model.table.general.virtualCables; }
 std::string GetVirtualCableName(const PanelModel& model) { return std::string(model.table.general.virtualName); }
+bool SetCableChannels(PanelModel& model, int cable, uint32_t channels) {
+  if (IsGeneralReadOnly(model) || cable < 0 || cable >= kVirtualSlotCables || channels > 255) return false;
+  WHACableSetting next = model.table.cables[cable];
+  next.channels = static_cast<uint8_t>(channels);
+  if (!IsValidCableSetting(next)) return false;
+  model.table.cables[cable] = next;
+  return true;
+}
+bool SetCableFormat(PanelModel& model, int cable, uint32_t format) {
+  if (IsGeneralReadOnly(model) || cable < 0 || cable >= kVirtualSlotCables || format > 255) return false;
+  WHACableSetting next = model.table.cables[cable];
+  next.format = static_cast<uint8_t>(format);
+  if (!IsValidCableSetting(next)) return false;
+  model.table.cables[cable] = next;
+  return true;
+}
+const char* CableChannelsLabel(uint32_t channels) {
+  return channels == 2 ? "Stereo" : channels == 4 ? "Quad" : channels == 6 ? "5.1" : channels == 8 ? "7.1" : "?";
+}
+const char* CableFormatLabel(uint32_t format) {
+  static const char* const kNames[] = {"32-bit float", "16-bit", "24-bit", "32-bit", "24-bit in 32"};
+  return format < std::size(kNames) ? kNames[format] : "?";
+}
 
 // NETWORK 8 tab (16)
 bool SetNetworkTx(PanelModel& model, uint32_t index, const WHANetworkStream& stream) {

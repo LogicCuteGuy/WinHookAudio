@@ -78,8 +78,8 @@ class MasterHolder {
   // Windows playback -> DAW IN); other cables, or all without the driver, loop inside the Worker.
   int cableDriverCables() const { return cableCountPub_.load(); }  // 0 = not open
   int cableDriverError() const { return cableError_.load(); }      // Win32 error of the open, 0 if open
-  // Cable c's last exchange (rates, queues, driver counters) and the Worker's counts; false if the
-  // Worker has not exchanged it.
+  // Cable c's last exchange (rates, queues, driver counters, the format its endpoints offer) and the
+  // Worker's counts; false if the Worker has not exchanged it.
   bool cableStatus(int c, WHACableExchange& reply, uint64_t& exchanges, uint64_t& errors) const;
 
   // The Master Clock's tick count: the Worker compares it with its own to find ticks it missed (an
@@ -101,7 +101,9 @@ class MasterHolder {
   void closeHw();
   void openCables();  // Worker thread, at start
   void closeCables();
-  bool exchangeCable(int cable, uint32_t frames, bool hasRecord);  // virtualScratch_ <-> cableIo_
+  // virtualScratch_ <-> cableIo_, `channels` wide; also sends the cable's format (rate, channels,
+  // table format). frames = 0: the format only.
+  bool exchangeCable(int cable, uint32_t frames, bool hasRecord, uint32_t channels, uint32_t format);
   void doTick();
 
   WHASlotTable* table_ = nullptr;
@@ -147,17 +149,21 @@ class MasterHolder {
   struct OutTraceRow { double sec; int64_t written; int32_t padding; int32_t wrote; int32_t backlog; double ratio; };
   std::vector<OutTraceRow> outTrace_;
   char outTracePath_[260] = {};
-  float virtualScratch_[2 * 4096] = {};  // one Virtual Cable's interleaved stereo block (Worker thread)
+  float virtualScratch_[8 * 4096] = {};  // one Virtual Cable's interleaved block, up to 8 channels (Worker thread)
   class WHARingBuffer* virtualRings_[8] = {};
   // Virtual Cable driver (Worker thread): control device, cables it has, exchange buffer (header +
-  // WHA_CABLE_MAX_FRAMES stereo frames, allocated at start). cableStat_ publishes each cable's last
+  // WHA_CABLE_MAX_FRAMES frames of up to 8 channels, allocated at start). cableSent_ is the format the
+  // driver last accepted for each cable (rate 0: none yet). cableStat_ publishes each cable's last
   // exchange to other threads (stats); fields are read one by one, not as a snapshot.
   HANDLE cableDevice_ = INVALID_HANDLE_VALUE;
   int cableCount_ = 0;
   std::atomic<int> cableCountPub_{0};
   std::atomic<int> cableError_{0};
   std::vector<unsigned char> cableIo_;
+  struct CableFormatSent { uint32_t rate = 0, channels = 0, format = 0; };
+  CableFormatSent cableSent_[8] = {};
   struct CableStat {
+    std::atomic<uint32_t> rate{0}, channels{0}, format{0};  // what the cable's endpoints offer
     std::atomic<uint32_t> playRate{0}, recordRate{0}, playFill{0}, recordFill{0};
     std::atomic<uint32_t> playUnderruns{0}, playDrops{0}, recordUnderruns{0}, recordDrops{0};
     std::atomic<uint64_t> exchanges{0}, errors{0};

@@ -14,6 +14,7 @@
 
 #include "WHAControlPanelView.h"
 #include "WHAControlPanelWindow.h"
+#include "WHASlotsFile.h"
 #include "WHASlotsJson.h"
 #include "imgui.h"
 
@@ -166,7 +167,7 @@ void SaveContract(const std::string& dir) {
   ControlPanelHost host;
   host.table = &live;
   host.tableChanged = changed;
-  host.slotsJsonPath = dir + "\\slots.json";
+  host.configDir = dir;
   host.onSaved = [&](bool reset) {
     ++saves;
     lastReset = reset;
@@ -183,8 +184,13 @@ void SaveContract(const std::string& dir) {
   check("Save rename requests DAW reset", saves == 1 && lastReset);
   WHASlotTable reread{};
   std::string err;
-  check("slots.json written and valid", ImportSlots(reread, host.slotsJsonPath, &err) &&
-                                            std::strcmp(reread.masterIn[0].name, "SM58 Mic") == 0);
+  SetEnvironmentVariableA("WINHOOKAUDIO_CONFIG_DIR", dir.c_str());
+  const bool loaded = LoadConfigFiles(reread, &err);
+  SetEnvironmentVariableA("WINHOOKAUDIO_CONFIG_DIR", nullptr);
+  if (!loaded) std::printf("  load error: %s\n", err.c_str());
+  check("routes.yml + settings.yml written and load back",
+        loaded && std::strcmp(reread.masterIn[0].name, "SM58 Mic") == 0 && reread.version == 8 &&
+            reread.masterInCount == live.masterInCount && reread.general.sampleRate == live.general.sampleRate);
 
   edit.table = live;
   SetVirtualBuffer(edit, 512);
@@ -236,7 +242,7 @@ void PopupSmoke() {
 
   // DAW unloads the driver while the Export dialog is open: Close() must cancel it, not wait for the user.
   host.testFrameHook = [](PanelViewResult& r, int frame) {
-    if (frame == 3) r.exportSlots = true;
+    if (frame == 3) r.exportRoutes = true;
   };
   check("Popup opens for dialog test", popup.Open(host));
   WaitFor([&] { return popup.FramesRendered() >= 3; }, 5000);
@@ -282,7 +288,7 @@ int main() {
     host.table = &live;
     host.isMaster = std::strcmp(show, "bridge") != 0;
     host.bridgeIndex = 0;
-    host.slotsJsonPath = "%TEMP%\\wha-panel-gui-show\\slots.json";
+    host.configDir = "%TEMP%\\wha-panel-gui-show";
     ControlPanelWindow popup;
     popup.Open(host);
     popup.WaitClosed(INFINITE);

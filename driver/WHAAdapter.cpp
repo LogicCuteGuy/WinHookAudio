@@ -145,7 +145,13 @@ NTSTATUS Exchange(PIRP irp, PIO_STACK_LOCATION stack) {
   RtlCopyMemory(&request, io, sizeof(request));
   if (request.protocol != WHA_CABLE_PROTOCOL) return STATUS_REVISION_MISMATCH;
   if (request.cable >= kCables || request.frames > WHA_CABLE_MAX_FRAMES) return STATUS_INVALID_PARAMETER;
-  const ULONG audioBytes = request.frames * 2 * sizeof(float);
+  // A probe (rate 0) keeps the format and moves no audio; otherwise the format must be one we stream.
+  const bool probe = request.rate == 0;
+  if (probe ? request.frames || request.channels
+            : request.rate < 8000 || request.rate > 384000 || request.channels < 1 ||
+                  request.channels > WHA_CABLE_MAX_CHANNELS || !IsValidCableFormat(request.format))
+    return STATUS_INVALID_PARAMETER;
+  const ULONG audioBytes = request.frames * request.channels * sizeof(float);
   if ((request.hasRecord && inLength < sizeof(WHACableExchange) + audioBytes) ||
       outLength < sizeof(WHACableExchange) + audioBytes)
     return STATUS_BUFFER_TOO_SMALL;
@@ -154,13 +160,24 @@ NTSTATUS Exchange(PIRP irp, PIO_STACK_LOCATION stack) {
   auto* audio = reinterpret_cast<float*>(io + sizeof(WHACableExchange));
   WHACable& c = g_cables[request.cable];
   WHACableExchange reply = {};
+  bool formatChanged = false;
   KIRQL irql;
   KeAcquireSpinLock(&c.lock, &irql);
+  if (!probe) {
+    WHACableFormat format;
+    format.rate = request.rate;
+    format.channels = request.channels;
+    format.kind = static_cast<WHASampleKind>(request.format);
+    formatChanged = SetCableFormatLocked(c, format);
+  }
   if (request.frames) {
     c.workerFrames = request.frames;
-    c.record.write(request.hasRecord ? audio : nullptr, request.frames);
-    c.play.read(audio, request.frames, CablePrime(c), CableSlack(c));
+    c.record.write(request.hasRecord ? audio : nullptr, request.frames, request.channels);
+    c.play.read(audio, request.frames, request.channels, CablePrime(c), CableSlack(c));
   }
+  reply.rate = c.format.rate;
+  reply.channels = c.format.channels;
+  reply.format = static_cast<unsigned>(c.format.kind);
   reply.playRate = c.playRate;
   reply.recordRate = c.recordRate;
   reply.playFill = c.play.fill();
@@ -170,6 +187,7 @@ NTSTATUS Exchange(PIRP irp, PIO_STACK_LOCATION stack) {
   reply.recordUnderruns = c.record.underruns();
   reply.recordDrops = c.record.drops();
   KeReleaseSpinLock(&c.lock, irql);
+  if (formatChanged) NotifyCableFormatChange(c);  // Windows reopens its streams in the new format
   reply.protocol = WHA_CABLE_PROTOCOL;
   reply.cable = request.cable;
   reply.frames = request.frames;
@@ -352,7 +370,10 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING registryP
   using namespace wha;
   g_cables = new (POOL_FLAG_NON_PAGED, kPoolTag) WHACable[kCables]();
   if (!g_cables) return STATUS_INSUFFICIENT_RESOURCES;
-  for (ULONG i = 0; i < kCables; ++i) KeInitializeSpinLock(&g_cables[i].lock);
+  for (ULONG i = 0; i < kCables; ++i) {
+    KeInitializeSpinLock(&g_cables[i].lock);
+    SetCableFormatLocked(g_cables[i], WHACableFormat{});  // the data range PortCls reads at StartDevice
+  }
   KeInitializeSpinLock(&g_logLock);
   g_log = new (POOL_FLAG_NON_PAGED, kPoolTag) WHAKsLogEntry[WHA_KS_LOG_ENTRIES];  // null: no log
   NTSTATUS status = PcInitializeAdapterDriver(driver, registryPath, PDRIVER_ADD_DEVICE(AddDevice));

@@ -95,6 +95,16 @@ struct WHAHwMore {
   char captureId[kHwDevices - 1][kEndpointIdLen] = {};
 };
 
+// Per Virtual Cable: its channels (2, 4, 6, 8) and sample format (WHASampleKind: 0 = 32-bit float,
+// 1 = 16, 2 = 24, 3 = 32-bit PCM, 4 = 24 bits in 32). The rate is the Master Clock's. The Worker sends
+// them to the driver, whose endpoints then offer exactly this format. Appended after hwMore.
+constexpr int32_t kVirtualSlotCables = 8;
+struct WHACableSetting {
+  uint8_t channels = 2;
+  uint8_t format = 0;
+  uint8_t _pad[2] = {};
+};
+
 struct WHASlotTable {
   uint32_t version = 0;
   uint32_t masterInCount = 0;
@@ -105,6 +115,7 @@ struct WHASlotTable {
   WHANetworkStream netTx[WHA_NET_STREAMS] = {};
   WHANetworkStream netRx[WHA_NET_STREAMS] = {};
   WHAHwMore hwMore = {};
+  WHACableSetting cables[kVirtualSlotCables] = {};
 };
 #pragma pack(pop)
 
@@ -202,11 +213,11 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
         std::strncmp(HwDeviceId(a, true, d), HwDeviceId(b, true, d), kEndpointIdLen) != 0)
       return true;
   // A HW slot moved to another device may need that device opened (and changes its channel name).
-  // A Bridge slot's channel is in its automatic name ("Bridge1 Ch3").
+  // A Bridge or Virtual slot's channel is in its automatic name ("Bridge1 Ch3", "Virtual 2 R").
   auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
     return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0 ||
            (x.type == SLOT_HW && HwDeviceOf(x) != HwDeviceOf(y)) ||
-           (IsBridgeType(x.type) && x.srcChannel != y.srcChannel);
+           ((IsBridgeType(x.type) || x.type == SLOT_VIRTUAL) && x.srcChannel != y.srcChannel);
   };
   for (uint32_t i = 0; i < a.masterInCount && i < kMax; ++i)
     if (slotDiffers(a.masterIn[i], b.masterIn[i])) return true;
@@ -218,11 +229,17 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
 // HW slots take one channel of a stereo device (KsEndpoint kKsDeviceChannels): srcChannel 0 = L, 1 = R.
 constexpr int32_t kHwSlotChannels = 2;
 
-// VIRTUAL slots take one side of a stereo Virtual Cable: srcChannel = cable * 2 + side (0 = L, 1 = R),
-// cables 1..8 (datasheet "Virtual 1..8 L/R").
-constexpr int32_t kVirtualSlotCables = 8;
-inline int VirtualCableOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : (s.srcChannel / 2) % kVirtualSlotCables; }
-inline int VirtualSideOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : s.srcChannel % 2; }
+// VIRTUAL slots take one channel of a Virtual Cable: srcChannel = cable * 8 + channel (0 = L, 1 = R,
+// then C, LFE, ... up to the cable's channel count), cables 1..8. A channel past the cable's count is
+// silent. (Files from before 8-channel cables stored cable * 2 + side; DeserializeSlots converts them.)
+constexpr int32_t kVirtualCableChannels = 8;
+inline int VirtualCableOf(const WHASlot& s) {
+  return s.srcChannel < 0 ? 0 : (s.srcChannel / kVirtualCableChannels) % kVirtualSlotCables;
+}
+inline int VirtualChannelOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : s.srcChannel % kVirtualCableChannels; }
+constexpr bool IsValidCableSetting(const WHACableSetting& c) {
+  return (c.channels == 2 || c.channels == 4 || c.channels == 6 || c.channels == 8) && c.format <= 4;
+}
 
 // A name nobody chose: what an empty slot shows.
 inline bool IsPlaceholderName(const char* name) {
@@ -264,7 +281,12 @@ inline void AutoSlotName(const WHASlot* slots, [[maybe_unused]] uint32_t count, 
         std::snprintf(out, kNameLen, "%s Ch%d", device, ch);
       break;
     }
-    case SLOT_VIRTUAL: std::snprintf(out, kNameLen, "Virtual %d %c", VirtualCableOf(s) + 1, VirtualSideOf(s) ? 'R' : 'L'); break;
+    case SLOT_VIRTUAL: {  // "Virtual 2 L", "Virtual 2 R", then "Virtual 2 Ch3" (which speaker depends on the cable)
+      const int c = VirtualChannelOf(s);
+      if (c < 2) std::snprintf(out, kNameLen, "Virtual %d %c", VirtualCableOf(s) + 1, c ? 'R' : 'L');
+      else std::snprintf(out, kNameLen, "Virtual %d Ch%d", VirtualCableOf(s) + 1, c + 1);
+      break;
+    }
     case SLOT_NETWORK: std::snprintf(out, kNameLen, "%s%d Ch%d", isInput ? "Rx" : "Tx", s.streamId + 1, ch); break;
     default:  // SLOT_BRIDGE1..4: the channel the slot picks in the Bridge app
       std::snprintf(out, kNameLen, "Bridge%d Ch%d", static_cast<int>(s.type - SLOT_BRIDGE1) + 1, ch);

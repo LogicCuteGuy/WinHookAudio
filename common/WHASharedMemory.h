@@ -60,7 +60,11 @@ constexpr const char* kBridgeTickNames[4][4] = {
     },
 };
 
-// Persistent file — loaded on Master init, saved on Control Panel Save
+// Persistent files — loaded on Master init, saved on Control Panel Save: routes.yml + settings.yml in
+// this folder. slots.json is the older one-file format, read only when neither .yml file exists.
+constexpr const char* kConfigDir = "%ProgramData%\\WinHookAudio";
+constexpr const char* kRoutesFile = "routes.yml";
+constexpr const char* kSettingsFile = "settings.yml";
 constexpr const char* kSlotsJsonPath = "%ProgramData%\\WinHookAudio\\slots.json";
 
 // Total pre-allocated on first Master init: 80KB + 16MB + 32MB = 48 MB class

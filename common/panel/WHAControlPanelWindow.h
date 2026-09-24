@@ -23,7 +23,7 @@ struct ControlPanelHost {
   bool isMaster = true;
   int bridgeIndex = -1;                      // Bridge popup: 0..3, locks lists to BRIDGE(n+1)
   std::function<void(bool resetRequested)> onSaved;  // driver: asioMessage(kAsioResetRequest)
-  std::string slotsJsonPath;                 // empty = %ProgramData%\WinHookAudio\slots.json
+  std::string configDir;                     // routes.yml + settings.yml folder; empty = ConfigDir() default
   // Master: the streaming driver's counters for GENERAL "actual" (false = not started). Any thread.
   std::function<bool(WHAMasterStats&)> readStats;
   // Offline smoke test hooks
@@ -32,13 +32,10 @@ struct ControlPanelHost {
   std::function<void(PanelViewResult&, int frame)> testFrameHook;  // inject clicks (tests only)
 };
 
-// Save: validate -> *table = edit (version++) -> slots.json -> FlushViewOfFile -> SetEvent(TableChanged)
-// -> onSaved(reset). Reset is requested when the Master Clock or the DAW-visible channel list changed,
-// because the DAW must re-query getChannels/getChannelInfo/getBufferSize.
+// Save: validate -> *table = edit (version++) -> routes.yml + settings.yml -> FlushViewOfFile ->
+// SetEvent(TableChanged) -> onSaved(reset). Reset is requested when the Master Clock or the DAW-visible
+// channel list changed, because the DAW must re-query getChannels/getChannelInfo/getBufferSize.
 bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string* status);
-
-// Expands %ProgramData% etc.; returns false if the path cannot be expanded.
-bool ExpandSlotsJsonPath(const std::string& path, std::string* expanded);
 
 class ControlPanelWindow {
  public:

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include "WHAConfigYaml.h"
 #include "WHASharedMemory.h"
 #include "WHASlotsJson.h"
 #include "WinHookMasterASIO.h"
@@ -38,11 +39,12 @@ int main() {
   };
 
   // A saved Slot Table (Control Panel Save) as the Master's starting point: the default layout with
-  // a renamed input and a chosen HW input device. WINHOOKAUDIO_SLOTS_JSON keeps the real
-  // %ProgramData% file out of the test.
-  char savedPath[MAX_PATH];
-  GetTempPathA(MAX_PATH, savedPath);
-  strcat_s(savedPath, "winhookaudio-host-sample-slots.json");
+  // a renamed input and a chosen HW input device, as routes.yml + settings.yml. WINHOOKAUDIO_CONFIG_DIR
+  // keeps the real %ProgramData% files out of the test.
+  char savedDir[MAX_PATH];
+  GetTempPathA(MAX_PATH, savedDir);
+  strcat_s(savedDir, "winhookaudio-host-sample-config");
+  CreateDirectoryA(savedDir, nullptr);
   const char* savedDevice = "{0.0.1.00000000}.{saved-capture-device}";
   {
     WHASlotTable saved{};
@@ -60,13 +62,16 @@ int main() {
     saved.version = 5;
     std::string error;
     check("saved table is valid", ValidateSlots(saved, &error));
-    FILE* f = nullptr;
-    const std::string json = SerializeSlots(saved);
-    if (fopen_s(&f, savedPath, "wb") == 0 && f) {
-      std::fwrite(json.data(), 1, json.size(), f);
-      std::fclose(f);
+    for (int part = 0; part < 2; ++part) {
+      const std::string path = std::string(savedDir) + (part == 0 ? "\\routes.yml" : "\\settings.yml");
+      const std::string text = part == 0 ? SerializeRoutes(saved) : SerializeSettings(saved);
+      FILE* f = nullptr;
+      if (fopen_s(&f, path.c_str(), "wb") == 0 && f) {
+        std::fwrite(text.data(), 1, text.size(), f);
+        std::fclose(f);
+      }
     }
-    SetEnvironmentVariableA("WINHOOKAUDIO_SLOTS_JSON", savedPath);
+    SetEnvironmentVariableA("WINHOOKAUDIO_CONFIG_DIR", savedDir);
   }
 
   // Master: init -> getChannels -> getChannelInfo -> createBuffers -> start -> bufferSwitch

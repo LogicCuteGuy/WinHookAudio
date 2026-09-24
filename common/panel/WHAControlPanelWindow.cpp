@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cwchar>
 #include <initializer_list>
+#include <iterator>
 
 #include "WHAControlPanelView.h"
 #include "WHASharedMemory.h"
@@ -118,30 +119,44 @@ bool WriteFileReplace(const std::string& path, const std::string& data, DWORD* e
   return true;
 }
 
-bool PickJsonPath(HWND owner, bool save, std::string* path) {
-  char buf[MAX_PATH] = "slots.json";
+// Export: `defaultName` is routes.yml or settings.yml. Import: any config file, old slots.json too.
+bool PickConfigPath(HWND owner, bool save, const char* defaultName, std::string* path) {
+  char buf[MAX_PATH] = {};
+  if (save) strcpy_s(buf, defaultName);
   OPENFILENAMEA ofn{};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = owner;
-  ofn.lpstrFilter = "WinHookAudio slots (*.json)\0*.json\0All files\0*.*\0";
+  ofn.lpstrFilter = save ? "YAML (*.yml)\0*.yml;*.yaml\0All files\0*.*\0"
+                         : "WinHookAudio config (*.yml, *.json)\0*.yml;*.yaml;*.json\0All files\0*.*\0";
   ofn.lpstrFile = buf;
   ofn.nMaxFile = sizeof(buf);
-  ofn.lpstrDefExt = "json";
+  ofn.lpstrDefExt = "yml";
   ofn.Flags = OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
   if (!(save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn))) return false;
   *path = buf;
   return true;
 }
 
-}  // namespace
-
-bool ExpandSlotsJsonPath(const std::string& path, std::string* expanded) {
-  char buf[MAX_PATH];
-  const DWORD n = ExpandEnvironmentStringsA(path.c_str(), buf, sizeof(buf));
-  if (n == 0 || n > sizeof(buf)) return false;
-  *expanded = buf;
-  return true;
+// Pops the panel in front of the DAW once. Some DAWs (Bitwig) load the driver in a separate audio-engine
+// process that is not the foreground process, so a plain SetForegroundWindow is refused and the window
+// would open behind the DAW. A topmost on/off lifts it to the top of the z-order without keeping it there;
+// sharing input with the foreground window's thread for a moment lets it take the focus too.
+void PopToFront(HWND hwnd) {
+  if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+  constexpr UINT kKeep = SWP_NOMOVE | SWP_NOSIZE;
+  SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, kKeep);
+  SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, kKeep | SWP_NOACTIVATE);
+  if (SetForegroundWindow(hwnd)) return;
+  const DWORD self = GetCurrentThreadId();
+  const HWND front = GetForegroundWindow();
+  const DWORD other = front ? GetWindowThreadProcessId(front, nullptr) : 0;
+  const bool attached = other && other != self && AttachThreadInput(self, other, TRUE);
+  BringWindowToTop(hwnd);
+  SetForegroundWindow(hwnd);
+  if (attached) AttachThreadInput(self, other, FALSE);
 }
+
+}  // namespace
 
 bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string* status) {
   auto report = [&](const std::string& s) {
@@ -157,9 +172,9 @@ bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string
     return false;
   }
   const WHASlotTable before = *host.table;
-  std::string json;
+  std::string routes, settings;
   bool clockChanged = false;
-  if (!SavePanel(edit, host.table, &json, &clockChanged)) {
+  if (!SavePanel(edit, host.table, &routes, &settings, &clockChanged)) {
     report("Save rejected");
     return false;
   }
@@ -169,16 +184,17 @@ bool CommitPanelSave(PanelModel& edit, const ControlPanelHost& host, std::string
   char msg[256];
   std::snprintf(msg, sizeof(msg), "Saved v%u", after.version);
   std::string result = msg;
-  std::string path;
-  if (host.slotsJsonPath.empty() ? (path = SlotsJsonPath()).empty() : !ExpandSlotsJsonPath(host.slotsJsonPath, &path)) {
-    result += "; slots.json path invalid";
+  const std::string dir = ConfigDir(host.configDir);
+  if (dir.empty()) {
+    result += "; config folder invalid";
   } else {
-    const size_t slash = path.find_last_of("\\/");
-    if (slash != std::string::npos) CreateDirectoryA(path.substr(0, slash).c_str(), nullptr);
-    DWORD err = 0;
-    if (!WriteFileReplace(path, json, &err)) {
-      std::snprintf(msg, sizeof(msg), "; slots.json write failed (%lu)", err);
-      result += msg;
+    CreateDirectoryA(dir.c_str(), nullptr);
+    for (const auto& [file, text] : {std::pair{shm::kRoutesFile, &routes}, std::pair{shm::kSettingsFile, &settings}}) {
+      DWORD err = 0;
+      if (!WriteFileReplace(dir + "\\" + file, *text, &err)) {
+        std::snprintf(msg, sizeof(msg), "; %s write failed (%lu)", file, err);
+        result += msg;
+      }
     }
   }
   FlushViewOfFile(host.table, sizeof(WHASlotTable));  // no-op error when the table is not a mapped view
@@ -221,10 +237,7 @@ bool ControlPanelWindow::IsOpen() const { return thread_ && WaitForSingleObject(
 
 bool ControlPanelWindow::Open(const ControlPanelHost& host) {
   if (IsOpen()) {
-    if (HWND h = hwnd_.load()) {
-      ShowWindow(h, SW_RESTORE);
-      SetForegroundWindow(h);
-    }
+    if (HWND h = hwnd_.load()) PopToFront(h);
     return true;
   }
   Close();  // reap a finished thread
@@ -316,8 +329,10 @@ void ControlPanelWindow::Run() {
   wchar_t title[96];
   if (host_.isMaster) swprintf_s(title, L"WinHookAudio Master - Control Panel");
   else swprintf_s(title, L"WinHookAudio Bridge %d - Control Panel", host_.bridgeIndex + 1);
+  // A normal window, not topmost: it pops in front on open (PopToFront below), then other windows
+  // can cover it.
   constexpr DWORD kStyle = WS_OVERLAPPEDWINDOW;
-  constexpr DWORD kExStyle = WS_EX_TOPMOST;
+  constexpr DWORD kExStyle = 0;
   // The Bridge popup is a small read-only view (DrawBridgePanel); the Master gets the full panel.
   RECT rc{0, 0, host_.isMaster ? kClientWidth : kBridgeClientWidth, host_.isMaster ? kClientHeight : kBridgeClientHeight};
   AdjustWindowRectEx(&rc, kStyle, FALSE, kExStyle);
@@ -357,6 +372,7 @@ void ControlPanelWindow::Run() {
   gpu_ = &gpu;
   hwnd_ = hwnd;
   ShowWindow(hwnd, host_.hidden ? SW_HIDE : SW_SHOWNORMAL);
+  if (!host_.hidden) PopToFront(hwnd);
 
   IMGUI_CHECKVERSION();
   ImGuiContext* ctx = ImGui::CreateContext();
@@ -378,6 +394,10 @@ void ControlPanelWindow::Run() {
   bool masterOpen = false;
   ULONGLONG masterOpenAt = 0;
   const float clear[4] = {0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f};
+  // The DAW may take the focus back right after it asked for the panel: pop in front again a moment later.
+  const ULONGLONG shownAt = GetTickCount64();
+  const ULONGLONG popAgainMs[] = {300, 1000};
+  size_t popsDone = 0;
 
   bool running = true;
   while (running) {
@@ -420,6 +440,10 @@ void ControlPanelWindow::Run() {
     gpu.swapChain->Present(1, 0);  // vsync keeps the popup off the audio cores' budget
     const int frame = ++frames_;
     if (host_.testFrameHook) host_.testFrameHook(r, frame);
+    if (!host_.hidden && popsDone < std::size(popAgainMs) && GetTickCount64() - shownAt >= popAgainMs[popsDone]) {
+      ++popsDone;
+      if (GetForegroundWindow() != hwnd) PopToFront(hwnd);
+    }
 
     if (r.refreshDevices) devices = EnumerateEndpoints();
     if (r.openWindowsSound >= 0) {
@@ -438,17 +462,16 @@ void ControlPanelWindow::Run() {
       state.status = "Reverted";
     }
     std::string path;
-    if (r.exportSlots && PickJsonPath(hwnd, true, &path))
-      state.status = ExportSlots(edit.table, path) ? "Exported " + path : "Export failed";
-    if (r.importSlots && PickJsonPath(hwnd, false, &path)) {
-      std::string err;
-      WHASlotTable imported = edit.table;  // a half-parsed file must not leak into the edit copy
-      if (ImportSlots(imported, path, &err)) {
-        edit.table = imported;
-        state.status = "Imported (Save to apply)";
-      } else {
-        state.status = "Import failed: " + err;
-      }
+    if (r.exportRoutes && PickConfigPath(hwnd, true, shm::kRoutesFile, &path))
+      state.status = ExportRoutes(edit.table, path) ? "Exported routes to " + path : "Export failed";
+    if (r.exportSettings && PickConfigPath(hwnd, true, shm::kSettingsFile, &path))
+      state.status = ExportSettings(edit.table, path) ? "Exported settings to " + path : "Export failed";
+    if (r.exportEverything && PickConfigPath(hwnd, true, "winhookaudio.yml", &path))
+      state.status = ExportEverything(edit.table, path) ? "Exported routes and settings to " + path : "Export failed";
+    if (r.importSlots && PickConfigPath(hwnd, false, nullptr, &path)) {
+      std::string err, what;
+      if (ImportConfig(edit.table, path, &what, &err)) state.status = "Imported " + what + " (Save to apply)";
+      else state.status = "Import failed: " + err;
     }
     if (r.close || (host_.autoCloseAfterFrames > 0 && frame >= host_.autoCloseAfterFrames)) quit_ = true;
   }

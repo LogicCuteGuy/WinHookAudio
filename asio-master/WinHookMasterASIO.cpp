@@ -155,7 +155,7 @@ ASIOBool WinHookMasterASIO::init(void* sysHandle) {
     return ASIOFalse;
   }
   // First process to map the table: the saved Slot Table (Control Panel Save), else defaults.
-  if (slotTable_->version == 0 && LoadSlotsFile(*slotTable_, nullptr)) {
+  if (slotTable_->version == 0 && LoadConfigFiles(*slotTable_, nullptr)) {
     // loaded: routing, names and HW devices as last saved
   } else if (slotTable_->version == 0) {
     FillDefaultSlotTable(*slotTable_);

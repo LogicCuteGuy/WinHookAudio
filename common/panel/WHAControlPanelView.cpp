@@ -1,4 +1,5 @@
 #include "WHAControlPanelView.h"
+#include "virtual/WHACableFormat.h"
 
 #include <windows.h>
 
@@ -26,7 +27,6 @@ constexpr uint32_t kFrames[] = {64, 128, 256, 512, 1024};
 constexpr uint32_t kHwFrames[] = {0, 64, 128, 256, 512, 1024};  // 0 = Auto (device minimum)
 constexpr uint32_t kJitterPcmMs[] = {10, 20, 40, 80};
 constexpr uint32_t kJitterVorbisMs[] = {50, 80, 120, 200};
-constexpr uint32_t kCableCounts[] = {8, 64};
 
 // One set of model operations per list, so INPUTS and OUTPUTS share the row code
 // while keeping independent indices (12).
@@ -107,13 +107,18 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
     ImGui::TextDisabled(isInput ? "Windows apps play into these (they appear as sound outputs)."
                                 : "Windows apps record from these (they appear as microphones).");
     if (!cableDriver) ImGui::TextDisabled("Cable driver not installed yet: only DAW OUT -> DAW IN loops work.");
+    ImGui::TextDisabled("Channels per cable: GENERAL > Virtual Cables.");
     for (int c = 0; c < kVirtualSlotCables; ++c) {
+      const unsigned channels = IsValidCableSetting(edit.table.cables[c]) ? edit.table.cables[c].channels : 2u;
       ImGui::PushID(c);
-      if (ImGui::BeginMenu(VirtualCableLabel(edit.table.general, c).c_str())) {
-        for (int side = 0; side < 2; ++side)
-          if (ImGui::MenuItem(side == 0 ? "L (left)" : "R (right)", nullptr,
-                              s.type == SLOT_VIRTUAL && VirtualCableOf(s) == c && VirtualSideOf(s) == side))
-            AssignSource(edit, isInput, idx, SLOT_VIRTUAL, c * 2 + side, 0);
+      const std::string label = VirtualCableLabel(edit.table.general, c) + "  (" + CableChannelsLabel(channels) + ")";
+      if (ImGui::BeginMenu(label.c_str())) {
+        for (unsigned ch = 0; ch < channels; ++ch) {
+          char item[24];
+          std::snprintf(item, sizeof(item), "Ch %u  %s", ch + 1, CableChannelName(channels, ch));
+          if (ImGui::MenuItem(item, nullptr, s.type == SLOT_VIRTUAL && VirtualCableOf(s) == c && VirtualChannelOf(s) == static_cast<int>(ch)))
+            AssignSource(edit, isInput, idx, SLOT_VIRTUAL, c * kVirtualCableChannels + static_cast<int>(ch), 0);
+        }
         ImGui::EndMenu();
       }
       ImGui::PopID();
@@ -466,6 +471,48 @@ bool ComboEndpoint(const char* label, const char* currentId, const std::vector<P
   return changed;
 }
 
+// Each cable's format: channels and bits; the rate is the Master Clock's. Applied live on Save.
+void DrawCableFormats(PanelModel& edit) {
+  constexpr uint32_t kChannelChoices[] = {2, 4, 6, 8};
+  constexpr uint32_t kFormatOrder[] = {1, 2, 4, 3, 0};  // 16, 24, 24 in 32, 32, 32 float
+  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit;
+  if (!ImGui::BeginTable("cables", 4, kFlags)) return;
+  ImGui::TableSetupColumn("Cable", ImGuiTableColumnFlags_WidthFixed, 200);
+  ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed, 130);
+  ImGui::TableSetupColumn("Bits", ImGuiTableColumnFlags_WidthFixed, 150);
+  ImGui::TableSetupColumn("Rate", ImGuiTableColumnFlags_WidthStretch);
+  ImGui::TableHeadersRow();
+  for (int c = 0; c < kVirtualSlotCables; ++c) {
+    const WHACableSetting cs = edit.table.cables[c];
+    ImGui::PushID(c);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted(VirtualCableLabel(edit.table.general, c).c_str());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##ch", CableChannelsLabel(cs.channels))) {
+      for (uint32_t n : kChannelChoices) {
+        char item[24];
+        std::snprintf(item, sizeof(item), "%s (%u ch)", CableChannelsLabel(n), n);
+        if (ImGui::Selectable(item, cs.channels == n)) SetCableChannels(edit, c, n);
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::TableSetColumnIndex(2);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##bits", CableFormatLabel(cs.format))) {
+      for (uint32_t f : kFormatOrder)
+        if (ImGui::Selectable(CableFormatLabel(f), cs.format == f)) SetCableFormat(edit, c, f);
+      ImGui::EndCombo();
+    }
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextDisabled("%u Hz (Master)", edit.table.general.sampleRate);
+    ImGui::PopID();
+  }
+  ImGui::EndTable();
+  ImGui::TextDisabled("Windows gets exactly this format; it switches when you Save (no DAW reset).");
+}
+
 void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult& result) {
   WHAGeneral& g = edit.table.general;
   const bool readOnly = IsGeneralReadOnly(edit);
@@ -586,14 +633,12 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
   if (ComboU32("Jitter Vorbis", v, kJitterVorbisMs, std::size(kJitterVorbisMs), "%u ms")) SetJitterVorbis(edit, v);
 
   ImGui::SeparatorText("4. VIRTUAL CABLES");
-  v = g.virtualCables;
-  ImGui::SetNextItemWidth(140);
-  if (ComboU32("Virtual Cables", v, kCableCounts, std::size(kCableCounts), "%u x Stereo")) SetVirtualCableCount(edit, v);
   char vname[sizeof(g.virtualName)];
   std::memcpy(vname, g.virtualName, sizeof(vname));
   vname[sizeof(vname) - 1] = '\0';
   ImGui::SetNextItemWidth(260);
   if (ImGui::InputText("Name", vname, sizeof(vname))) SetVirtualCableName(edit, vname);
+  DrawCableFormats(edit);
 
   ImGui::EndDisabled();
 }
@@ -602,11 +647,17 @@ void DrawAbout(PanelModel& edit, const AboutInfo& info, PanelViewResult& result)
   ImGui::Text("WinHookAudio %s", info.version.c_str());
   ImGui::Text("WinHookAudio.sys: %s", info.sysRunning ? "running" : "not detected");
   ImGui::Text("ASIO CLSIDs: %d (Master + Bridge1..4)", info.clsidCount);
-  ImGui::Text("Slots: %s", info.slotsJsonPath.c_str());
+  ImGui::TextWrapped("Saved to: %s", info.configPath.c_str());
   ImGui::SeparatorText("Bridge clients");
   for (const std::string& b : info.bridgeClients) ImGui::BulletText("%s", b.c_str());
   ImGui::Separator();
-  if (ImGui::Button("Export...")) result.exportSlots = true;
+  if (ImGui::Button("Export...")) ImGui::OpenPopup("##export");
+  if (ImGui::BeginPopup("##export")) {
+    if (ImGui::MenuItem("Routes (routes.yml)")) result.exportRoutes = true;
+    if (ImGui::MenuItem("Settings (settings.yml)")) result.exportSettings = true;
+    if (ImGui::MenuItem("Everything (winhookaudio.yml)")) result.exportEverything = true;
+    ImGui::EndPopup();
+  }
   ImGui::SameLine();
   if (ImGui::Button("Import...")) result.importSlots = true;
   ImGui::SameLine();
@@ -680,7 +731,7 @@ PanelViewResult DrawBridgePanel(const WHASlotTable& table, int bridgeIndex, cons
   if (masterOpen) {
     ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1), "open");
     ImGui::SameLine();
-    ImGui::Text("  %u Hz Â· %u samples", table.general.sampleRate, table.general.asioBuffer);
+    ImGui::Text("  %u Hz \xC2\xB7 %u samples", table.general.sampleRate, table.general.asioBuffer);
   } else {
     ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.4f, 1), "not open - open WinHookAudio Master in your main DAW");
   }

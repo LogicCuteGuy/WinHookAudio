@@ -14,12 +14,20 @@
 #define WHA_CABLE_DEVICE_NAME L"\\Device\\WinHookAudioCable"
 #define WHA_CABLE_LINK_NAME L"\\DosDevices\\WinHookAudioCable"
 
-#define WHA_CABLE_PROTOCOL 1u
+#define WHA_CABLE_PROTOCOL 2u
 #define WHA_CABLE_MAX_FRAMES 4096u  // per exchange
+#define WHA_CABLE_MAX_CHANNELS 8u   // = wha::kCableChannels (WHACableFormat.h)
 
 // One Worker tick for one cable (METHOD_BUFFERED). In: the header, then (hasRecord) `frames` frames
 // for the recording endpoint. Out: the header, then `frames` frames from the playback endpoint
-// (silence while nothing plays). Both interleaved stereo float. frames = 0 only asks for the header.
+// (silence while nothing plays). Both interleaved float, `channels` wide. frames = 0 only sets the
+// format (if given) and asks for the header.
+//
+// The format: the cable's Windows endpoints offer exactly one format, the one the Worker sends here
+// (the Master's rate, the cable's channels and sample format). When it differs from what the cable
+// offers, the driver switches and tells Windows (KSEVENT_PINCAPS_FORMATCHANGE), which reopens its
+// streams in the new format. rate = 0 is a probe: it keeps the cable's format, with frames and
+// channels 0.
 #define IOCTL_WHA_CABLE_EXCHANGE CTL_CODE(0x8000u, 0x810, METHOD_BUFFERED, FILE_ANY_ACCESS)  // unsigned: bit 31 set
 
 typedef struct WHACableExchange {
@@ -33,7 +41,9 @@ typedef struct WHACableExchange {
   unsigned int playFill;    // out: frames queued from Windows for the Worker (after this exchange)
   unsigned int recordFill;  // out: frames queued from the Worker for Windows
   unsigned int playUnderruns, playDrops, recordUnderruns, recordDrops;  // out: since the driver loaded
-  unsigned int reserved[3];
+  unsigned int rate;        // in: the cable's rate (Hz), 0 = keep the format; out: the rate it offers
+  unsigned int channels;    // in: the frames' width and the cable's channels (1..8; 0 in a probe); out: offered
+  unsigned int format;      // in: sample format (wha::WHASampleKind, 0..4); out: the one it offers
 } WHACableExchange;
 
 // Diagnostic: the driver's log of the last WHA_KS_LOG_ENTRIES opens and device controls on its audio

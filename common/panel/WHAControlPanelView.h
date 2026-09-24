@@ -35,8 +35,10 @@ enum PanelTab : int { kTabInputs = 0, kTabOutputs, kTabNetwork, kTabGeneral, kTa
 struct PanelViewResult {
   bool save = false;
   bool revert = false;
-  bool exportSlots = false;
-  bool importSlots = false;
+  bool exportRoutes = false;    // Export > routes.yml
+  bool exportSettings = false;  // Export > settings.yml
+  bool exportEverything = false;  // Export > both in one .yml
+  bool importSlots = false;     // Import a routes.yml, settings.yml, Everything .yml or old slots.json
   bool close = false;
   bool refreshDevices = false;  // re-enumerate HW endpoints
   int openWindowsSound = -1;    // WindowsSoundPage to open (host shell-executes it), -1 = none

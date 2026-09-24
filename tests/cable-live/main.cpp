@@ -1,9 +1,12 @@
 // cable-live — live check of WinHookAudio.sys (the Virtual Cable driver) without a DAW.
 // Plays a tone into the cable's Windows playback endpoint (WASAPI shared) and reads it back through
 // the driver's control device, as the Worker does; sends another tone through the control device and
-// records it from the cable's Windows recording endpoint. Needs the driver installed and no Worker
-// running (the control device takes one client). Not a ctest: run it by hand.
+// records it from the cable's Windows recording endpoint. First it sends the cable's format (as the
+// Worker does from the panel's settings) and waits for Windows to switch both endpoints to it. Needs
+// the driver installed and no Worker running (the control device takes one client). Not a ctest.
 //   winhookaudio-cable-live.exe [--seconds N] [--block FRAMES] [--cable 1..8]
+//                               [--rate HZ] [--channels 2|4|6|8] [--format 0..4]
+// format: 0 = 32-bit float, 1 = 16-bit, 2 = 24-bit, 3 = 32-bit, 4 = 24 bits in 32.
 
 #include <windows.h>
 #include <winioctl.h>
@@ -11,6 +14,7 @@
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>  // after mmdeviceapi.h (DEFINE_PROPERTYKEY)
+#include <ksmedia.h>                        // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 #include <timeapi.h>
 
 #include <cmath>
@@ -29,6 +33,10 @@ constexpr double kPlayHz = 440.0;    // Windows -> cable -> "Worker"
 constexpr double kRecordHz = 1000.0; // "Worker" -> cable -> Windows
 constexpr float kAmplitude = 0.5f;
 unsigned gCable = 1;  // 1-based, as the endpoints are named
+unsigned gRate = 48000, gChannels = 2, gFormat = 0;  // the cable's format, sent with every exchange
+
+// PKEY_AudioEngine_DeviceFormat: the format the audio engine opens the device in (a WAVEFORMATEX blob).
+const PROPERTYKEY kDeviceFormatKey = {{0xf19f064d, 0x082c, 0x4e27, {0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c}}, 0};
 
 bool gPass = true;
 void check(const char* name, bool ok) {
@@ -72,6 +80,45 @@ IMMDevice* FindEndpoint(IMMDeviceEnumerator* enumerator, EDataFlow flow, std::ws
   return found;
 }
 
+// The engine's device format of `device`: rate, channels, container and valid bits, float or not.
+struct DeviceFormat {
+  unsigned rate = 0, channels = 0, bits = 0, validBits = 0;
+  bool isFloat = false;
+};
+bool ReadDeviceFormat(IMMDevice* device, DeviceFormat& out) {
+  IPropertyStore* props = nullptr;
+  PROPVARIANT v;
+  PropVariantInit(&v);
+  bool ok = false;
+  if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &props)) && SUCCEEDED(props->GetValue(kDeviceFormatKey, &v)) &&
+      v.vt == VT_BLOB && v.blob.cbSize >= sizeof(WAVEFORMATEX)) {
+    const auto* w = reinterpret_cast<const WAVEFORMATEX*>(v.blob.pBlobData);
+    out.rate = w->nSamplesPerSec;
+    out.channels = w->nChannels;
+    out.bits = out.validBits = w->wBitsPerSample;
+    out.isFloat = w->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
+    if (w->wFormatTag == WAVE_FORMAT_EXTENSIBLE && v.blob.cbSize >= sizeof(WAVEFORMATEXTENSIBLE)) {
+      const auto* x = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(w);
+      out.validBits = x->Samples.wValidBitsPerSample;
+      out.isFloat = x->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    }
+    ok = true;
+  }
+  PropVariantClear(&v);
+  SafeRelease(props);
+  return ok;
+}
+// What gFormat means on the device: container bits, valid bits, float.
+bool WantedFormat(const DeviceFormat& f) {
+  static const unsigned kBits[] = {32, 16, 24, 32, 32}, kValid[] = {32, 16, 24, 32, 24};
+  return f.rate == gRate && f.channels == gChannels && f.bits == kBits[gFormat] && f.validBits == kValid[gFormat] &&
+         f.isFloat == (gFormat == 0);
+}
+void PrintFormat(const char* what, const DeviceFormat& f) {
+  std::printf("  %s: %u Hz, %u ch, %u bit (%u valid)%s\n", what, f.rate, f.channels, f.bits, f.validBits,
+              f.isFloat ? " float" : "");
+}
+
 // Amplitude of the `hz` component of a mono signal (Goertzel over the whole span).
 double ToneAmplitude(const std::vector<float>& x, size_t begin, size_t end, double hz, double rate) {
   if (end <= begin) return 0;
@@ -104,24 +151,28 @@ int Dropouts(const std::vector<float>& x, size_t from, size_t block, std::vector
   return dropouts;
 }
 
+// One exchange in the cable's format (probe: rate 0, only asks for the header).
 bool Exchange(HANDLE device, std::vector<unsigned char>& io, unsigned frames, const float* record,
-              WHACableExchange& reply, std::vector<float>* playOut) {
+              WHACableExchange& reply, std::vector<float>* playOut, bool probe = false) {
   auto* h = reinterpret_cast<WHACableExchange*>(io.data());
   std::memset(h, 0, sizeof(*h));
   h->protocol = WHA_CABLE_PROTOCOL;
   h->cable = gCable - 1;
   h->frames = frames;
   h->hasRecord = record ? 1u : 0u;
+  h->rate = probe ? 0 : gRate;
+  h->channels = probe ? 0 : gChannels;
+  h->format = probe ? 0 : gFormat;
   float* audio = reinterpret_cast<float*>(io.data() + sizeof(WHACableExchange));
-  const DWORD bytes = static_cast<DWORD>(sizeof(WHACableExchange) + frames * 2 * sizeof(float));
-  if (record) std::memcpy(audio, record, frames * 2 * sizeof(float));
+  const DWORD bytes = static_cast<DWORD>(sizeof(WHACableExchange) + frames * gChannels * sizeof(float));
+  if (record) std::memcpy(audio, record, frames * gChannels * sizeof(float));
   DWORD got = 0;
   if (!DeviceIoControl(device, IOCTL_WHA_CABLE_EXCHANGE, io.data(), record ? bytes : sizeof(WHACableExchange),
                        io.data(), bytes, &got, nullptr) || got != bytes)
     return false;
   std::memcpy(&reply, h, sizeof(reply));
   if (playOut)
-    for (unsigned i = 0; i < frames; ++i) playOut->push_back(audio[2 * i]);  // left
+    for (unsigned i = 0; i < frames; ++i) playOut->push_back(audio[gChannels * i]);  // Ch 1
   return true;
 }
 
@@ -134,10 +185,17 @@ int main(int argc, char** argv) {
     if (!std::strcmp(argv[i], "--seconds")) seconds = std::atof(argv[++i]);
     else if (!std::strcmp(argv[i], "--block")) block = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (!std::strcmp(argv[i], "--cable")) gCable = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (!std::strcmp(argv[i], "--rate")) gRate = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (!std::strcmp(argv[i], "--channels")) gChannels = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (!std::strcmp(argv[i], "--format")) gFormat = static_cast<unsigned>(std::atoi(argv[++i]));
   }
   if (block < 16 || block > WHA_CABLE_MAX_FRAMES) block = 256;
   if (gCable < 1 || gCable > 8) gCable = 1;
-  std::printf("cable-live: cable %u, %.0f s, Worker block %u\n", gCable, seconds, block);
+  if (gChannels != 2 && gChannels != 4 && gChannels != 6 && gChannels != 8) gChannels = 2;
+  if (gFormat > 4) gFormat = 0;
+  if (gRate < 8000 || gRate > 384000) gRate = 48000;
+  std::printf("cable-live: cable %u, %.0f s, Worker block %u, format %u Hz %u ch format %u\n", gCable, seconds, block,
+              gRate, gChannels, gFormat);
 
   HANDLE device = CreateFileW(WHA_CABLE_USER_PATH, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (device == INVALID_HANDLE_VALUE) {
@@ -146,12 +204,13 @@ int main(int argc, char** argv) {
     check("control device opens", false);
     return 1;
   }
-  std::vector<unsigned char> io(sizeof(WHACableExchange) + WHA_CABLE_MAX_FRAMES * 2 * sizeof(float));
+  std::vector<unsigned char> io(sizeof(WHACableExchange) + WHA_CABLE_MAX_FRAMES * WHA_CABLE_MAX_CHANNELS * sizeof(float));
   WHACableExchange reply{};
-  const bool probed = Exchange(device, io, 0, nullptr, reply, nullptr);
-  check("control device answers (protocol 1)", probed && reply.protocol == WHA_CABLE_PROTOCOL);
+  const bool probed = Exchange(device, io, 0, nullptr, reply, nullptr, true);
+  check("control device answers (protocol 2)", probed && reply.protocol == WHA_CABLE_PROTOCOL);
   if (!probed) return 1;
-  std::printf("  driver: %u cable(s)\n", reply.cables);
+  std::printf("  driver: %u cable(s); cable %u offers %u Hz %u ch format %u\n", reply.cables, gCable, reply.rate,
+              reply.channels, reply.format);
 
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   IMMDeviceEnumerator* enumerator = nullptr;
@@ -164,6 +223,32 @@ int main(int argc, char** argv) {
   check("both Windows endpoints exist", renderDevice && captureDevice);
   if (!renderDevice || !captureDevice) return 1;
 
+  // The format: send it (no audio yet) and wait for Windows to switch both endpoints' device format.
+  DeviceFormat before, renderNow, captureNow;
+  ReadDeviceFormat(renderDevice, before);
+  PrintFormat("playback device format before", before);
+  const bool sent = Exchange(device, io, 0, nullptr, reply, nullptr);
+  check("driver takes the format", sent && reply.rate == gRate && reply.channels == gChannels && reply.format == gFormat);
+  LARGE_INTEGER freq, start, now;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&start);
+  double switched = -1;
+  for (;;) {
+    QueryPerformanceCounter(&now);
+    const double t = static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(freq.QuadPart);
+    if (ReadDeviceFormat(renderDevice, renderNow) && ReadDeviceFormat(captureDevice, captureNow) &&
+        WantedFormat(renderNow) && WantedFormat(captureNow)) {
+      switched = t;
+      break;
+    }
+    if (t > 15) break;
+    Sleep(100);
+  }
+  PrintFormat("playback device format now", renderNow);
+  PrintFormat("recording device format now", captureNow);
+  if (switched >= 0) std::printf("  Windows switched in %.1f s\n", switched);
+  check("Windows uses the cable's format on both endpoints (within 15 s)", switched >= 0);
+
   IAudioClient *render = nullptr, *capture = nullptr;
   renderDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&render));
   captureDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&capture));
@@ -174,10 +259,11 @@ int main(int argc, char** argv) {
               renderFormat->nChannels, renderFormat->wBitsPerSample, captureFormat->nSamplesPerSec,
               captureFormat->nChannels, captureFormat->wBitsPerSample);
   const double rate = renderFormat->nSamplesPerSec;
-  const bool floatStereo = renderFormat->nChannels == 2 && renderFormat->wBitsPerSample == 32 &&
-                           captureFormat->nChannels == 2 && captureFormat->wBitsPerSample == 32;
-  check("float stereo on both endpoints", floatStereo);
-  if (!floatStereo) return 1;
+  const unsigned renderCh = renderFormat->nChannels, captureCh = captureFormat->nChannels;
+  const bool mixOk = renderFormat->wBitsPerSample == 32 && captureFormat->wBitsPerSample == 32 &&
+                     renderFormat->nSamplesPerSec == gRate && renderCh == gChannels && captureCh == gChannels;
+  check("engine mix format: float at the cable's rate and channels", mixOk);
+  if (!mixOk) return 1;
   const REFERENCE_TIME bufferTime = 1000000;  // 100 ms
   HRESULT hr = render->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, bufferTime, 0, renderFormat, nullptr);
   if (SUCCEEDED(hr)) hr = capture->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, bufferTime, 0, captureFormat, nullptr);
@@ -199,9 +285,7 @@ int main(int argc, char** argv) {
   // timer makes Sleep(1) about 1 ms (not 15.6), so blocks go out one at a time like the real Worker's
   // ASIO-driven ticks rather than in bursts.
   timeBeginPeriod(1);
-  std::vector<float> fromWindows, toWindows, recordBlock(2 * block);
-  LARGE_INTEGER freq, start, now;
-  QueryPerformanceFrequency(&freq);
+  std::vector<float> fromWindows, toWindows, recordBlock(gChannels * block);
   QueryPerformanceCounter(&start);
   long long exchanged = 0, played = 0, recordPhase = 0;
   int exchangeErrors = 0;
@@ -219,7 +303,8 @@ int main(int argc, char** argv) {
       if (SUCCEEDED(renderClient->GetBuffer(n, &data))) {
         auto* f = reinterpret_cast<float*>(data);
         for (UINT32 i = 0; i < n; ++i, ++played)
-          f[2 * i] = f[2 * i + 1] = kAmplitude * static_cast<float>(std::sin(2 * kPi * kPlayHz * played / rate));
+          for (unsigned c = 0; c < renderCh; ++c)
+            f[renderCh * i + c] = kAmplitude * static_cast<float>(std::sin(2 * kPi * kPlayHz * played / rate));
         renderClient->ReleaseBuffer(n, 0);
       }
     }
@@ -231,14 +316,14 @@ int main(int argc, char** argv) {
       DWORD flags = 0;
       if (FAILED(captureClient->GetBuffer(&data, &n, &flags, nullptr, nullptr))) break;
       auto* f = reinterpret_cast<const float*>(data);
-      for (UINT32 i = 0; i < n; ++i) toWindows.push_back((flags & AUDCLNT_BUFFERFLAGS_SILENT) ? 0.0f : f[2 * i]);
+      for (UINT32 i = 0; i < n; ++i) toWindows.push_back((flags & AUDCLNT_BUFFERFLAGS_SILENT) ? 0.0f : f[captureCh * i]);
       captureClient->ReleaseBuffer(n);
     }
     // "Worker": exchange blocks that are due.
     while (static_cast<double>(exchanged + block) <= t * rate) {
       for (unsigned i = 0; i < block; ++i, ++recordPhase)
-        recordBlock[2 * i] = recordBlock[2 * i + 1] =
-            kAmplitude * static_cast<float>(std::sin(2 * kPi * kRecordHz * recordPhase / rate));
+        for (unsigned c = 0; c < gChannels; ++c)
+          recordBlock[gChannels * i + c] = kAmplitude * static_cast<float>(std::sin(2 * kPi * kRecordHz * recordPhase / rate));
       if (!Exchange(device, io, block, recordBlock.data(), reply, &fromWindows)) ++exchangeErrors;
       if (reply.playRate) seenPlayRate = reply.playRate;
       if (reply.recordRate) seenRecordRate = reply.recordRate;

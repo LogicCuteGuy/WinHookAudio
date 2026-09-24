@@ -19,7 +19,7 @@
 //     virtual loopback (e.g. --render "CABLE Input" --capture "CABLE Output"), and checks the
 //     round-trip delay against the reported latencies and the signal quality.
 //   --loop-out N: the loop's noise on output N instead of 1 (e.g. an output on HW device #2, run
-//     through its own FIFO and resampler; set up with WINHOOKAUDIO_SLOTS_JSON): the round trip then
+//     through its own FIFO and resampler; set up with WINHOOKAUDIO_CONFIG_DIR): the round trip then
 //     crosses two resamplers, so it is checked for a steady delay (within 2 frames), not bit-exactness.
 //   --panel: open the driver's Control Panel while streaming (GENERAL shows requested vs actual);
 //     for a look by eye or screenshot, with --seconds long enough.

@@ -223,15 +223,16 @@ int main() {
     SetInputType(nm, 2, SLOT_HW);
     check("SetInputType HW resets a non-L/R source to L", nm.table.masterIn[2].srcChannel == 0 && dawName(nm, 2, true) == "HW In L");
     SetInputType(nm, 2, SLOT_VIRTUAL);
-    check("VIRTUAL cable 4 R (source 7) -> 'Virtual 4 R'", SetInputSource(nm, 2, 7, 0) && dawName(nm, 2, true) == "Virtual 4 R");
-    check("VIRTUAL source 16 rejected (8 stereo cables)", !SetInputSource(nm, 2, 16, 0));
+    check("VIRTUAL cable 4 R (source 3*8+1) -> 'Virtual 4 R'", SetInputSource(nm, 2, 25, 0) && dawName(nm, 2, true) == "Virtual 4 R");
+    check("VIRTUAL cable 8 Ch8 (source 63) -> 'Virtual 8 Ch8'", SetInputSource(nm, 2, 63, 0) && dawName(nm, 2, true) == "Virtual 8 Ch8");
+    check("VIRTUAL source 64 rejected (8 cables x 8 channels)", !SetInputSource(nm, 2, 64, 0));
     SetInputType(nm, 2, SLOT_NETWORK);
     check("NETWORK stream 2 ch 1 -> 'Rx3 Ch1'", SetInputSource(nm, 2, 0, 2) && dawName(nm, 2, true) == "Rx3 Ch1");
     check("NETWORK stream 8 rejected", !SetInputSource(nm, 2, 0, 8));
     check("AssignSource Bridge1 Ch3 and Ch1", AssignSource(nm, true, 0, SLOT_BRIDGE1, 2, 0) && AssignSource(nm, true, 2, SLOT_BRIDGE1, 0, 0));
     check("BRIDGE1 slots named by the channel they pick, not their order",
           dawName(nm, 0, true) == "Bridge1 Ch3" && dawName(nm, 2, true) == "Bridge1 Ch1");
-    check("Bridge source label shows the channel", SlotSourceLabel(nm.table.masterIn[0], true, nullptr) == "Bridge1 Â· Ch3");
+    check("Bridge source label shows the channel", SlotSourceLabel(nm.table.masterIn[0], true, nullptr) == "Bridge1 \xC2\xB7 Ch3");
     check("Bridge channel 65 rejected", !AssignSource(nm, true, 0, SLOT_BRIDGE1, 64, 0) && nm.table.masterIn[0].srcChannel == 2);
     check("INPUTS rows may share a Bridge channel", CanAssignBridge(nm, true, 2, SLOT_BRIDGE1, 2));
     check("Bridge channel count: at least 2, up to the highest picked",
@@ -337,8 +338,51 @@ int main() {
       bridgeHeap->isMaster = false;
       return !AssignHw(*bridgeHeap, true, 2, mic, 0);
     }());
-    check("AssignSource Virtual 3 L", AssignSource(nm, true, 2, SLOT_VIRTUAL, 4, 0) && nm.table.masterIn[2].type == SLOT_VIRTUAL &&
+    check("AssignSource Virtual 3 L", AssignSource(nm, true, 2, SLOT_VIRTUAL, 16, 0) && nm.table.masterIn[2].type == SLOT_VIRTUAL &&
                                           SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual 3 \xC2\xB7 L");
+    {
+      // Per-cable format (GENERAL > Virtual Cables): channels 2/4/6/8, formats 0..4, Master only.
+      check("cables default to stereo 32-bit float", nm.table.cables[5].channels == 2 && nm.table.cables[5].format == 0);
+      check("SetCableChannels 7.1 on cable 3", SetCableChannels(nm, 2, 8) && nm.table.cables[2].channels == 8);
+      check("SetCableChannels 3 / cable 9 rejected", !SetCableChannels(nm, 2, 3) && !SetCableChannels(nm, 8, 2) &&
+                                                         nm.table.cables[2].channels == 8);
+      check("SetCableFormat 24-in-32, 5 rejected", SetCableFormat(nm, 2, 4) && !SetCableFormat(nm, 2, 5) && nm.table.cables[2].format == 4);
+      check("labels: 5.1, 24-bit in 32", std::string(CableChannelsLabel(6)) == "5.1" && std::string(CableFormatLabel(4)) == "24-bit in 32");
+      check("Virtual 3 Ch7 label", AssignSource(nm, true, 2, SLOT_VIRTUAL, 2 * 8 + 6, 0) &&
+                                       SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual 3 \xC2\xB7 Ch7" &&
+                                       dawName(nm, 2, true) == "Virtual 3 Ch7");
+      auto bridgeView = std::make_unique<PanelModel>(nm);
+      bridgeView->isMaster = false;
+      check("SetCableChannels from a Bridge popup rejected", !SetCableChannels(*bridgeView, 2, 2));
+      std::string err;
+      check("cable formats validate", ValidateSlots(nm.table, &err));
+      // Saved and loaded back: formats and the 8-channel numbering stay.
+      const std::string json = SerializeSlots(nm.table);
+      auto back = std::make_unique<WHASlotTable>();
+      check("json round trip keeps cable formats and Virtual 3 Ch7",
+            DeserializeSlots(json, *back, &err) && back->cables[2].channels == 8 && back->cables[2].format == 4 &&
+                back->cables[0].channels == 2 && back->masterIn[2].srcChannel == 22);
+      // A file from before 8-channel cables (no "cables"): Virtual N L/R = (N-1)*2 + side becomes channel 1/2.
+      std::string old = json;
+      const size_t at = old.find(",\"cables\":[");
+      const size_t end = at == std::string::npos ? at : old.find(']', at);
+      if (end != std::string::npos) old.erase(at, end + 1 - at);
+      const std::string was = "{\"type\":2,\"srcChannel\":22,";
+      const size_t slot = old.find(was);
+      if (slot != std::string::npos) old.replace(slot, was.size(), "{\"type\":2,\"srcChannel\":3,");  // old Virtual 2 R
+      check("old file: Virtual 2 R (source 3) -> cable 2 channel 2 (source 9), cables stereo",
+            at != std::string::npos && slot != std::string::npos && DeserializeSlots(old, *back, &err) &&
+                back->masterIn[2].srcChannel == 9 && back->cables[2].channels == 2);
+      auto virtualMoved = std::make_unique<WHASlotTable>(nm.table);
+      virtualMoved->masterIn[2].srcChannel = 2 * 8 + 7;
+      check("moving a Virtual slot to another channel renames it for the DAW (reset)", DawVisibleChanged(nm.table, *virtualMoved));
+      auto reformatted = std::make_unique<WHASlotTable>(nm.table);
+      reformatted->cables[2].channels = 2;
+      check("changing a cable's format is live (no DAW reset)", !DawVisibleChanged(nm.table, *reformatted));
+      SetCableChannels(nm, 2, 2);
+      SetCableFormat(nm, 2, 0);
+      AssignSource(nm, true, 2, SLOT_VIRTUAL, 16, 0);
+    }
     check("Virtual Cable menu uses the GENERAL name", VirtualCableLabel(nm.table.general, 0) == "WinHookAudio Virtual 1");
     WHANetworkStream rx{};
     check("Network stream not set up says where", NetworkStreamLabel(rx, true, 0) == "Rx1  (not set up: NETWORK tab)");
@@ -508,10 +552,11 @@ int main() {
   AboutInfo about = GetAboutInfo(aboutModel);
   check("ABOUT version", !about.version.empty());
   check("ABOUT clsidCount 5", about.clsidCount == 5);
-  check("ABOUT slotsJsonPath", !about.slotsJsonPath.empty());
+  check("ABOUT configPath names both files", about.configPath.find("routes.yml") != std::string::npos &&
+                                                 about.configPath.find("settings.yml") != std::string::npos);
   check("ABOUT bridgeClients", !about.bridgeClients[0].empty());
 
-  // SavePanel: version++ + slots.json + resetRequested
+  // SavePanel: version++ + routes.yml / settings.yml text + resetRequested
   WHASlotTable pTable{};
   pTable.version = 5;
   pTable.masterInCount = 1; pTable.masterIn[0].type = SLOT_HW; pTable.masterIn[0].enabled = 1;
@@ -521,37 +566,175 @@ int main() {
   PanelModel editCopy{}; editCopy.table = pTable;
   editCopy.table.masterIn[0].type = SLOT_VIRTUAL;
   TruncateCopy(editCopy.table.masterIn[0].name, kNameLen, "VRChat Out");
-  std::string jsonOut; bool resetRequested = false;
-  check("SavePanel", SavePanel(editCopy, &pTable, &jsonOut, &resetRequested) == true);
+  std::string routesOut, settingsOut; bool resetRequested = false;
+  check("SavePanel", SavePanel(editCopy, &pTable, &routesOut, &settingsOut, &resetRequested) == true);
   check("SavePanel version++", pTable.version == 6);
-  check("SavePanel jsonOut", !jsonOut.empty());
+  check("SavePanel routes + settings text", !routesOut.empty() && settingsOut.find("clock:") != std::string::npos);
   // Master Clock not changed (only type/name), so resetRequested should be false (Per-Thing only)
   check("SavePanel resetRequested false for non-clock", resetRequested == false);
   // Now change Master Clock — should request reset
   editCopy.table.general.sampleRate = 44100;
-  std::string jsonOut2; bool reset2 = false;
+  bool reset2 = false;
   WHASlotTable pTable2 = pTable;
-  check("SavePanel clock change", SavePanel(editCopy, &pTable2, &jsonOut2, &reset2) == true);
+  check("SavePanel clock change", SavePanel(editCopy, &pTable2, nullptr, nullptr, &reset2) == true);
   check("SavePanel resetRequested true for clock", reset2 == true);
   check("SavePanel pTable updated", std::strcmp(pTable.masterIn[0].name, "VRChat Out") == 0);
-  // slots.json round-trip
-  check("SavePanel json round-trip", jsonOut.find("VRChat Out") != std::string::npos);
+  check("SavePanel routes hold the slot", routesOut.find("\"VRChat Out\"") != std::string::npos &&
+                                             settingsOut.find("VRChat Out") == std::string::npos);
 
   // ResetToDefault
   PanelModel resetModel{}; resetModel.table.masterInCount = 5;
   check("ResetToDefault", ResetToDefault(resetModel) == true && resetModel.table.masterInCount == 2);
   check("ResetToDefault version 1", resetModel.table.version == 1);
 
-  // Export/Import
-  WHASlotTable expTable{}; expTable.version = 1; expTable.masterInCount = 1; expTable.masterIn[0].type = SLOT_HW; expTable.masterIn[0].enabled = 1;
-  TruncateCopy(expTable.masterIn[0].name, kNameLen, "ExportTest");
-  expTable.masterOutCount = 1; expTable.masterOut[0].type = SLOT_HW; expTable.masterOut[0].enabled = 1;
-  TruncateCopy(expTable.masterOut[0].name, kNameLen, "Main L");
-  std::string tmpPath = "test_export.json";
-  check("ExportSlots", ExportSlots(expTable, tmpPath) == true);
-  WHASlotTable impTable{}; std::string impErr;
-  check("ImportSlots", ImportSlots(impTable, tmpPath, &impErr) == true && std::strcmp(impTable.masterIn[0].name, "ExportTest") == 0);
-  std::remove(tmpPath.c_str());
+  // routes.yml + settings.yml (WHAConfigYaml.h), Export/Import
+  {
+    auto base = std::make_unique<WHASlotTable>();
+    FillDefaultSlotTable(*base);
+    base->version = 9;
+    base->masterIn[1].type = SLOT_VIRTUAL;
+    base->masterIn[1].enabled = 1;
+    base->masterIn[1].srcChannel = 2 * 8 + 6;  // Virtual 3 Ch7
+    SetSlotName(base->masterIn[1], "Mic \"A\": #1");
+    base->cables[2] = WHACableSetting{8, 4};
+    TruncateCopy(base->netTx[1].ip, sizeof(base->netTx[1].ip), "192.168.1.5");
+    base->netTx[1].port = 7000;
+    base->netTx[1].codec = WHA_VORBIS;
+    base->netTx[1].quality = 0.7f;
+    base->netTx[1].channels = 6;
+    TruncateCopy(base->hwMore.captureId[0], kEndpointIdLen, "{0.0.1.00000000}.{abc}");
+    base->general.hwBuffer = 0;
+    base->general.bridgeBuffer[3] = 512;
+    std::string err;
+    check("yaml: test table is valid", ValidateSlots(*base, &err));
+    const std::string routes = SerializeRoutes(*base);
+    const std::string settings = SerializeSettings(*base);
+    auto back = std::make_unique<WHASlotTable>();
+    FillDefaultSlotTable(*back);
+    const bool rt = DeserializeRoutes(routes, *back, &err) && DeserializeSettings(settings, *back, &err);
+    if (!rt) std::printf("  yaml error: %s\n", err.c_str());
+    check("yaml: routes + settings round trip byte-exact", rt && std::memcmp(base.get(), back.get(), sizeof(WHASlotTable)) == 0);
+    check("yaml: words, not numbers", routes.find("type: virtual") != std::string::npos &&
+                                          settings.find("format: pcm24in32") != std::string::npos &&
+                                          settings.find("codec: vorbis") != std::string::npos);
+    check("yaml: routes hold no settings, settings no routes",
+          routes.find("\nclock:") == std::string::npos && settings.find("\ninputs:") == std::string::npos &&
+              settings.find("\nclock:") != std::string::npos && routes.find("\ninputs:") != std::string::npos);
+
+    // An old slots.json reads into the same table, and writes out as the same yml.
+    auto legacy = std::make_unique<WHASlotTable>();
+    check("yaml: old slots.json -> same table",
+          DeserializeSlots(SerializeSlots(*base), *legacy, &err) && std::memcmp(base.get(), legacy.get(), sizeof(WHASlotTable)) == 0 &&
+              SerializeRoutes(*legacy) == routes && SerializeSettings(*legacy) == settings);
+
+    // Hand edits: CRLF, comments, keys in any order, a list at the key's indent, optional keys left out.
+    const std::string edited =
+        "# my routes\r\n"
+        "outputs:\r\n"
+        "- type: hw   # a comment after a value\r\n"
+        "  name: Main L\r\n"
+        "\r\n"
+        "inputs:\r\n"
+        "  - type: virtual\r\n"
+        "    srcChannel: 9\r\n"
+        "    name: 'Bob''s mic # 2'\r\n";
+    auto hand = std::make_unique<WHASlotTable>(*base);
+    const bool handOk = DeserializeRoutes(edited, *hand, &err);
+    if (!handOk) std::printf("  yaml error: %s\n", err.c_str());
+    check("yaml: hand-edited routes", handOk && hand->masterOutCount == 1 && hand->masterInCount == 1 &&
+                                          std::strcmp(hand->masterOut[0].name, "Main L") == 0 && hand->masterOut[0].enabled == 1 &&
+                                          hand->masterIn[0].type == SLOT_VIRTUAL && hand->masterIn[0].srcChannel == 9 &&
+                                          std::strcmp(hand->masterIn[0].name, "Bob's mic # 2") == 0 && ValidateSlots(*hand, &err));
+
+    // Mistakes are reported with their line.
+    auto bad = [&](const std::string& text, bool isRoutes, const char* expect) {
+      auto t = std::make_unique<WHASlotTable>(*base);
+      std::string e;
+      const bool ok = isRoutes ? DeserializeRoutes(text, *t, &e) : DeserializeSettings(text, *t, &e);
+      if (ok || e.find(expect) == std::string::npos) std::printf("  got: %s\n", ok ? "(accepted)" : e.c_str());
+      return !ok && e.find(expect) != std::string::npos;
+    };
+    check("yaml: tab indent rejected", bad("inputs:\n\t- type: hw\n", true, "line 2: tabs"));
+    check("yaml: duplicate key rejected", bad("version: 1\nversion: 2\n", true, "line 2: duplicate key"));
+    check("yaml: misspelled key named", bad("inputs:\n  - type: hw\n    enabeld: true\noutputs:\n  - type: none\n", true,
+                                           "input 1: unknown key \"enabeld\""));
+    check("yaml: unknown type word", bad("inputs:\n  - type: hdmi\noutputs:\n  - type: none\n", true, "line 2: input 1: type"));
+    check("yaml: missing outputs", bad("inputs:\n  - type: hw\n", true, "missing \"outputs\""));
+    check("yaml: number expected", bad("clock:\n  sampleRate: fast\n", false, "line 2: clock: sampleRate"));
+    check("yaml: flow map rejected", bad("clock: {sampleRate: 48000}\n", false, "line 1: flow maps"));
+    check("yaml: settings file as routes rejected", bad(settings, true, "unknown key"));
+
+    // Export one part, Import only replaces that part.
+    char tmp[MAX_PATH];
+    GetTempPathA(sizeof(tmp), tmp);
+    const std::string dir = std::string(tmp) + "wha-panel-test-config";
+    CreateDirectoryA(dir.c_str(), nullptr);
+    const std::string routesFile = dir + "\\routes.yml", settingsFile = dir + "\\settings.yml", jsonFile = dir + "\\old.json";
+    check("ExportRoutes / ExportSettings", ExportRoutes(*base, routesFile) && ExportSettings(*base, settingsFile));
+    auto other = std::make_unique<WHASlotTable>();
+    FillDefaultSlotTable(*other);
+    other->general.sampleRate = 96000;
+    std::string what;
+    auto target = std::make_unique<WHASlotTable>(*other);
+    check("Import routes keeps settings", ImportConfig(*target, routesFile, &what, &err) && what == "routes" &&
+                                              target->masterIn[1].srcChannel == 22 && target->general.sampleRate == 96000);
+    *target = *other;
+    check("Import settings keeps routes", ImportConfig(*target, settingsFile, &what, &err) && what == "settings" &&
+                                              target->general.sampleRate == 48000 && target->cables[2].channels == 8 &&
+                                              target->masterIn[1].type == other->masterIn[1].type);
+    {
+      FILE* f = nullptr;
+      const std::string json = SerializeSlots(*base);
+      if (fopen_s(&f, jsonFile.c_str(), "wb") == 0 && f) {
+        std::fwrite(json.data(), 1, json.size(), f);
+        std::fclose(f);
+      }
+    }
+    *target = *other;
+    check("Import old slots.json replaces both", ImportConfig(*target, jsonFile, &what, &err) &&
+                                                     what == "routes and settings" &&
+                                                     std::memcmp(target.get(), base.get(), sizeof(WHASlotTable)) == 0);
+    const std::string allFile = dir + "\\winhookaudio.yml";
+    *target = *other;
+    check("Export Everything -> Import replaces both", ExportEverything(*base, allFile) &&
+                                                           ImportConfig(*target, allFile, &what, &err) &&
+                                                           what == "routes and settings" &&
+                                                           std::memcmp(target.get(), base.get(), sizeof(WHASlotTable)) == 0);
+    {
+      std::string all;
+      ReadWholeFile(allFile, all);
+      all += "clok:\n  sampleRate: 48000\n";  // a typo in an Everything file is still named
+      auto t = std::make_unique<WHASlotTable>(*other);
+      std::string e;
+      check("Everything file: typo named", !DeserializeConfigText(all, *t, nullptr, &e) &&
+                                               e.find("unknown key \"clok\"") != std::string::npos);
+    }
+    std::remove(allFile.c_str());
+    *target = *other;
+    check("Import of a missing file leaves the table", !ImportConfig(*target, dir + "\\none.yml", &what, &err) &&
+                                                           std::memcmp(target.get(), other.get(), sizeof(WHASlotTable)) == 0);
+
+    // The Master's load: both files, one file (the other part = defaults), or nothing.
+    SetEnvironmentVariableA("WINHOOKAUDIO_CONFIG_DIR", dir.c_str());
+    SetEnvironmentVariableA("WINHOOKAUDIO_SLOTS_JSON", (dir + "\\no-slots.json").c_str());
+    auto loaded = std::make_unique<WHASlotTable>();
+    check("LoadConfigFiles: both files", LoadConfigFiles(*loaded, &err) &&
+                                             std::memcmp(loaded.get(), base.get(), sizeof(WHASlotTable)) == 0);
+    std::remove(routesFile.c_str());
+    *loaded = WHASlotTable{};
+    check("LoadConfigFiles: settings only, default routes", LoadConfigFiles(*loaded, &err) &&
+                                                                std::strcmp(loaded->masterIn[0].name, "Mic 1") == 0 &&
+                                                                loaded->cables[2].channels == 8 && loaded->version == 9);
+    std::remove(settingsFile.c_str());
+    check("LoadConfigFiles: nothing saved", !LoadConfigFiles(*loaded, &err));
+    SetEnvironmentVariableA("WINHOOKAUDIO_SLOTS_JSON", jsonFile.c_str());
+    check("LoadConfigFiles: falls back to an old slots.json", LoadConfigFiles(*loaded, &err) &&
+                                                                  std::memcmp(loaded.get(), base.get(), sizeof(WHASlotTable)) == 0);
+    SetEnvironmentVariableA("WINHOOKAUDIO_CONFIG_DIR", nullptr);
+    SetEnvironmentVariableA("WINHOOKAUDIO_SLOTS_JSON", nullptr);
+    std::remove(jsonFile.c_str());
+    RemoveDirectoryA(dir.c_str());
+  }
 
   // GENERAL Virtual Cables (18)
   PanelModel vcModel{};

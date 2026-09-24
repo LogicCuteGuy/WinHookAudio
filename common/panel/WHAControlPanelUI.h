@@ -69,15 +69,22 @@ struct AboutInfo {
   std::string version;
   bool sysRunning = false;
   int clsidCount = 5;
-  std::string slotsJsonPath;
+  std::string configPath;  // where Save writes routes.yml + settings.yml
   std::string bridgeClients[4];
 };
 AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4] = nullptr);
-// SavePanel: version++ + memcpy SHM + SerializeSlots to jsonOut + resetRequested (true only for Master Clock change)
-// Caller does WriteFile(slots.json), FlushViewOfFile, SetEvent(TableChanged), hostCallback(ASIOResetRequest) if resetRequested
-bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* jsonOut, bool* resetRequested);
-bool ExportSlots(const WHASlotTable& table, const std::string& path);
-bool ImportSlots(WHASlotTable& table, const std::string& path, std::string* error);
+// SavePanel: version++ + memcpy SHM + routes.yml / settings.yml text (WHAConfigYaml.h) + resetRequested
+// (true only for Master Clock change).
+// Caller writes the files, FlushViewOfFile, SetEvent(TableChanged), hostCallback(ASIOResetRequest) if resetRequested
+bool SavePanel(PanelModel& editCopy, WHASlotTable* pTable, std::string* routesOut, std::string* settingsOut,
+               bool* resetRequested);
+// Export one part: routes.yml (the slots) or settings.yml (GENERAL), or both in one .yml.
+bool ExportRoutes(const WHASlotTable& table, const std::string& path);
+bool ExportSettings(const WHASlotTable& table, const std::string& path);
+bool ExportEverything(const WHASlotTable& table, const std::string& path);
+// Import a routes.yml, a settings.yml, an Everything .yml or an old slots.json into `table`: only the
+// part the file holds is replaced. `what` gets "routes", "settings" or "routes and settings". On failure `table` is unchanged.
+bool ImportConfig(WHASlotTable& table, const std::string& path, std::string* what, std::string* error);
 bool ResetToDefault(PanelModel& model);
 
 // NETWORK 8 tab (16)
@@ -104,6 +111,13 @@ bool SetVirtualCableCount(PanelModel& model, uint32_t count);  // 8 or 64
 bool SetVirtualCableName(PanelModel& model, const char* name);
 uint32_t GetVirtualCableCount(const PanelModel& model);
 std::string GetVirtualCableName(const PanelModel& model);
+// Per cable: channels (2, 4, 6, 8) and sample format (WHACableSetting::format, 0..4); the rate is the
+// Master Clock's. Live: the Worker sends them to the driver, which switches the cable's Windows
+// endpoints; the DAW does not reset. A VIRTUAL slot on a channel past the new count goes silent.
+bool SetCableChannels(PanelModel& model, int cable, uint32_t channels);
+bool SetCableFormat(PanelModel& model, int cable, uint32_t format);
+const char* CableChannelsLabel(uint32_t channels);  // "Stereo", "Quad", "5.1", "7.1"
+const char* CableFormatLabel(uint32_t format);      // "32-bit float", "16-bit", "24-bit", "32-bit", "24-bit in 32"
 
 // GENERAL Per-Thing (12)
 bool SetMasterClock(PanelModel& model, uint32_t sampleRate, uint32_t asioBuffer);  // requires host reset
@@ -161,7 +175,7 @@ bool CanAssignHw(const PanelModel& model, bool isInput, uint32_t index, const ch
 // A BRIDGE(n) slot on app channel `channel` (0 = Ch 1): INPUTS rows may share one; an OUTPUTS channel
 // is taken by one row.
 bool CanAssignBridge(const PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t channel);
-// What a slot carries, for the Source column: "Microphone · L", "Virtual Cable 2", "Rx3 · Ch1", "Bridge1".
+// What a slot carries, for the Source column: "Microphone · L", "Virtual 2 · R", "Rx3 · Ch1", "Bridge1 · Ch2".
 // hwDevices: HwDeviceNames of the slot's direction (nullptr: unknown).
 std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const* hwDevices);
 // Source menu entries: "WinHookAudio Virtual 1" (GENERAL name prefix), "Rx1  from 192.168.1.50:6980 ·

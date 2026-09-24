@@ -3,7 +3,8 @@
 // stream copies every millisecond; the Worker exchanges one block per tick). Checks: equal clocks
 // pass a bit-exact, gap-free copy after priming, in both directions; drifting clocks stay bounded
 // (trims or re-primes, never a growing queue); a full ring keeps the newest frames; an unprimed or
-// idle ring gives silence without counting underruns.
+// idle ring gives silence without counting underruns; sides of different channel counts share a ring;
+// every sample format (16, 24, 24-in-32, 32 PCM, float) converts both ways.
 
 #include <cmath>
 #include <cstdio>
@@ -52,12 +53,12 @@ Result Run(double seconds, unsigned writeBlock, double writePpm, unsigned readBl
         buf[2 * i] = FrameValue(written + i);
         buf[2 * i + 1] = -FrameValue(written + i);
       }
-      ring.write(buf.data(), writeBlock);
+      ring.write(buf.data(), writeBlock, 2);
       written += writeBlock;
       if (ring.fill() > r.maxFill) r.maxFill = ring.fill();
       tw += writeStep;
     } else {
-      ring.read(buf.data(), readBlock, prime, slack);
+      ring.read(buf.data(), readBlock, 2, prime, slack);
       const bool glitch = ring.underruns() != lastUnderruns || ring.drops() != lastDrops;
       lastUnderruns = ring.underruns();
       lastDrops = ring.drops();
@@ -125,17 +126,17 @@ int main() {
   {
     WHACableRing ring;
     std::vector<float> in(2 * 10000), out(2 * 256, 1.0f);
-    ring.read(out.data(), 256, 512, 1024);
+    ring.read(out.data(), 256, 2, 512, 1024);
     bool silent = true;
     for (float v : out) silent = silent && v == 0.0f;
     check("idle ring: silence, no underrun counted", silent && ring.underruns() == 0);
     for (int i = 0; i < 10000; ++i) in[2 * i] = in[2 * i + 1] = static_cast<float>(i);
-    ring.write(in.data(), 10000);
+    ring.write(in.data(), 10000, 2);
     check("overfull write keeps the newest kFrames", ring.fill() == WHACableRing::kFrames &&
                                                           ring.drops() == 10000 - WHACableRing::kFrames);
-    ring.read(out.data(), 1, 0, WHACableRing::kFrames);
+    ring.read(out.data(), 1, 2, 0, WHACableRing::kFrames);
     check("oldest kept frame is 10000 - kFrames", out[0] == static_cast<float>(10000 - WHACableRing::kFrames));
-    ring.write(nullptr, 4);
+    ring.write(nullptr, 4, 2);
     check("null write queues silence", ring.fill() == WHACableRing::kFrames);
     ring.clear();
     check("clear empties and un-primes", ring.fill() == 0 && !ring.primed());
@@ -146,30 +147,96 @@ int main() {
     unsigned char bytes[8 * 4];
     float out[8];
     bool ok16 = true, ok24 = true, okF = true;
-    FloatToSamples(in, bytes, 4, WHASampleKind::Pcm16);
-    SamplesToFloat(bytes, out, 4, WHASampleKind::Pcm16);
+    FloatToSamples(in, bytes, 8, WHASampleKind::Pcm16);
+    SamplesToFloat(bytes, out, 8, WHASampleKind::Pcm16);
     for (int i = 0; i < 8; ++i) {
       const float want = in[i] > 1.0f ? 32767.0f / 32768.0f : in[i] < -1.0f ? -1.0f : in[i];
       ok16 = ok16 && std::fabs(out[i] - want) <= 1.0f / 32768.0f;
     }
-    FloatToSamples(in, bytes, 4, WHASampleKind::Pcm24);
-    SamplesToFloat(bytes, out, 4, WHASampleKind::Pcm24);
+    FloatToSamples(in, bytes, 8, WHASampleKind::Pcm24);
+    SamplesToFloat(bytes, out, 8, WHASampleKind::Pcm24);
     for (int i = 0; i < 8; ++i) {
       const float want = in[i] > 1.0f ? 8388607.0f / 8388608.0f : in[i] < -1.0f ? -1.0f : in[i];
       ok24 = ok24 && std::fabs(out[i] - want) <= 1.0f / 8388608.0f;
     }
-    FloatToSamples(in, bytes, 4, WHASampleKind::Float32);
-    SamplesToFloat(bytes, out, 4, WHASampleKind::Float32);
+    FloatToSamples(in, bytes, 8, WHASampleKind::Float32);
+    SamplesToFloat(bytes, out, 8, WHASampleKind::Float32);
     for (int i = 0; i < 8; ++i) okF = okF && out[i] == in[i];
+    bool ok32 = true, ok2432 = true;
+    FloatToSamples(in, bytes, 8, WHASampleKind::Pcm32);
+    SamplesToFloat(bytes, out, 8, WHASampleKind::Pcm32);
+    for (int i = 0; i < 8; ++i) {
+      const float want = in[i] > 1.0f ? 1.0f : in[i] < -1.0f ? -1.0f : in[i];
+      ok32 = ok32 && std::fabs(out[i] - want) <= 2e-7f;
+    }
+    FloatToSamples(in, bytes, 8, WHASampleKind::Pcm24in32);
+    SamplesToFloat(bytes, out, 8, WHASampleKind::Pcm24in32);
+    for (int i = 0; i < 8; ++i) {
+      const float want = in[i] > 1.0f ? 8388607.0f / 8388608.0f : in[i] < -1.0f ? -1.0f : in[i];
+      ok2432 = ok2432 && std::fabs(out[i] - want) <= 1.0f / 8388608.0f && bytes[4 * i] == 0;
+    }
     check("PCM16 round trip within 1 LSB, clipped", ok16);
     check("PCM24 round trip within 1 LSB, clipped", ok24);
+    check("PCM32 round trip, clipped at full scale", ok32);
+    check("PCM 24-in-32 round trip within 1 LSB, low byte zero", ok2432);
     check("float passes bit-exact", okF);
+    const float quarter[1] = {0.25f};
+    unsigned char b32[4];
+    FloatToSamples(quarter, b32, 1, WHASampleKind::Pcm24in32);
+    check("24-in-32: 0.25 is 00 00 00 20 (24 bits in the high bytes)", b32[0] == 0 && b32[1] == 0 && b32[2] == 0 && b32[3] == 0x20);
     const float half[2] = {-0.5f, 0.0f};
     unsigned char b16[4];
     FloatToSamples(half, b16, 1, WHASampleKind::Pcm16);
     check("PCM16 -0.5 is 0xC000 little-endian", b16[0] == 0x00 && b16[1] == 0xC0);
-    check("frame sizes 4 / 6 / 8 bytes", FrameBytes(WHASampleKind::Pcm16) == 4 && FrameBytes(WHASampleKind::Pcm24) == 6 &&
-                                            FrameBytes(WHASampleKind::Float32) == 8);
+    check("stereo frame sizes 4 / 6 / 8 / 8 / 8 bytes",
+          FrameBytes(WHASampleKind::Pcm16, 2) == 4 && FrameBytes(WHASampleKind::Pcm24, 2) == 6 &&
+              FrameBytes(WHASampleKind::Float32, 2) == 8 && FrameBytes(WHASampleKind::Pcm32, 2) == 8 &&
+              FrameBytes(WHASampleKind::Pcm24in32, 2) == 8);
+    check("7.1 24-bit frame is 24 bytes", FrameBytes(WHASampleKind::Pcm24, 8) == 24);
+    check("valid bits: 24-in-32 is 24 of 32", ValidBits(WHASampleKind::Pcm24in32) == 24 && SampleBytes(WHASampleKind::Pcm24in32) == 4);
+  }
+  {
+    // Speaker setups the panel offers, and what Windows gets as the channel mask.
+    check("channel counts 2/4/6/8 only", IsValidCableChannels(2) && IsValidCableChannels(4) && IsValidCableChannels(6) &&
+                                             IsValidCableChannels(8) && !IsValidCableChannels(1) && !IsValidCableChannels(3) &&
+                                             !IsValidCableChannels(9));
+    check("masks: stereo 0x3, quad 0x33, 5.1 0x3F, 7.1 0x63F",
+          CableChannelMask(2) == 0x3 && CableChannelMask(4) == 0x33 && CableChannelMask(6) == 0x3F && CableChannelMask(8) == 0x63F);
+    const char* c71 = CableChannelName(8, 6);
+    const char* q3 = CableChannelName(4, 2);
+    check("names: 7.1 Ch7 is SL, quad Ch3 is BL, past the count none",
+          c71 && c71[0] == 'S' && c71[1] == 'L' && q3 && q3[0] == 'B' && q3[1] == 'L' && !CableChannelName(2, 2));
+    check("formats 0..4 valid, 5 not", IsValidCableFormat(0) && IsValidCableFormat(4) && !IsValidCableFormat(5));
+  }
+  {
+    // A stereo Windows stream and a 7.1 Worker share one ring: the stream's L/R arrive as Ch1/Ch2 and
+    // Ch3..8 are silent; a 7.1 Worker block read by a stereo stream gives its first two channels.
+    WHACableRing ring;
+    float stereo[2 * 4] = {0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f};
+    ring.write(stereo, 4, 2);
+    float wide[8 * 4];
+    for (float& v : wide) v = 9.0f;
+    ring.read(wide, 4, 8, 0, WHACableRing::kFrames);
+    bool ok = true;
+    for (int f = 0; f < 4; ++f)
+      for (int c = 0; c < 8; ++c) ok = ok && wide[8 * f + c] == (c == 0 ? 0.1f : c == 1 ? 0.2f : 0.0f);
+    check("stereo in, 7.1 out: L/R on Ch1/Ch2, the rest silent", ok);
+    float block[8 * 4];
+    for (int f = 0; f < 4; ++f)
+      for (int c = 0; c < 8; ++c) block[8 * f + c] = static_cast<float>(c + 1);
+    ring.write(block, 4, 8);
+    float two[2 * 4] = {};
+    ring.read(two, 4, 2, 0, WHACableRing::kFrames);
+    ok = true;
+    for (int f = 0; f < 4; ++f) ok = ok && two[2 * f] == 1.0f && two[2 * f + 1] == 2.0f;
+    check("7.1 in, stereo out: Ch1/Ch2", ok);
+    float six[6 * 4];
+    ring.write(block, 4, 8);
+    ring.read(six, 4, 6, 0, WHACableRing::kFrames);
+    ok = true;
+    for (int f = 0; f < 4; ++f)
+      for (int c = 0; c < 6; ++c) ok = ok && six[6 * f + c] == static_cast<float>(c + 1);
+    check("7.1 in, 5.1 out: Ch1..6 in order", ok);
   }
   std::printf("%s\n", gPass ? "ALL PASS" : "SOME FAILED");
   return gPass ? 0 : 1;

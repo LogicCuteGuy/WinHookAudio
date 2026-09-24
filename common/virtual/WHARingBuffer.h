@@ -1,6 +1,6 @@
 #pragma once
 
-// WHARingBuffer — 64KB RingBuffer per Virtual Cable (8× Stereo).
+// WHARingBuffer — the Worker's own ring per Virtual Cable (no driver): 8192 frames of 8 channels.
 // Vocabulary: Virtual Cable, Worker.
 
 #include <cstdint>

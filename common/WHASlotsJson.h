@@ -56,6 +56,8 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
     if (strnlen(table.hwMore.renderId[d], kEndpointIdLen) >= kEndpointIdLen ||
         strnlen(table.hwMore.captureId[d], kEndpointIdLen) >= kEndpointIdLen)
       return fail("general more HW device id too long");
+  for (const WHACableSetting& c : table.cables)
+    if (!IsValidCableSetting(c)) return fail("general cables: channels 2/4/6/8, format 0..4");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -499,6 +501,13 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
     }
     out += "]";
   }
+  // Virtual Cable formats. Its presence also marks VIRTUAL srcChannel as cable * 8 + channel.
+  out += ",\"cables\":[";
+  for (int c = 0; c < kVirtualSlotCables; ++c) {
+    if (c) out += ",";
+    out += "{\"channels\":" + std::to_string(t.cables[c].channels) + ",\"format\":" + std::to_string(t.cables[c].format) + "}";
+  }
+  out += "]";
   out += "},";
   out += "\"netTx\":[";
   for (int i = 0; i < WHA_NET_STREAMS; ++i) {
@@ -532,6 +541,7 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
   WHASlot tmpOut[WHA_MAX] = {};
   uint32_t parsedIn = 0, parsedOut = 0;
   bool inCountSeen = false, outCountSeen = false;
+  bool haveCables = false;  // absent: a file from before 8-channel cables (VIRTUAL srcChannel = cable * 2 + side)
 
   while (true) {
     detail::SkipWs(s, p);
@@ -706,6 +716,25 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
             if (d + 2 < kHwDevices && !detail::Expect(s, p, ',')) return fail("HW device list ,");
           }
           if (!detail::Expect(s, p, ']')) return fail("HW device list ]");
+        } else if (gkey == "cables") {  // optional: absent = every cable stereo float
+          if (!detail::Expect(s, p, '[')) return fail("cables [");
+          for (int c = 0; c < kVirtualSlotCables; ++c) {
+            if (!detail::Expect(s, p, '{')) return fail("cables {");
+            for (int field = 0; field < 2; ++field) {
+              std::string ckey;
+              uint32_t v = 0;
+              if (!detail::ParseString(s, p, ckey) || !detail::Expect(s, p, ':') || !detail::ParseUInt(s, p, v) || v > 255)
+                return fail("cables field");
+              if (ckey == "channels") out.cables[c].channels = static_cast<uint8_t>(v);
+              else if (ckey == "format") out.cables[c].format = static_cast<uint8_t>(v);
+              else return fail("cables unknown field");
+              if (field == 0 && !detail::Expect(s, p, ',')) return fail("cables ,");
+            }
+            if (!detail::Expect(s, p, '}')) return fail("cables }");
+            if (c + 1 < kVirtualSlotCables && !detail::Expect(s, p, ',')) return fail("cables list ,");
+          }
+          if (!detail::Expect(s, p, ']')) return fail("cables ]");
+          haveCables = true;
         } else return fail("unknown general key");
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == ',') {
@@ -761,6 +790,14 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
   out.masterOutCount = parsedOut;
   for (uint32_t i = 0; i < parsedIn; ++i) out.masterIn[i] = tmpIn[i];
   for (uint32_t i = 0; i < parsedOut; ++i) out.masterOut[i] = tmpOut[i];
+  if (!haveCables) {  // stereo cables: Virtual N L/R -> channel 1/2 of cable N
+    auto convert = [](WHASlot& slot) {
+      if (slot.type == SLOT_VIRTUAL && slot.srcChannel >= 0)
+        slot.srcChannel = (slot.srcChannel / 2) * kVirtualCableChannels + slot.srcChannel % 2;
+    };
+    for (uint32_t i = 0; i < parsedIn; ++i) convert(out.masterIn[i]);
+    for (uint32_t i = 0; i < parsedOut; ++i) convert(out.masterOut[i]);
+  }
   if (!ValidateSlots(out, error)) return false;
   return true;
 }
