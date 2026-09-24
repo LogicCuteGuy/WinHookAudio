@@ -16,6 +16,7 @@
 #include "WHARegister.h"
 #include "WHASharedMemory.h"
 #include "WHASlotTable.h"
+#include "virtual/WHACableProtocol.h"
 
 using namespace wha;
 
@@ -176,6 +177,10 @@ int main(int argc, char** argv) {
   std::printf("ASIO headers: offline mirror\n");
 #endif
 
+  // Offline: hold the Virtual Cable driver's control device (exclusive, if installed) so the Worker
+  // uses its in-process cable loop, as on a machine without the driver.
+  HANDLE cableDriver = CreateFileW(WHA_CABLE_USER_PATH, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+
   // The routing a user would set in the Control Panel: IN0/OUT0 VIRTUAL loopback, IN1/OUT1 BRIDGE1.
   HANDLE tableMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                        static_cast<DWORD>(shm::kSlotTableSize), shm::kSlotTableName + 7);
@@ -327,6 +332,7 @@ int main(int argc, char** argv) {
   FreeLibrary(master.dll);
   UnmapViewOfFile(table);
   CloseHandle(tableMap);
+  if (cableDriver != INVALID_HANDLE_VALUE) CloseHandle(cableDriver);
 
   std::printf("{\"schema_version\":1,\"operation\":\"asio_dll_host\",\"stream_verified\":false,\"pass\":%s}\n",
               gPass ? "true" : "false");

@@ -427,6 +427,21 @@ int main(int argc, char** argv) {
         if (!dir && h.open) check("More HW output: no gap after start", h.gaps == 0 && h.trims == 0);
       }
     }
+    std::printf("Virtual Cable driver: %d cable(s)%s (open error %d)\n", st.cableDriverCables,
+                st.cableDriverCables ? "" : ", cables loop inside the Worker", st.cableDriverError);
+    for (int c = 0; c < kStatsCables; ++c) {
+      const WHACableStats& cs = st.cables[c];
+      if (!cs.used) continue;
+      std::printf("Virtual %d: Windows playback %d Hz, recording %d Hz; queued play %d, record %d; exchanges %llu errors %llu;"
+                  " play underruns %llu drops %llu, record underruns %llu drops %llu\n",
+                  c + 1, cs.playRate, cs.recordRate, cs.playFill, cs.recordFill, static_cast<unsigned long long>(cs.exchanges),
+                  static_cast<unsigned long long>(cs.errors), static_cast<unsigned long long>(cs.playUnderruns),
+                  static_cast<unsigned long long>(cs.playDrops), static_cast<unsigned long long>(cs.recordUnderruns),
+                  static_cast<unsigned long long>(cs.recordDrops));
+      check("Virtual Cable: no failed exchange", cs.errors == 0);
+      if (cs.playRate) check("Virtual Cable: Windows playback rate = DAW rate", cs.playRate == static_cast<int32_t>(gRate));
+      if (cs.recordRate) check("Virtual Cable: Windows recording rate = DAW rate", cs.recordRate == static_cast<int32_t>(gRate));
+    }
     std::printf("HW input: open=%d lastError=0x%08lX reads=%llu starved=%llu trims=%llu glitches=%llu growths=%llu"
                 " drift %+.1f ppm (%s)\n",
                 st.hwInOpen, static_cast<unsigned long>(st.hwInLastError), st.hwInReads, st.hwInStarved, st.hwInTrims,

@@ -4,6 +4,7 @@
 #include "KsCapture.h"
 #include "HwOutputFifo.h"
 #include "WHASlotsFile.h"
+#include "virtual/WHACableProtocol.h"
 #if WHA_HAVE_IMGUI
 #include "WHAControlPanelWindow.h"
 #endif
@@ -334,6 +335,25 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
       i.growths = f.growths();
       i.skipped = f.skipped();
     }
+  }
+  out->cableDriverCables = holder_->cableDriverCables();
+  out->cableDriverError = holder_->cableDriverError();
+  for (int c = 0; c < kStatsCables; ++c) {
+    WHACableStats& cs = out->cables[c];
+    WHACableExchange reply{};
+    uint64_t exchanges = 0, errors = 0;
+    if (!holder_->cableStatus(c, reply, exchanges, errors)) continue;
+    cs.used = 1;
+    cs.playRate = static_cast<int32_t>(reply.playRate);
+    cs.recordRate = static_cast<int32_t>(reply.recordRate);
+    cs.playFill = static_cast<int32_t>(reply.playFill);
+    cs.recordFill = static_cast<int32_t>(reply.recordFill);
+    cs.exchanges = exchanges;
+    cs.errors = errors;
+    cs.playUnderruns = reply.playUnderruns;
+    cs.playDrops = reply.playDrops;
+    cs.recordUnderruns = reply.recordUnderruns;
+    cs.recordDrops = reply.recordDrops;
   }
   return true;
 }

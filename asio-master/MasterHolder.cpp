@@ -5,6 +5,8 @@
 #include "network/WHANetworkEngine.h"
 #include "virtual/WHAIoctl.h"
 #include "virtual/WHARingBuffer.h"
+#include <winioctl.h>
+#include "virtual/WHACableProtocol.h"
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -35,6 +37,7 @@ bool MasterHolder::start() {
   if (running_) return true;
   // Preallocate virtual rings at start, not per-tick
   for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+  cableIo_.resize(sizeof(WHACableExchange) + WHA_CABLE_MAX_FRAMES * 2 * sizeof(float));
   if (!network_) network_ = new WHANetworkEngine(table_);
   network_->start();  // socket opens only once a Network Stream is mapped
   stopRequested_ = false;
@@ -76,6 +79,7 @@ void MasterHolder::run() {
   }
   const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));  // resolves endpoint IDs
   openHw();
+  openCables();
   HANDLE handles[2] = {masterTick_, tableChanged_};
   int nHandles = (masterTick_ && tableChanged_) ? 2 : (masterTick_ ? 1 : 0);
   while (!stopRequested_) {
@@ -106,6 +110,7 @@ void MasterHolder::run() {
       if (workerDone_) SetEvent(workerDone_);  // Master_Tick routed
     }
   }
+  closeCables();
   closeHw();
   if (com) CoUninitialize();
   if (mmcssHandle_ && avrtModule_) {
@@ -206,6 +211,80 @@ void MasterHolder::closeHw() {
   }
 }
 
+void MasterHolder::openCables() {
+  cableCount_ = 0;
+  cableCountPub_ = 0;
+  HANDLE h = CreateFileW(WHA_CABLE_USER_PATH, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    cableError_ = static_cast<int>(GetLastError());  // 2: not installed; 5: another Worker has it
+    return;
+  }
+  WHACableExchange probe{};
+  probe.protocol = WHA_CABLE_PROTOCOL;
+  DWORD got = 0;
+  if (!DeviceIoControl(h, IOCTL_WHA_CABLE_EXCHANGE, &probe, sizeof(probe), &probe, sizeof(probe), &got, nullptr) ||
+      got != sizeof(probe) || probe.protocol != WHA_CABLE_PROTOCOL) {
+    cableError_ = static_cast<int>(ERROR_REVISION_MISMATCH);
+    CloseHandle(h);
+    return;
+  }
+  cableDevice_ = h;
+  cableCount_ = static_cast<int>(probe.cables < 8 ? probe.cables : 8);
+  cableError_ = 0;
+  cableCountPub_ = cableCount_;
+}
+void MasterHolder::closeCables() {
+  cableCountPub_ = 0;
+  cableCount_ = 0;
+  if (cableDevice_ != INVALID_HANDLE_VALUE) CloseHandle(cableDevice_);
+  cableDevice_ = INVALID_HANDLE_VALUE;
+}
+bool MasterHolder::exchangeCable(int cable, uint32_t frames, bool hasRecord) {
+  CableStat& st = cableStat_[cable];
+  auto* h = reinterpret_cast<WHACableExchange*>(cableIo_.data());
+  std::memset(h, 0, sizeof(*h));
+  h->protocol = WHA_CABLE_PROTOCOL;
+  h->cable = static_cast<unsigned>(cable);
+  h->frames = frames;
+  h->hasRecord = hasRecord ? 1u : 0u;
+  const DWORD bytes = static_cast<DWORD>(sizeof(WHACableExchange) + frames * 2 * sizeof(float));
+  if (hasRecord) std::memcpy(cableIo_.data() + sizeof(WHACableExchange), virtualScratch_, frames * 2 * sizeof(float));
+  DWORD got = 0;
+  st.exchanges.fetch_add(1, std::memory_order_relaxed);
+  if (!DeviceIoControl(cableDevice_, IOCTL_WHA_CABLE_EXCHANGE, cableIo_.data(), hasRecord ? bytes : sizeof(WHACableExchange),
+                       cableIo_.data(), bytes, &got, nullptr) || got != bytes) {
+    st.errors.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  st.playRate = h->playRate;
+  st.recordRate = h->recordRate;
+  st.playFill = h->playFill;
+  st.recordFill = h->recordFill;
+  st.playUnderruns = h->playUnderruns;
+  st.playDrops = h->playDrops;
+  st.recordUnderruns = h->recordUnderruns;
+  st.recordDrops = h->recordDrops;
+  return true;
+}
+bool MasterHolder::cableStatus(int c, WHACableExchange& reply, uint64_t& exchanges, uint64_t& errors) const {
+  if (c < 0 || c >= 8) return false;
+  const CableStat& st = cableStat_[c];
+  exchanges = st.exchanges.load();
+  errors = st.errors.load();
+  if (!exchanges) return false;
+  reply = WHACableExchange{};
+  reply.protocol = WHA_CABLE_PROTOCOL;
+  reply.cable = static_cast<unsigned>(c);
+  reply.playRate = st.playRate;
+  reply.recordRate = st.recordRate;
+  reply.playFill = st.playFill;
+  reply.recordFill = st.recordFill;
+  reply.playUnderruns = st.playUnderruns;
+  reply.playDrops = st.playDrops;
+  reply.recordUnderruns = st.recordUnderruns;
+  reply.recordDrops = st.recordDrops;
+  return true;
+}
 void MasterHolder::tickOnce() {
   for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
   doTick();
@@ -298,9 +377,11 @@ void MasterHolder::doTick() {
     for (int ci = 0; ci < 4; ++ci)
       if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
   }
-  // Virtual Cable: DeviceIoControl stub — SHM Out -> Ring Write, Ring Read -> SHM In. Each cable is
-  // stereo: a VIRTUAL slot's source is one side of one cable (VirtualCableOf/VirtualSideOf). Per cable,
-  // OUT slots are summed into their side and written once; one read feeds every IN slot of it.
+  // Virtual Cable. Each cable is stereo: a VIRTUAL slot's source is one side of one cable
+  // (VirtualCableOf/VirtualSideOf). Per cable, OUT slots are summed into their side; one block feeds
+  // every IN slot of it. A cable WinHookAudio.sys has goes to and from Windows: OUT -> its recording
+  // endpoint, its playback endpoint -> IN (silence while nothing plays or an exchange fails). Other
+  // cables loop OUT -> IN inside the Worker (the ring stub).
   {
     const uint32_t frames = table_->general.asioBuffer < 4096 ? table_->general.asioBuffer : 4096;
     for (int cable = 0; cable < static_cast<int>(kVirtualSlotCables); ++cable) {
@@ -315,16 +396,26 @@ void MasterHolder::doTick() {
         for (uint32_t f = 0; f < frames; ++f) virtualScratch_[f * 2 + side] += outBuf[f];
         anyOut = true;
       }
-      if (anyOut) virtualRings_[cable]->write(virtualScratch_, frames);
       for (uint32_t ii = 0; ii < table_->masterInCount; ++ii)
         anyIn = anyIn || (table_->masterIn[ii].type == SLOT_VIRTUAL && VirtualCableOf(table_->masterIn[ii]) == cable);
-      if (!anyIn || virtualRings_[cable]->size() < frames || !virtualRings_[cable]->read(virtualScratch_, frames)) continue;
+      const float* in = virtualScratch_;  // interleaved stereo for the cable's IN slots
+      if (cable < cableCount_) {
+        if (!anyOut && !anyIn) continue;
+        if (exchangeCable(cable, frames, anyOut))
+          in = reinterpret_cast<const float*>(cableIo_.data() + sizeof(WHACableExchange));
+        else
+          std::memset(virtualScratch_, 0, sizeof(float) * 2 * frames);
+        if (!anyIn) continue;
+      } else {
+        if (anyOut) virtualRings_[cable]->write(virtualScratch_, frames);
+        if (!anyIn || virtualRings_[cable]->size() < frames || !virtualRings_[cable]->read(virtualScratch_, frames)) continue;
+      }
       for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
         const WHASlot& slot = table_->masterIn[ii];
         if (slot.type != SLOT_VIRTUAL || VirtualCableOf(slot) != cable) continue;
         float* inBuf = masterAudio_ + 512 * 4096 + ii * 4096;
         const int side = VirtualSideOf(slot);
-        for (uint32_t f = 0; f < frames; ++f) inBuf[f] = virtualScratch_[f * 2 + side];
+        for (uint32_t f = 0; f < frames; ++f) inBuf[f] = in[f * 2 + side];
       }
     }
   }

@@ -12,6 +12,8 @@
 #include "WHASharedMemory.h"
 #include "WHABridgeShared.h"
 
+struct WHACableExchange;  // virtual/WHACableProtocol.h
+
 namespace wha {
 
 class MasterHolder {
@@ -71,6 +73,15 @@ class MasterHolder {
     return true;
   }
 
+  // Virtual Cable driver (WinHookAudio.sys): the Worker opens its control device at start. A cable
+  // the driver has exchanges with its Windows endpoints each tick (DAW OUT -> Windows recording,
+  // Windows playback -> DAW IN); other cables, or all without the driver, loop inside the Worker.
+  int cableDriverCables() const { return cableCountPub_.load(); }  // 0 = not open
+  int cableDriverError() const { return cableError_.load(); }      // Win32 error of the open, 0 if open
+  // Cable c's last exchange (rates, queues, driver counters) and the Worker's counts; false if the
+  // Worker has not exchanged it.
+  bool cableStatus(int c, WHACableExchange& reply, uint64_t& exchanges, uint64_t& errors) const;
+
   // The Master Clock's tick count: the Worker compares it with its own to find ticks it missed (an
   // auto-reset Master_Tick coalesces them) and keeps the HW input in step.
   void setTickCounter(const std::atomic<uint64_t>* ticks) {
@@ -88,6 +99,9 @@ class MasterHolder {
   void run();
   void openHw();  // Worker thread, at start
   void closeHw();
+  void openCables();  // Worker thread, at start
+  void closeCables();
+  bool exchangeCable(int cable, uint32_t frames, bool hasRecord);  // virtualScratch_ <-> cableIo_
   void doTick();
 
   WHASlotTable* table_ = nullptr;
@@ -134,6 +148,20 @@ class MasterHolder {
   char outTracePath_[260] = {};
   float virtualScratch_[2 * 4096] = {};  // one Virtual Cable's interleaved stereo block (Worker thread)
   class WHARingBuffer* virtualRings_[8] = {};
+  // Virtual Cable driver (Worker thread): control device, cables it has, exchange buffer (header +
+  // WHA_CABLE_MAX_FRAMES stereo frames, allocated at start). cableStat_ publishes each cable's last
+  // exchange to other threads (stats); fields are read one by one, not as a snapshot.
+  HANDLE cableDevice_ = INVALID_HANDLE_VALUE;
+  int cableCount_ = 0;
+  std::atomic<int> cableCountPub_{0};
+  std::atomic<int> cableError_{0};
+  std::vector<unsigned char> cableIo_;
+  struct CableStat {
+    std::atomic<uint32_t> playRate{0}, recordRate{0}, playFill{0}, recordFill{0};
+    std::atomic<uint32_t> playUnderruns{0}, playDrops{0}, recordUnderruns{0}, recordDrops{0};
+    std::atomic<uint64_t> exchanges{0}, errors{0};
+  };
+  CableStat cableStat_[8];
   class WHANetworkEngine* network_ = nullptr;
   std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs
 };

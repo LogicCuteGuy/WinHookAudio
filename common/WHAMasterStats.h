@@ -23,6 +23,7 @@ enum WHAHwFormat : int32_t {
 
 constexpr int kStatsEndpointIdLen = 64;  // = kEndpointIdLen (WHASlotTable.h)
 constexpr int kStatsHwMore = 3;          // = kHwDevices - 1 (WHASlotTable.h)
+constexpr int kStatsCables = 8;          // = kVirtualSlotCables (WHASlotTable.h)
 
 // One more HW device (index 1..3 of its direction).
 struct WHAHwDeviceStats {
@@ -46,6 +47,18 @@ struct WHAHwDeviceStats {
   uint64_t trims;         // times frames were thrown away (backlog far above target / full)
   uint64_t growths;       // in: backlog target grew
   uint64_t skipped;       // in: frames dropped for Master Clock ticks the Worker missed
+};
+
+// One Virtual Cable through WinHookAudio.sys (driver/): its Windows endpoints and the driver's queues.
+struct WHACableStats {
+  int32_t used;         // a VIRTUAL slot uses it and the driver has it: the Worker exchanges every tick
+  int32_t playRate;     // Hz of the running Windows playback stream, 0 = none
+  int32_t recordRate;   // Hz of the running Windows recording stream, 0 = none
+  int32_t playFill;     // frames queued from Windows for the DAW
+  int32_t recordFill;   // frames queued from the DAW for Windows
+  uint64_t exchanges;   // Worker exchanges
+  uint64_t errors;      // failed exchanges (the DAW got silence)
+  uint64_t playUnderruns, playDrops, recordUnderruns, recordDrops;  // the driver's, since it loaded
 };
 
 struct WHAMasterStats {
@@ -100,6 +113,10 @@ struct WHAMasterStats {
   // HW devices 2..4 of each direction (WHAHwMore): each on its own clock, resampled to the Master Clock.
   WHAHwDeviceStats hwMoreOut[kStatsHwMore];
   WHAHwDeviceStats hwMoreIn[kStatsHwMore];
+  // Virtual Cable driver: cables it has (0 = not installed or not open: cables loop inside the Worker).
+  int32_t cableDriverCables;
+  int32_t cableDriverError;  // Win32 error of the failed open, 0 if open (2 = not installed)
+  WHACableStats cables[kStatsCables];
 };
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.
