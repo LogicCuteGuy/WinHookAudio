@@ -1,0 +1,129 @@
+# Build: ASIO DLLs + offline tests + installer, on GitHub's servers (SignPath signs only files
+# built by a trusted build system, docs/signing.md). A tag v1.2.3 also publishes a GitHub Release
+# with WinHookAudio-Setup-1.2.3.exe.
+# The setup built here has no test-signed Virtual Cable driver: it would turn on Windows Test Mode,
+# and SignPath does not sign software that turns off a security measure. It offers the Virtual
+# Cable only when installer/driver-signed/ holds a Microsoft-signed package. The test-signed
+# setup is built locally (README "Build from source").
+# Optional SignPath code signing: set the repository variables SIGNPATH_ORGANIZATION_ID,
+# SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG and the secret SIGNPATH_API_TOKEN
+# (docs/signing.md). Without them the build is the same, just not signed.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    env:
+      SIGNPATH: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '0.1.0-dev.${{ github.run_number }}' }
+          "WHA_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "Version $version"
+
+      - name: Fetch third-party libraries
+        # Never the Steinberg ASIO SDK: the build uses common/WHAAsio.h (docs/adr/0013).
+        shell: pwsh
+        run: scripts/Fetch-ThirdParty.ps1
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release -- -m
+
+      - name: Offline tests
+        # network-offline sends UDP on the LAN for ~50 s: left to local runs.
+        run: ctest --test-dir build -C Release -E network --output-on-failure
+
+      - name: Upload unsigned binaries for SignPath
+        if: env.SIGNPATH == 'true'
+        id: unsigned-binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-binaries
+          path: |
+            build/Release/WinHookAudioMasterASIO64.dll
+            build/Release/WinHookAudioBridgeASIO64.dll
+            build/Release/winhookaudio-devsetup.exe
+
+      - name: Sign binaries (SignPath)
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: binaries
+          github-artifact-id: ${{ steps.unsigned-binaries.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: build/signed-binaries
+
+      - name: Use signed binaries
+        if: env.SIGNPATH == 'true'
+        shell: pwsh
+        run: Copy-Item build/signed-binaries/* build/Release/ -Force
+
+      - name: Installer
+        # build/no-test-driver does not exist: leaves the test-signed driver choice out.
+        shell: pwsh
+        run: installer/build-installer.ps1 -Version $env:WHA_VERSION -TestDriverDir build/no-test-driver
+
+      - name: Upload unsigned installer for SignPath
+        if: env.SIGNPATH == 'true'
+        id: unsigned-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: build/installer/WinHookAudio-Setup-${{ env.WHA_VERSION }}.exe
+
+      - name: Sign installer (SignPath)
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: build/installer
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinHookAudio-Setup-${{ env.WHA_VERSION }}
+          path: build/installer/WinHookAudio-Setup-${{ env.WHA_VERSION }}.exe
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: WinHookAudio-Setup-*
+          merge-multiple: true
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY: "Built by GitHub Actions. [Code signing policy](https://github.com/${{ github.repository }}#code-signing-policy) · [Privacy](https://github.com/${{ github.repository }}#privacy)"
+        run: gh release create "${{ github.ref_name }}" WinHookAudio-Setup-*.exe --repo "${{ github.repository }}" --title "WinHookAudio ${{ github.ref_name }}" --notes "$POLICY" --generate-notes

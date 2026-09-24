@@ -61,8 +61,10 @@ driver\build.cmd                                  # WinHookAudio.sys, test-signe
 installer\build-installer.ps1 -Version 0.1.0      # build\installer\WinHookAudio-Setup-0.1.0.exe
 ```
 
-Releases are built on the developer's PC with these steps and uploaded to GitHub Releases.
-Code signing is in [docs/signing.md](docs/signing.md).
+GitHub Actions ([build.yml](.github/workflows/build.yml)) builds and tests every push, and a
+`v*` tag publishes the setup to GitHub Releases. That setup has no test-signed driver: it offers
+the Virtual Cable only with a Microsoft-signed driver. The test-signed setup is built locally with
+the steps above. Code signing is in [docs/signing.md](docs/signing.md).
 
 ## Docs
 
@@ -70,6 +72,28 @@ Code signing is in [docs/signing.md](docs/signing.md).
 - [Code and driver signing](docs/signing.md)
 - [Architecture](docs/architecture.md) and [implementation plan](docs/implementation-plan.md)
 - [Decisions (ADRs)](docs/adr/) and [domain words](CONTEXT.md)
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/) (applied for; releases are not signed yet).
+
+- Committers and reviewers: [LogicCuteGuy](https://github.com/LogicCuteGuy)
+- Approvers: [LogicCuteGuy](https://github.com/LogicCuteGuy)
+
+Only files built by GitHub Actions from this repository are signed: the setup, the ASIO drivers
+and `winhookaudio-devsetup.exe`. The Virtual Cable kernel driver (`WinHookAudio.sys`) needs a
+Microsoft signature instead ([docs/signing.md](docs/signing.md)).
+
+## Privacy
+
+This program will not transfer any information to other networked systems unless specifically
+requested by the user or the person installing or operating it.
+
+WinHookAudio has no telemetry, no account and no update check. The only network feature is the
+network streams: they send audio only to the IP addresses you enter in the Control Panel, and
+receive audio on UDP ports 6980-6981 (the installer opens these in Windows Firewall). Settings stay
+on your PC in `%ProgramData%\WinHookAudio\`.
 
 ## Credits
 

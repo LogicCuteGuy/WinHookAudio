@@ -7,8 +7,8 @@ Two different kinds of signing, for two kinds of files:
 | `WinHookAudio-Setup-*.exe`, `WinHookAudio*ASIO64.dll`, `winhookaudio-devsetup.exe` (user mode) | **SignPath Foundation** (free for open source) | Windows SmartScreen and antivirus trust; shows a real publisher instead of "Unknown publisher" |
 | `WinHookAudio.sys` + `.cat` (kernel driver) | **Microsoft** (attestation signing in Partner Center) | Windows 10 1607+ / 11 load only Microsoft-signed kernel drivers. Any other signature, SignPath's too, still needs Test Mode |
 
-Until the driver is Microsoft-signed, releases offer only the test-signed driver
-([installing.md](installing.md)).
+Until the driver is Microsoft-signed, only the locally built setup offers the Virtual Cable, as
+the test-signed driver ([installing.md](installing.md)). The GitHub Actions setup leaves it out.
 
 ## SignPath (user-mode files)
 
@@ -20,11 +20,16 @@ Until the driver is Microsoft-signed, releases offer only the test-signed driver
   ([THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)). Do not put `third_party/asio/` into a
   signed build.
 - SignPath signs only binaries built by a **trusted build system** (for example GitHub Actions)
-  from this repository; it checks where each file came from. This repository has **no CI now**
-  (the GitHub Actions workflow was removed on 2026-09-24), so SignPath signing needs a CI build
-  added back first. Files built on a local PC cannot be signed through SignPath Foundation.
+  from this repository; it checks where each file came from. That build is
+  [.github/workflows/build.yml](../.github/workflows/build.yml). Files built on a local PC cannot
+  be signed through SignPath Foundation.
+- No feature that turns off a security measure: the CI setup leaves out the test-signed driver
+  (it turns on Windows Test Mode). Only the locally built setup offers it.
+- The home page and the release pages show a **Code signing policy** and a privacy statement
+  ([README](../README.md#code-signing-policy)).
+- Every team member uses two-factor authentication on GitHub and SignPath.
 
-### Set up (after SignPath accepts the project and a CI build exists)
+### Set up (after SignPath accepts the project)
 
 1. In SignPath: add the GitHub trusted build system, link this repository, and create two
    artifact configurations:

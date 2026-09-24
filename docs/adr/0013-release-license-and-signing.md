@@ -28,16 +28,19 @@ Foundation (applied for). Facts that shape the design:
   `bcdedit /set testsigning on` when it was off, warn when Secure Boot is on, ask for a restart),
   or no cable. `winhookaudio-devsetup.exe` (`installer/devsetup/`) creates, updates and removes the
   device with SetupAPI / newdev. Uninstall turns Test Mode off only when setup turned it on.
-- **Build**: no CI. Releases are built locally (`README.md` steps: `scripts/Fetch-ThirdParty.ps1`
-  with pinned tag + commit, CMake, offline tests, `driver/build.cmd`, which finds the newest VS and
-  WDK, then `installer/build-installer.ps1`). A GitHub Actions workflow was tried and removed the
-  same day at the owner's request.
+- **Build**: local builds follow the `README.md` steps (`scripts/Fetch-ThirdParty.ps1` with pinned
+  tag + commit, CMake, offline tests, `driver/build.cmd`, which finds the newest VS and WDK, then
+  `installer/build-installer.ps1`). The GitHub Actions workflow was removed on 2026-09-24 and added
+  back the same day for the SignPath application, since SignPath accepts only GitHub Actions or
+  GitLab CI builds. It builds, tests and packages without the test-signed driver, because SignPath
+  does not sign software that turns on Test Mode; the test-signed setup stays a local build.
 
 ## Consequences
 - Until a Microsoft-signed package exists, users of the Virtual Cable need Test Mode and Secure
   Boot off. The ASIO drivers, HW devices, Bridges and network work without it.
 - The test certificate is the one in the builder's certificate store; setup trusts the one it ships.
-- SignPath Foundation signs only CI-built files, so SignPath signing needs a CI build added back.
+- SignPath Foundation signs only CI-built files, so only the GitHub Actions setup (no Virtual
+  Cable until a Microsoft-signed driver exists) can be SignPath-signed.
 - Getting the signed driver needs an EV certificate and a Partner Center account;
   every driver change needs a new submission.
 - `common/WHAAsio.h` must follow the SDK's declarations by hand; its `static_assert`s pin the
