@@ -42,13 +42,18 @@ int main() {
   // IN buffer for loopback target should be 0 initially
   for (int f = 0; f < 128; ++f) masterAudio[512 * 4096 + 1 * 4096 + f] = 0.0f;
 
+  // Bridge 1: two apps running. This tick is block 5; with the default Bridge buffer (one block) the
+  // Master mixes the apps' block 5 - 2 = 3, which both have produced (0.5 each on channel 1).
+  for (int f = 0; f < 128; ++f) masterAudio[1 * 4096 + f] = 0.25f;  // OUT "To FL+Live" -> the apps' block 5
   auto bridge = std::make_unique<WHABridgeShared>();
   bridge->owner[0] = 100; bridge->owner[1] = 101;
-  bridge->ready[0] = 1; bridge->ready[1] = 1;
-  bridge->activeBuf[0] = 0; bridge->activeBuf[1] = 0;
-  for (int ch = 0; ch < 1; ++ch) for (int f = 0; f < 128; ++f) {
-    bridge->clientIn[0][0][ch][f] = 0.5f;
-    bridge->clientIn[1][0][ch][f] = 0.5f;
+  bridge->owner[2] = 0; bridge->clientBlocks[2] = -1; bridge->clientBlocks[3] = -1;
+  bridge->masterBlocks = 5;
+  bridge->clientBlocks[0] = 5; bridge->clientBlocks[1] = 5;
+  for (int f = 0; f < 128; ++f) {
+    bridge->fromClient[0][3][0][f] = 0.5f;
+    bridge->fromClient[1][3][0][f] = 0.5f;
+    bridge->fromClient[0][4][0][f] = 0.5f;  // next block: only app 0 produced it in time
   }
   WHABridgeShared* bridges[4] = {bridge.get(), nullptr, nullptr, nullptr};
   HANDLE masterTick = CreateEventA(nullptr, FALSE, FALSE, nullptr);
@@ -67,19 +72,22 @@ int main() {
   }
   check("loopback OUT->IN next tick", loopbackOk);
 
-  // Bridge sum: 0.5+0.5=1.0 -> tanh(1.0)=0.761, now toggles to mixedIn[1] (nextActive)
+  // Bridge: the apps' block 3 summed with tanh (0.5 + 0.5 -> 0.761) into IN "FL+Live Sum"; the OUT slot
+  // is the apps' block 5; block 6 is published.
   bool bridgeOk = true;
-  float expected = std::tanh(1.0f);
-  // After fix, mixedActive toggles 0->1, so check mixedIn[1]
-  int active = bridge->mixedActive;
-  for (int f = 0; f < 128; ++f) {
-    float v = bridge->mixedIn[active][0][f];
-    if (std::abs(v - expected) > 0.001f) { bridgeOk = false; break; }
-  }
-  check("bridge sum tanh soft-clip", bridgeOk);
-
-  bool broadcastOk = (std::abs(bridge->mixedIn[active][0][0] - std::tanh(1.0f)) < 0.001f);
-  check("bridge broadcast events", broadcastOk);
+  for (int f = 0; f < 128; ++f)
+    if (std::abs(masterAudio[512 * 4096 + 2 * 4096 + f] - std::tanh(1.0f)) > 0.001f) { bridgeOk = false; break; }
+  check("bridge sum tanh soft-clip (block t - delay)", bridgeOk);
+  check("bridge OUT -> the apps' block t, block published",
+        std::abs(bridge->toClients[5][0][0] - 0.25f) < 0.001f && bridge->masterBlocks == 6);
+  check("bridge broadcast events", WaitForSingleObject(bridgeTicks[0][0], 0) == WAIT_OBJECT_0 &&
+                                       WaitForSingleObject(bridgeTicks[0][1], 0) == WAIT_OBJECT_0);
+  // Next block (6, mixes block 4): app 1 is late -> only app 0 is heard, app 1 counted late, not repeated.
+  bridge->clientBlocks[1] = 4;
+  holder.tickOnce();
+  check("late bridge app: silence from it, counted late",
+        std::abs(masterAudio[512 * 4096 + 2 * 4096] - std::tanh(0.5f)) < 0.001f && bridge->clientLate[1] == 1 &&
+            bridge->clientLate[0] == 0 && bridge->masterBlocks == 7);
 
   // Per-thing FIFOs: check defaults
   check("per-thing HW 64", table.general.hwBuffer == 64);

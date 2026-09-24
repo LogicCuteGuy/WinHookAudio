@@ -114,7 +114,7 @@ class MasterHolder {
   HANDLE workerDone_ = nullptr;  // auto-reset, set after each Master_Tick doTick (wakes waitWorker)
   std::atomic<uint64_t> routed_{0};  // the Master Clock tick count the Worker has routed up to
   HANDLE bridgeTicks_[4][4] = {};
-  uint64_t bridgeFed_[4] = {};  // Worker thread: Bridge channels an OUT slot fed last tick (bit = channel)
+  uint64_t bridgeFed_[4][kBridgeRing] = {};  // Worker thread: channels an OUT slot fed in each ring slot (bit = channel)
   HANDLE thread_ = nullptr;
   bool running_ = false;
   bool stopRequested_ = false;
@@ -169,6 +169,7 @@ class MasterHolder {
     std::atomic<uint64_t> exchanges{0}, errors{0};
   };
   CableStat cableStat_[8];
+  class CableEndpointSync* endpointSync_ = nullptr;  // while the driver is open: Windows formats follow cableStat_
   class WHANetworkEngine* network_ = nullptr;
   std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs
 };

@@ -714,11 +714,32 @@ bool SetJitterVorbis(PanelModel& model, uint32_t ms) {
   return true;
 }
 
+bool CableDriverRunning(std::string* status) {
+  static ULONGLONG checkedAt = 0;
+  static DWORD state = 0;  // 0 = not installed, else SERVICE_RUNNING / SERVICE_STOPPED / ...
+  const ULONGLONG now = GetTickCount64();
+  if (checkedAt == 0 || now - checkedAt >= 2000) {
+    checkedAt = now;
+    state = 0;
+    if (SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)) {
+      if (SC_HANDLE svc = OpenServiceW(scm, L"WinHookAudio", SERVICE_QUERY_STATUS)) {
+        SERVICE_STATUS st{};
+        if (QueryServiceStatus(svc, &st)) state = st.dwCurrentState;
+        CloseServiceHandle(svc);
+      }
+      CloseServiceHandle(scm);
+    }
+  }
+  if (status)
+    *status = state == SERVICE_RUNNING ? "running" : state == 0 ? "not installed" : "installed, not running";
+  return state == SERVICE_RUNNING;
+}
+
 // ABOUT + Save contract (13)
 AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   AboutInfo info;
   info.version = "1.0.0";
-  info.sysRunning = false;
+  info.sysRunning = CableDriverRunning(&info.sysStatus);
   info.clsidCount = 5;
   info.configPath = ConfigDir() + "\\ (" + shm::kRoutesFile + ", " + shm::kSettingsFile + ")";
   (void)model;

@@ -555,6 +555,9 @@ int main() {
   check("ABOUT configPath names both files", about.configPath.find("routes.yml") != std::string::npos &&
                                                  about.configPath.find("settings.yml") != std::string::npos);
   check("ABOUT bridgeClients", !about.bridgeClients[0].empty());
+  check("ABOUT sys status matches running", !about.sysStatus.empty() &&
+                                                 about.sysRunning == (about.sysStatus == "running"));
+  std::printf("ABOUT WinHookAudio.sys: %s\n", about.sysStatus.c_str());
 
   // SavePanel: version++ + routes.yml / settings.yml text + resetRequested
   WHASlotTable pTable{};

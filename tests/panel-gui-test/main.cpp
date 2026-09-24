@@ -220,6 +220,48 @@ void SaveContract(const std::string& dir) {
   CloseHandle(changed);
 }
 
+// Closing the Master panel with unsaved edits asks first: Cancel keeps it open, No drops the edits,
+// Yes saves them. A clean panel closes without asking.
+void CloseAsks(const std::string& dir) {
+  WHASlotTable live = MakeTable512();
+  const std::string before = live.masterIn[0].name;
+  ControlPanelHost host;
+  host.table = &live;
+  host.hidden = true;
+  host.configDir = dir;
+  std::atomic<int> asks{0};
+  std::atomic<int> firstAnswer{IDCANCEL}, laterAnswer{IDNO};
+  host.askSaveOnClose = [&] { return ++asks == 1 ? firstAnswer.load() : laterAnswer.load(); };
+  ControlPanelWindow popup;
+
+  host.testFrameHook = [](PanelViewResult& r, int frame) {
+    if (frame == 3) r.close = true;
+  };
+  check("clean panel: Close closes without asking", popup.Open(host) && popup.WaitClosed(5000) && asks == 0);
+
+  // Renamed at frame 2, Close at frame 4 (Cancel) and again at frame 30 (No).
+  host.testEditHook = [](PanelModel& edit, int frame) {
+    if (frame == 2) SetInputName(edit, 0, "Unsaved Name");
+  };
+  host.testFrameHook = [](PanelViewResult& r, int frame) {
+    if (frame == 4 || frame == 30) r.close = true;
+  };
+  check("unsaved panel opens", popup.Open(host));
+  WaitFor([&] { return popup.FramesRendered() >= 15; }, 5000);
+  check("unsaved Close -> asked, Cancel keeps the panel open", asks == 1 && popup.IsOpen());
+  check("second Close -> No closes, edits dropped",
+        popup.WaitClosed(5000) && asks == 2 && before == live.masterIn[0].name);
+
+  // Yes saves, then closes.
+  asks = 0;
+  firstAnswer = IDYES;
+  const uint32_t version = live.version;
+  check("unsaved panel opens again", popup.Open(host));
+  check("Close -> Yes saves and closes", popup.WaitClosed(5000) && asks == 1 &&
+                                             std::strcmp(live.masterIn[0].name, "Unsaved Name") == 0 &&
+                                             live.version == version + 1);
+}
+
 void PopupSmoke() {
   WHASlotTable live = MakeTable512();
   ControlPanelHost host;
@@ -302,6 +344,7 @@ int main() {
 
   HeadlessView();
   SaveContract(dir);
+  CloseAsks(dir);
   PopupSmoke();
   std::printf("ImGui asserts: %d\n", ImGuiAssertCount());
   check("No ImGui asserts", ImGuiAssertCount() == 0);

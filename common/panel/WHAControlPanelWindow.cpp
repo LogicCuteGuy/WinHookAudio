@@ -244,6 +244,7 @@ bool ControlPanelWindow::Open(const ControlPanelHost& host) {
   if (!host.table) return false;
   host_ = host;
   quit_ = false;
+  closeAsked_ = false;
   frames_ = 0;
   usedWarp_ = false;
   lastError_.clear();
@@ -299,6 +300,12 @@ LRESULT CALLBACK ControlPanelWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
       return 0;
     case WM_SYSCOMMAND:
       if ((wParam & 0xfff0) == SC_KEYMENU) return 0;  // no Alt menu
+      break;
+    case WM_CLOSE:  // X or Alt+F4: the loop decides (it may ask to Save first), not DefWindowProc
+      if (self) {
+        self->closeAsked_ = true;
+        return 0;
+      }
       break;
     case WM_DESTROY:
       PostQuitMessage(0);
@@ -440,6 +447,7 @@ void ControlPanelWindow::Run() {
     gpu.swapChain->Present(1, 0);  // vsync keeps the popup off the audio cores' budget
     const int frame = ++frames_;
     if (host_.testFrameHook) host_.testFrameHook(r, frame);
+    if (host_.testEditHook) host_.testEditHook(edit, frame);
     if (!host_.hidden && popsDone < std::size(popAgainMs) && GetTickCount64() - shownAt >= popAgainMs[popsDone]) {
       ++popsDone;
       if (GetForegroundWindow() != hwnd) PopToFront(hwnd);
@@ -473,7 +481,26 @@ void ControlPanelWindow::Run() {
       if (ImportConfig(edit.table, path, &what, &err)) state.status = "Imported " + what + " (Save to apply)";
       else state.status = "Import failed: " + err;
     }
-    if (r.close || (host_.autoCloseAfterFrames > 0 && frame >= host_.autoCloseAfterFrames)) quit_ = true;
+    // The user closes (X, Alt+F4, Close): with unsaved Master edits, ask first. Yes saves (a rejected
+    // Save keeps the panel open, its reason in the footer), No drops them, Cancel keeps the panel.
+    if (r.close || closeAsked_) {
+      closeAsked_ = false;
+      bool close = true;
+      if (host_.isMaster && std::memcmp(&edit.table, &baseline, sizeof(WHASlotTable)) != 0) {
+        const int answer = host_.askSaveOnClose
+                               ? host_.askSaveOnClose()
+                               : MessageBoxW(hwnd, L"You changed settings but did not Save.\n\nSave them before closing?",
+                                             L"WinHookAudio Master", MB_YESNOCANCEL | MB_ICONWARNING);
+        if (answer == IDYES) {
+          close = CommitPanelSave(edit, host_, &state.status);
+          if (close) baseline = edit.table;
+        } else {
+          close = answer == IDNO;
+        }
+      }
+      if (close) quit_ = true;
+    }
+    if (host_.autoCloseAfterFrames > 0 && frame >= host_.autoCloseAfterFrames) quit_ = true;
   }
 
   ImGui_ImplDX11_Shutdown();

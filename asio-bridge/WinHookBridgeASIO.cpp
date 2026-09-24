@@ -5,6 +5,7 @@
 
 #include <avrt.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -95,14 +96,17 @@ bool WinHookBridgeASIO::claimClientPlace() {
       clientId_ = i;
   }
   if (clientId_ < 0) return false;
-  bridgeShared_->ready[clientId_] = 0;  // nothing from a previous holder in the next sum
+  // A new app on this place: not running yet (nothing of a previous holder is mixed), fresh counts.
+  bridgeShared_->clientBlocks[clientId_] = -1;
+  bridgeShared_->clientLate[clientId_] = 0;
+  bridgeShared_->clientSkipped[clientId_] = 0;
   return true;
 }
 
 // Gives the place back when the app closes the driver (Release, or a DAW switching drivers).
 void WinHookBridgeASIO::releaseClientPlace() {
   if (!bridgeShared_ || clientId_ < 0) return;
-  bridgeShared_->ready[clientId_] = 0;
+  bridgeShared_->clientBlocks[clientId_] = -1;
   auto* owner = reinterpret_cast<volatile LONG*>(bridgeShared_->owner);
   InterlockedCompareExchange(&owner[clientId_], 0, static_cast<LONG>(GetCurrentProcessId()));
   clientId_ = -1;
@@ -110,7 +114,8 @@ void WinHookBridgeASIO::releaseClientPlace() {
 
 std::string WinHookBridgeASIO::dawView() const {
   const WHASlotTable& t = *slotTable_;
-  std::string view = std::to_string(t.general.sampleRate) + "/" + std::to_string(t.general.asioBuffer);
+  std::string view = std::to_string(t.general.sampleRate) + "/" + std::to_string(t.general.asioBuffer) + "/" +
+                     std::to_string(BridgeDelayBlocks(t.general.bridgeBuffer[bridgeIndex_], t.general.asioBuffer));
   for (const bool isInput : {true, false}) {
     const long n = countBridgeChannels(isInput);
     view += "|" + std::to_string(n);
@@ -205,6 +210,12 @@ ASIOError WinHookBridgeASIO::start() {
   bufferIndex_ = 0;
   samplePosition_ = 0;
   sampleTimeNs_ = NowNs();
+  // Join the Master's block count now. Blocks before it read as silence: this place's ring is cleared,
+  // so a channel this app does not write never carries a previous run's audio.
+  WHABridgeShared& b = *bridgeShared_;
+  std::memset(b.fromClient[clientId_], 0, sizeof(b.fromClient[clientId_]));
+  nextBlock_ = b.masterBlocks;
+  InterlockedExchange64(&b.clientBlocks[clientId_], nextBlock_);
   clockStop_ = false;
   clockThread_ = CreateThread(nullptr, 0, clockProc, this, 0, nullptr);
   if (!clockThread_) return ASE_HWMalfunction;
@@ -218,7 +229,7 @@ ASIOError WinHookBridgeASIO::stop() {
     CloseHandle(clockThread_);
     clockThread_ = nullptr;
   }
-  if (bridgeShared_ && clientId_ >= 0) bridgeShared_->ready[clientId_] = 0;  // not in the next sum
+  if (bridgeShared_ && clientId_ >= 0) bridgeShared_->clientBlocks[clientId_] = -1;  // not mixed while stopped
   running_ = false;
   return ASE_OK;
 }
@@ -231,8 +242,11 @@ ASIOError WinHookBridgeASIO::getChannels(long* numInputChannels, long* numOutput
 }
 ASIOError WinHookBridgeASIO::getLatencies(long* inputLatency, long* outputLatency) {
   if (!initialized_) return ASE_NotPresent;
+  // In: a Master block reaches the app one period later. Out: the Master mixes the app's block
+  // BridgeDelayBlocks later (the GENERAL Bridge buffer on top of one block).
   if (inputLatency) *inputLatency = bufferSize_;
-  if (outputLatency) *outputLatency = bufferSize_;
+  if (outputLatency)
+    *outputLatency = bufferSize_ * BridgeDelayBlocks(slotTable_->general.bridgeBuffer[bridgeIndex_], slotTable_->general.asioBuffer);
   return ASE_OK;
 }
 ASIOError WinHookBridgeASIO::getBufferSize(long* minSize, long* maxSize, long* preferredSize, long* granularity) {
@@ -331,36 +345,61 @@ DWORD WINAPI WinHookBridgeASIO::clockProc(LPVOID self) {
   return 0;
 }
 
-// Follows the Master: each Bridge_Tick (sent after the Worker mixed) runs one period. Without a
-// running Master the tick never comes, so a period-length timeout keeps the Slave DAW advancing.
+// Follows the Master block by block (WHABridgeShared): each wake runs every block published since the
+// last one, in order, so bunched Master ticks cost no block, and a late one only uses up some of the
+// delay. With no Master block for kStallMs (the Master DAW stopped, or is gone) the Slave DAW keeps
+// running on silence, one period at a time, until blocks come again.
 void WinHookBridgeASIO::runClock() {
   DWORD taskIndex = 0;
   HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
-  const DWORD periodMs = static_cast<DWORD>(bufferSize_ * 1000.0 / sampleRate_) + 1;
+  const DWORD periodMs = static_cast<DWORD>(std::ceil(bufferSize_ * 1000.0 / sampleRate_));
+  constexpr DWORD kStallMs = 50;
+  WHABridgeShared& b = *bridgeShared_;
+  bool stalled = false;
   while (!clockStop_.load()) {
-    WaitForSingleObject(bridgeTick_, periodMs);
+    const DWORD woke = WaitForSingleObject(bridgeTick_, stalled ? periodMs : kStallMs);
     if (clockStop_.load()) break;
-    clockTick();
+    const int64_t published = b.masterBlocks;
+    if (published > nextBlock_) {
+      stalled = false;
+      if (published - nextBlock_ >= static_cast<int64_t>(kBridgeRing)) {  // a ring behind: those inputs are gone
+        b.clientSkipped[clientId_] = b.clientSkipped[clientId_] + (published - 1 - nextBlock_);
+        nextBlock_ = published - 1;
+      }
+      while (nextBlock_ < published && !clockStop_.load()) {
+        clockTick(nextBlock_);
+        ++nextBlock_;
+        InterlockedExchange64(&b.clientBlocks[clientId_], nextBlock_);
+      }
+    } else if (published < nextBlock_) {  // a new count (the region was recreated): follow it
+      nextBlock_ = published;
+      InterlockedExchange64(&b.clientBlocks[clientId_], nextBlock_);
+    } else if (woke == WAIT_TIMEOUT) {
+      stalled = true;
+      clockTick(-1);
+    }
     checkTableChanged();  // after the period: a changed view only asks the DAW to reset
   }
   if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
 }
 
-void WinHookBridgeASIO::clockTick() {
+// One period of the Slave DAW on Master block `block` (-1: no block, silence in and the output unused).
+void WinHookBridgeASIO::clockTick(int64_t block) {
   const long index = bufferIndex_;
   bufferIndex_ ^= 1;
   const size_t bytes = sizeof(float) * static_cast<size_t>(bufferSize_);
   WHABridgeShared& b = *bridgeShared_;
+  const uint32_t slot = block >= 0 ? static_cast<uint32_t>(block % kBridgeRing) : 0;
   for (const Binding& bind : bindings_)  // Master OUT BRIDGE(n) -> client inputs
-    if (bind.isInput) std::memcpy(bind.buffers[index], b.clientOut[clientId_][0][bind.channel], bytes);
+    if (bind.isInput) {
+      if (block >= 0) std::memcpy(bind.buffers[index], b.toClients[slot][bind.channel], bytes);
+      else std::memset(bind.buffers[index], 0, bytes);
+    }
   sampleTimeNs_ = NowNs();
   callbacks_.bufferSwitch(index, ASIOTrue);
-  const int32_t half = clientBuf_ ^ 1;  // write the half the Worker is not reading
-  for (const Binding& bind : bindings_)  // client outputs -> summed into Master IN BRIDGE(n)
-    if (!bind.isInput) std::memcpy(b.clientIn[clientId_][half][bind.channel], bind.buffers[index], bytes);
-  b.activeBuf[clientId_] = half;
-  clientBuf_ = half;
-  b.ready[clientId_] = 1;
+  if (block >= 0)
+    for (const Binding& bind : bindings_)  // client outputs -> summed into Master IN BRIDGE(n)
+      if (!bind.isInput) std::memcpy(b.fromClient[clientId_][slot][bind.channel], bind.buffers[index], bytes);
   samplePosition_ += static_cast<uint64_t>(bufferSize_);
   clockTicks_.fetch_add(1);
 }

@@ -74,7 +74,7 @@ static_assert(kSlotTableSize >= 49000 && kSlotTableSize < 81920 + 8192,
               "SlotTable SHM size class");
 static_assert(kMasterAudioSize == 16 * 1024 * 1024, "Master audio 16MB");
 static_assert(kBridgeSharedSize == 8 * 1024 * 1024, "Bridge shared 8MB per bridge");
-// WHABridgeShared (4 clients x 2 x 64ch x 1024 frames in/out + mixedIn, ~4.5MB) must fit its 8MB view:
+// WHABridgeShared (4 clients x 6-block ring + one 6-block ring to them, 64ch x 1024 frames, ~7.9MB) must fit its 8MB view:
 // with 4096 frames it was ~18MB and the Worker wrote mixedIn past the mapping on every tick.
 static_assert(sizeof(WHABridgeShared) <= kBridgeSharedSize, "WHABridgeShared must fit its SHM view");
 

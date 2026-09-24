@@ -30,6 +30,9 @@ struct ControlPanelHost {
   bool hidden = false;
   int autoCloseAfterFrames = 0;              // > 0: render N frames, then close
   std::function<void(PanelViewResult&, int frame)> testFrameHook;  // inject clicks (tests only)
+  std::function<void(PanelModel&, int frame)> testEditHook;          // edit the panel's copy (tests only)
+  // Closing with unsaved edits: IDYES / IDNO / IDCANCEL. Empty = ask with a message box (tests answer here).
+  std::function<int()> askSaveOnClose;
 };
 
 // Save: validate -> *table = edit (version++) -> routes.yml + settings.yml -> FlushViewOfFile ->
@@ -67,6 +70,7 @@ class ControlPanelWindow {
   DWORD threadId_ = 0;
   std::atomic<HWND> hwnd_{nullptr};
   std::atomic<bool> quit_{false};
+  bool closeAsked_ = false;  // popup thread: WM_CLOSE came (X, Alt+F4)
   std::atomic<int> frames_{0};
   std::atomic<bool> usedWarp_{false};
   std::string lastError_;  // written by the popup thread before it exits

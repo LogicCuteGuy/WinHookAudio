@@ -67,11 +67,15 @@ bool SetOutputSource(PanelModel& model, uint32_t index, int32_t srcChannel, int3
 // ABOUT + Save contract (13)
 struct AboutInfo {
   std::string version;
-  bool sysRunning = false;
+  bool sysRunning = false;       // WinHookAudio.sys (Virtual Cable driver) is loaded
+  std::string sysStatus;         // "running", "installed, not running", "not installed"
   int clsidCount = 5;
   std::string configPath;  // where Save writes routes.yml + settings.yml
   std::string bridgeClients[4];
 };
+// Virtual Cable driver state from the Windows service list (service "WinHookAudio"); checked at most
+// every 2 s, so calling it every frame is cheap. status (optional): text for ABOUT.
+bool CableDriverRunning(std::string* status = nullptr);
 AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4] = nullptr);
 // SavePanel: version++ + memcpy SHM + routes.yml / settings.yml text (WHAConfigYaml.h) + resetRequested
 // (true only for Master Clock change).

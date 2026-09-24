@@ -106,7 +106,7 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
   if (ImGui::BeginMenu("Virtual Cable")) {
     ImGui::TextDisabled(isInput ? "Windows apps play into these (they appear as sound outputs)."
                                 : "Windows apps record from these (they appear as microphones).");
-    if (!cableDriver) ImGui::TextDisabled("Cable driver not installed yet: only DAW OUT -> DAW IN loops work.");
+    if (!cableDriver) ImGui::TextDisabled("Cable driver not running: only DAW OUT -> DAW IN loops work.");
     ImGui::TextDisabled("Channels per cable: GENERAL > Virtual Cables.");
     for (int c = 0; c < kVirtualSlotCables; ++c) {
       const unsigned channels = IsValidCableSetting(edit.table.cables[c]) ? edit.table.cables[c].channels : 2u;
@@ -645,7 +645,7 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
 
 void DrawAbout(PanelModel& edit, const AboutInfo& info, PanelViewResult& result) {
   ImGui::Text("WinHookAudio %s", info.version.c_str());
-  ImGui::Text("WinHookAudio.sys: %s", info.sysRunning ? "running" : "not detected");
+  ImGui::Text("WinHookAudio.sys: %s", info.sysStatus.c_str());
   ImGui::Text("ASIO CLSIDs: %d (Master + Bridge1..4)", info.clsidCount);
   ImGui::TextWrapped("Saved to: %s", info.configPath.c_str());
   ImGui::SeparatorText("Bridge clients");
@@ -735,7 +735,23 @@ PanelViewResult DrawBridgePanel(const WHASlotTable& table, int bridgeIndex, cons
   } else {
     ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.4f, 1), "not open - open WinHookAudio Master in your main DAW");
   }
-  if (shared) ImGui::Text("Apps on this Bridge: %d / %u", CountBridgeClients(*shared), kBridgeClients);
+  if (shared) {
+    ImGui::Text("Apps on this Bridge: %d / %u", CountBridgeClients(*shared), kBridgeClients);
+    // Blocks an app was too late for (the Master mixed silence) or skipped after falling far behind:
+    // either one is a dropout. More than a few: a larger Bridge buffer in the Master's GENERAL.
+    const int delay = BridgeDelayBlocks(table.general.bridgeBuffer[bridgeIndex], table.general.asioBuffer);
+    ImGui::TextDisabled("Delay %d blocks (%u samples)", delay, delay * table.general.asioBuffer);
+    for (uint32_t c = 0; c < kBridgeClients; ++c) {
+      if (shared->owner[c] == 0) continue;
+      const long long late = shared->clientLate[c], skipped = shared->clientSkipped[c];
+      const ImVec4 color = late || skipped ? ImVec4(0.95f, 0.75f, 0.3f, 1) : ImVec4(0.4f, 0.85f, 0.4f, 1);
+      ImGui::TextColored(color, "  App %u: %s, dropouts %lld late + %lld skipped", c + 1,
+                         shared->clientBlocks[c] >= 0 ? "running" : "stopped", late, skipped);
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Dropouts: blocks the app was too late for. If they keep growing,\n"
+                        "raise this Bridge's buffer in the Master panel: GENERAL > 3. PER-THING WORKER BUFFERS.");
+  }
 
   const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
   ImGui::BeginChild("routes", ImVec2(0, -footer));

@@ -1,6 +1,7 @@
 @echo off
 rem build.cmd - builds WinHookAudio.sys and its test-signed driver package into build\driver\.
-rem Needs Visual Studio 18 (MSVC x64) and the WDK (km headers/libs 10.0.28000, SDK shared 10.0.26100).
+rem Needs Visual Studio 2022 or newer (MSVC x64) and the WDK; picks the newest installed of each
+rem (this PC: VS 18 + WDK km 10.0.28000 + SDK shared 10.0.26100; GitHub windows-2025: VS 2022 + WDK 10.0.26100).
 rem Signs with a self-signed "WinHookAudio Test" code-signing certificate in the current user's
 rem store (created once); the machine must be in test-signing mode to load the driver.
 setlocal
@@ -8,15 +9,32 @@ set ROOT=%~dp0..
 set OUT=%ROOT%\build\driver
 set OBJ=%ROOT%\build\driver-obj
 set WK=C:\Program Files (x86)\Windows Kits\10
-set KM=%WK%\Include\10.0.28000.0\km
-set SHARED=%WK%\Include\10.0.26100.0\shared
-set LIBKM=%WK%\Lib\10.0.28000.0\km\x64
-set BIN=%WK%\bin\10.0.28000.0
-set SIGNTOOL=%WK%\bin\10.0.26100.0\x64\signtool.exe
 set CERTNAME=WinHookAudio Test
 
-call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
+rem Newest kit version that has each part (versions sort by name: same length).
+for /f "delims=" %%v in ('dir /b /ad /o-n "%WK%\Include"') do (
+  if not defined KMVER if exist "%WK%\Include\%%v\km\portcls.h" set KMVER=%%v
+  if not defined SHAREDVER if exist "%WK%\Include\%%v\shared\sdkddkver.h" set SHAREDVER=%%v
+)
+for /f "delims=" %%v in ('dir /b /ad /o-n "%WK%\bin"') do (
+  if not defined TOOLVER if exist "%WK%\bin\%%v\x64\stampinf.exe" set TOOLVER=%%v
+  if not defined SIGNVER if exist "%WK%\bin\%%v\x64\signtool.exe" set SIGNVER=%%v
+)
+if not defined KMVER (echo build.cmd: WDK km headers not found in Windows Kits & exit /b 1)
+if not defined SHAREDVER (echo build.cmd: SDK shared headers not found & exit /b 1)
+if not defined TOOLVER (echo build.cmd: WDK tools stampinf/Inf2Cat not found & exit /b 1)
+if not defined SIGNVER (echo build.cmd: signtool not found & exit /b 1)
+set KM=%WK%\Include\%KMVER%\km
+set SHARED=%WK%\Include\%SHAREDVER%\shared
+set LIBKM=%WK%\Lib\%KMVER%\km\x64
+set BIN=%WK%\bin\%TOOLVER%
+set SIGNTOOL=%WK%\bin\%SIGNVER%\x64\signtool.exe
+
+for /f "usebackq delims=" %%p in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find VC\Auxiliary\Build\vcvars64.bat`) do set VCVARS=%%p
+if not defined VCVARS (echo build.cmd: Visual Studio with MSVC x64 not found & exit /b 1)
+call "%VCVARS%" >nul 2>nul
 where cl >nul 2>nul || (echo build.cmd: MSVC not found & exit /b 1)
+echo build.cmd: WDK km %KMVER%, SDK shared %SHAREDVER%, tools %TOOLVER%
 if not exist "%OBJ%" mkdir "%OBJ%"
 if not exist "%OUT%" mkdir "%OUT%"
 

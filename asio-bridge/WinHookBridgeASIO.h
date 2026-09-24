@@ -70,7 +70,7 @@ class WinHookBridgeASIO : public IASIO {
   void requestReset();
   static DWORD WINAPI clockProc(LPVOID self);
   void runClock();
-  void clockTick();
+  void clockTick(int64_t block);  // block -1: no Master block (silence in, output unused)
 
   std::atomic<ULONG> refCount_{1};
   int bridgeIndex_ = 0;  // 0..3
@@ -95,7 +95,7 @@ class WinHookBridgeASIO : public IASIO {
   HANDLE clockThread_ = nullptr;
   std::atomic<bool> clockStop_{false};
   long bufferIndex_ = 0;
-  int32_t clientBuf_ = 0;  // clientIn double-buffer half written last
+  int64_t nextBlock_ = 0;  // clock thread: the Master block this client runs next
   std::atomic<uint64_t> samplePosition_{0};
   std::atomic<uint64_t> sampleTimeNs_{0};
   std::atomic<uint64_t> clockTicks_{0};
