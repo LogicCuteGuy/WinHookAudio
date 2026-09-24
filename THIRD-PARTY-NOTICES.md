@@ -17,7 +17,7 @@ The full license texts are in each library's source tree (`LICENSE.txt` / `COPYI
 
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 
-Release builds (GitHub Actions) do **not** use the Steinberg ASIO SDK. They compile against
+Release builds do **not** use the Steinberg ASIO SDK. They compile against
 `common/WHAAsio.h`, this project's own declaration of the ASIO driver interface that DAWs call.
 A developer can put the SDK in `third_party/asio/` for local builds (see
 `third_party/asio/README.md`). The SDK is dual-licensed (Steinberg ASIO License or GPLv3), so

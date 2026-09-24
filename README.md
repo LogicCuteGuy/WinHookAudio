@@ -1,6 +1,5 @@
 # WinHookAudio
 
-[![Build](https://github.com/LogicCuteGuy/WinHookAudio/actions/workflows/build.yml/badge.svg)](https://github.com/LogicCuteGuy/WinHookAudio/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa.svg)](https://github.com/sponsors/LogicCuteGuy)
 
@@ -57,9 +56,8 @@ driver\build.cmd                                  # WinHookAudio.sys, test-signe
 installer\build-installer.ps1 -Version 0.1.0      # build\installer\WinHookAudio-Setup-0.1.0.exe
 ```
 
-GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) runs the same steps on
-every push and pull request. A tag `v1.2.3` publishes a Release. Code signing is in
-[docs/signing.md](docs/signing.md).
+Releases are built on the developer's PC with these steps and uploaded to GitHub Releases.
+Code signing is in [docs/signing.md](docs/signing.md).
 
 ## Docs
 

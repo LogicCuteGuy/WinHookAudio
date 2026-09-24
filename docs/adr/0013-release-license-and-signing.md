@@ -1,11 +1,11 @@
-# MIT release, installer driver choice, CI and signing
+# MIT release, installer driver choice and signing
 
 Date: 2026-09-24
 Status: accepted (supersedes the driver and test-signing parts of 0011; release part of 0007)
 
 ## Context
-The project goes public under the MIT License with GitHub Actions builds, GitHub Sponsors and code
-signing from SignPath Foundation (applied for). Facts that shape the design:
+The project goes public under the MIT License with GitHub Sponsors and code signing from SignPath
+Foundation (applied for). Facts that shape the design:
 
 - Windows 10 1607+ / 11 load a kernel driver only when Microsoft signed it (attestation signing in
   Partner Center, which needs an EV certificate). SignPath signs user-mode files; a SignPath
@@ -15,7 +15,7 @@ signing from SignPath Foundation (applied for). Facts that shape the design:
 - `pnputil /add-driver /install` (0011) only stages a package. `Root\WinHookAudio` is
   root-enumerated, so its device node must be created (what `devcon install` does); devcon is not
   redistributable.
-- The third-party libraries are ignored by git (0007, 0008, 0009), so CI has to fetch them.
+- The third-party libraries are ignored by git (0007, 0008, 0009), so a fresh checkout has to fetch them.
 
 ## Decision
 - **License**: MIT for this repository's code; `THIRD-PARTY-NOTICES.md` lists ImGui (MIT),
@@ -28,17 +28,17 @@ signing from SignPath Foundation (applied for). Facts that shape the design:
   `bcdedit /set testsigning on` when it was off, warn when Secure Boot is on, ask for a restart),
   or no cable. `winhookaudio-devsetup.exe` (`installer/devsetup/`) creates, updates and removes the
   device with SetupAPI / newdev. Uninstall turns Test Mode off only when setup turned it on.
-- **CI** (`.github/workflows/build.yml`, windows-2025 with VS 2022, WDK 10.0.26100, Inno Setup):
-  fetch pinned libraries (`scripts/Fetch-ThirdParty.ps1`, tag + commit hash), build, offline
-  tests except `network-offline`, test-signed driver (`driver/build.cmd` now finds the newest VS
-  and WDK), installer. A `v*` tag publishes a GitHub Release. SignPath signing runs only when the
-  `SIGNPATH_*` repository variables and secret are set (`docs/signing.md`).
+- **Build**: no CI. Releases are built locally (`README.md` steps: `scripts/Fetch-ThirdParty.ps1`
+  with pinned tag + commit, CMake, offline tests, `driver/build.cmd`, which finds the newest VS and
+  WDK, then `installer/build-installer.ps1`). A GitHub Actions workflow was tried and removed the
+  same day at the owner's request.
 
 ## Consequences
 - Until a Microsoft-signed package exists, users of the Virtual Cable need Test Mode and Secure
   Boot off. The ASIO drivers, HW devices, Bridges and network work without it.
-- Each CI run makes a new self-signed test certificate; setup trusts the one it ships.
-- Getting the signed driver needs an EV certificate and a Partner Center account, outside CI;
+- The test certificate is the one in the builder's certificate store; setup trusts the one it ships.
+- SignPath Foundation signs only CI-built files, so SignPath signing needs a CI build added back.
+- Getting the signed driver needs an EV certificate and a Partner Center account;
   every driver change needs a new submission.
 - `common/WHAAsio.h` must follow the SDK's declarations by hand; its `static_assert`s pin the
   struct sizes (SDK pack 4).
