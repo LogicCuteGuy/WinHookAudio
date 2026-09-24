@@ -171,9 +171,14 @@ NTSTATUS Exchange(PIRP irp, PIO_STACK_LOCATION stack) {
     formatChanged = SetCableFormatLocked(c, format);
   }
   if (request.frames) {
+    if (c.workerFrames != request.frames) {  // a new block size: start again from its base latency
+      c.play.resetExtra();
+      c.record.resetExtra();
+    }
     c.workerFrames = request.frames;
     c.record.write(request.hasRecord ? audio : nullptr, request.frames, request.channels);
-    c.play.read(audio, request.frames, request.channels, CablePrime(c), CableSlack(c));
+    c.play.read(audio, request.frames, request.channels, CablePrime(c), CableSlack(c), CableGrow(c),
+                CableMaxPrime(c));
   }
   reply.rate = c.format.rate;
   reply.channels = c.format.channels;
@@ -293,7 +298,15 @@ NTSTATUS ControlDispatch(PIRP irp) {
   NTSTATUS status = STATUS_SUCCESS;
   irp->IoStatus.Information = 0;
   switch (stack->MajorFunction) {
-    case IRP_MJ_CREATE:
+    case IRP_MJ_CREATE:  // a new Worker: every cable starts empty, from its base latency
+      for (ULONG i = 0; i < kCables; ++i) {
+        KIRQL irql;
+        KeAcquireSpinLock(&g_cables[i].lock, &irql);
+        g_cables[i].play.clear();    // what Windows played while no Worker read it is stale
+        g_cables[i].record.clear();
+        KeReleaseSpinLock(&g_cables[i].lock, irql);
+      }
+      break;
     case IRP_MJ_CLEANUP:
     case IRP_MJ_CLOSE:
       break;

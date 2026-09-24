@@ -71,6 +71,18 @@ void NotifyCableFormatChange(WHACable& c);
 // Worker's block; a WaveRT stream is copied every millisecond).
 inline unsigned CablePrime(const WHACable& c) { return 2 * (c.workerFrames ? c.workerFrames : 512); }
 inline unsigned CableSlack(const WHACable& c) { return 4 * (c.workerFrames ? c.workerFrames : 512); }
+// Adaptive latency (WHACableRing::read): each underrun on a side adds one Worker block to its prime,
+// up to 50 ms or 4 blocks, whichever is more (at most half the ring). Only one block of prime is
+// margin (the other is the block in flight), so a Worker tick later than one block underruns: on a
+// busy PC or a VM the cable settles at the latency it needs. Reset when a Worker opens the control
+// device or changes its block.
+inline unsigned CableGrow(const WHACable& c) { return c.workerFrames ? c.workerFrames : 512; }
+inline unsigned CableMaxPrime(const WHACable& c) {
+  unsigned most = c.format.rate / 20;
+  if (most < 4 * CableGrow(c)) most = 4 * CableGrow(c);
+  if (most > WHACableRing::kFrames / 2) most = WHACableRing::kFrames / 2;
+  return most;
+}
 
 // Miniports (WHAMiniports.cpp). `capture`: the cable's recording side.
 NTSTATUS NewWaveMiniport(PUNKNOWN* out, ULONG cable, bool capture);

@@ -2,7 +2,7 @@
 // Plays a tone into the cable's Windows playback endpoint (WASAPI shared) and reads it back through
 // the driver's control device, as the Worker does; sends another tone through the control device and
 // records it from the cable's Windows recording endpoint. First it sends the cable's format (as the
-// Worker does from the panel's settings) and waits for Windows to switch both endpoints to it. Needs
+// Worker does from the panel's settings) and sets both endpoints to it with CableEndpointSync. Needs
 // the driver installed and no Worker running (the control device takes one client). Not a ctest.
 //   winhookaudio-cable-live.exe [--seconds N] [--block FRAMES] [--cable 1..8]
 //                               [--rate HZ] [--channels 2|4|6|8] [--format 0..4]
@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "CableEndpointSync.h"
 #include "virtual/WHACableProtocol.h"
 
 namespace {
@@ -223,12 +224,22 @@ int main(int argc, char** argv) {
   check("both Windows endpoints exist", renderDevice && captureDevice);
   if (!renderDevice || !captureDevice) return 1;
 
-  // The format: send it (no audio yet) and wait for Windows to switch both endpoints' device format.
+  // The format: send it (no audio yet); CableEndpointSync (as in the Master) sets both endpoints'
+  // Windows device format to it, since Windows does not follow the driver's format change by itself.
   DeviceFormat before, renderNow, captureNow;
   ReadDeviceFormat(renderDevice, before);
   PrintFormat("playback device format before", before);
   const bool sent = Exchange(device, io, 0, nullptr, reply, nullptr);
   check("driver takes the format", sent && reply.rate == gRate && reply.channels == gChannels && reply.format == gFormat);
+  wha::CableEndpointSync endpointSync([](int cable, uint32_t& r, uint32_t& ch, uint32_t& f) {
+    if (cable != static_cast<int>(gCable) - 1) return false;
+    r = gRate;
+    ch = gChannels;
+    f = gFormat;
+    return true;
+  });
+  endpointSync.start();
+  endpointSync.wake();
   LARGE_INTEGER freq, start, now;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&start);
@@ -246,8 +257,11 @@ int main(int argc, char** argv) {
   }
   PrintFormat("playback device format now", renderNow);
   PrintFormat("recording device format now", captureNow);
-  if (switched >= 0) std::printf("  Windows switched in %.1f s\n", switched);
-  check("Windows uses the cable's format on both endpoints (within 15 s)", switched >= 0);
+  if (switched >= 0) std::printf("  endpoints switched in %.1f s (%u set)\n", switched, endpointSync.switches());
+  if (endpointSync.lastError())
+    std::printf("  SetDeviceFormat error 0x%08lX\n", static_cast<unsigned long>(endpointSync.lastError()));
+  endpointSync.stop();
+  check("both endpoints use the cable's format (within 15 s)", switched >= 0);
 
   IAudioClient *render = nullptr, *capture = nullptr;
   renderDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&render));
@@ -290,6 +304,10 @@ int main(int argc, char** argv) {
   long long exchanged = 0, played = 0, recordPhase = 0;
   int exchangeErrors = 0;
   unsigned seenPlayRate = 0, seenRecordRate = 0;
+  double maxLateMs = 0;
+  int lateTicks = 0;                     // ticks more than one block late (after the first second)
+  WHACableExchange counters = reply;     // the driver's underrun / drop counters at the last tick
+  std::vector<std::string> driverEvents;
   for (;;) {
     QueryPerformanceCounter(&now);
     const double t = static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(freq.QuadPart);
@@ -321,12 +339,29 @@ int main(int argc, char** argv) {
     }
     // "Worker": exchange blocks that are due.
     while (static_cast<double>(exchanged + block) <= t * rate) {
+      // How late this tick is (a block is due once its last frame's time has passed).
+      const double lateMs = (t * rate - static_cast<double>(exchanged + block)) * 1000.0 / rate;
+      if (t > 1 && lateMs > maxLateMs) maxLateMs = lateMs;
+      if (t > 1 && lateMs * rate / 1000.0 > block) ++lateTicks;
       for (unsigned i = 0; i < block; ++i, ++recordPhase)
         for (unsigned c = 0; c < gChannels; ++c)
           recordBlock[gChannels * i + c] = kAmplitude * static_cast<float>(std::sin(2 * kPi * kRecordHz * recordPhase / rate));
       if (!Exchange(device, io, block, recordBlock.data(), reply, &fromWindows)) ++exchangeErrors;
       if (reply.playRate) seenPlayRate = reply.playRate;
       if (reply.recordRate) seenRecordRate = reply.recordRate;
+      // The driver's counters moving: when, and how late this tick was then.
+      if (exchanged > 0 && (reply.playUnderruns != counters.playUnderruns || reply.playDrops != counters.playDrops ||
+                            reply.recordUnderruns != counters.recordUnderruns || reply.recordDrops != counters.recordDrops) &&
+          driverEvents.size() < 12) {
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "    %.3f s (tick %.1f ms late, fill play %u record %u): play underruns +%u drops +%u, record underruns +%u drops +%u",
+                      t, lateMs, reply.playFill, reply.recordFill, reply.playUnderruns - counters.playUnderruns,
+                      reply.playDrops - counters.playDrops, reply.recordUnderruns - counters.recordUnderruns,
+                      reply.recordDrops - counters.recordDrops);
+        driverEvents.push_back(line);
+      }
+      counters = reply;
       exchanged += block;
     }
     Sleep(1);
@@ -337,6 +372,10 @@ int main(int argc, char** argv) {
 
   std::printf("  driver saw: playback %u Hz, recording %u Hz; playback underruns %u drops %u, recording underruns %u drops %u\n",
               seenPlayRate, seenRecordRate, reply.playUnderruns, reply.playDrops, reply.recordUnderruns, reply.recordDrops);
+  std::printf("  Worker ticks: latest %.1f ms late, %d more than one block (%.1f ms) late\n", maxLateMs, lateTicks,
+              block * 1000.0 / gRate);
+  if (!driverEvents.empty()) std::printf("  driver counters moved:\n");
+  for (const std::string& e : driverEvents) std::printf("%s\n", e.c_str());
   check("no exchange errors", exchangeErrors == 0);
   check("driver reports both streams running at the endpoint rate",
         seenPlayRate == renderFormat->nSamplesPerSec && seenRecordRate == captureFormat->nSamplesPerSec);

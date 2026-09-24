@@ -23,6 +23,11 @@ sound cards, Windows apps, other DAWs, LAN  ->  WinHookAudio Master (ASIO)  ->  
 
 **Status:** early. It is tested on the developer's PC only (Windows 10 x64 with Bitwig Studio). Expect bugs; please report them in [Issues](https://github.com/LogicCuteGuy/WinHookAudio/issues).
 
+> **The Virtual Cable driver (`WinHookAudio.sys`) is experimental.** It is a kernel driver: a bug in
+> it can stop Windows with a blue screen. It has not yet run under Driver Verifier or a long soak test,
+> and short audio dropouts still happen in stress tests. Use it on a PC where a crash is acceptable,
+> or untick Virtual Cable in the installer.
+
 ## Install
 
 1. Download `WinHookAudio-Setup-<version>.exe` from [Releases](https://github.com/LogicCuteGuy/WinHookAudio/releases).

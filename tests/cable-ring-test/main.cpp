@@ -2,7 +2,8 @@
 // Offline and deterministic. A writer and a reader run on their own clocks and block sizes (a WaveRT
 // stream copies every millisecond; the Worker exchanges one block per tick). Checks: equal clocks
 // pass a bit-exact, gap-free copy after priming, in both directions; drifting clocks stay bounded
-// (trims or re-primes, never a growing queue); a full ring keeps the newest frames; an unprimed or
+// (trims or re-primes, never a growing queue); late Worker ticks: an underrun re-primes and the
+// adaptive latency grows a block per underrun up to its cap; a full ring keeps the newest frames; an unprimed or
 // idle ring gives silence without counting underruns; sides of different channel counts share a ring;
 // every sample format (16, 24, 24-in-32, 32 PCM, float) converts both ways.
 
@@ -26,7 +27,7 @@ void check(const char* name, bool ok) {
 constexpr double kRate = 48000.0;
 
 struct Result {
-  unsigned underruns = 0, drops = 0, maxFill = 0;
+  unsigned underruns = 0, drops = 0, maxFill = 0, extra = 0;
   bool continuous = true;  // after the first real frame, every frame read is the next one written
   long framesOut = 0;
 };
@@ -36,8 +37,17 @@ struct Result {
 constexpr long kWrap = 1L << 22;
 float FrameValue(long n) { return static_cast<float>(1 + n % kWrap); }
 
+// Stalls: every `every` s the Worker side (the writer if `writer`, else the reader) stops, then
+// catches up with its missed blocks back to back, like a late Worker tick. A stall lasts `seconds`,
+// or with `vary` a different length each time, spread over 0..seconds (golden-ratio steps).
+struct Stall {
+  double every = 0, seconds = 0;
+  bool writer = true;
+  bool vary = false;
+};
+
 Result Run(double seconds, unsigned writeBlock, double writePpm, unsigned readBlock, double readPpm,
-           unsigned prime, unsigned slack) {
+           unsigned prime, unsigned slack, unsigned grow = 0, unsigned maxPrime = 0, Stall stall = {}) {
   WHACableRing ring;
   Result r;
   std::vector<float> buf(2 * (writeBlock > readBlock ? writeBlock : readBlock));
@@ -47,8 +57,20 @@ Result Run(double seconds, unsigned writeBlock, double writePpm, unsigned readBl
   long written = 0;
   float expect = 0;  // next frame number expected (0: not started)
   unsigned lastUnderruns = 0, lastDrops = 0;
+  double nextStall = stall.every, stallUntil = 0;
+  int stalls = 0;
+  // When the stalled side's next block is due during a stall, it runs at the stall's end.
+  auto due = [&](double t, bool isWriter) {
+    if (stall.every <= 0 || isWriter != stall.writer) return t;
+    if (t >= nextStall) {
+      const double spread = stall.vary ? std::fmod(++stalls * 0.6180339887, 1.0) : 1.0;
+      stallUntil = nextStall + stall.seconds * spread;
+      nextStall += stall.every;
+    }
+    return t < stallUntil ? stallUntil : t;
+  };
   while (tw < seconds || tr < seconds) {
-    if (tw <= tr) {
+    if (due(tw, true) <= due(tr, false)) {
       for (unsigned i = 0; i < writeBlock; ++i) {
         buf[2 * i] = FrameValue(written + i);
         buf[2 * i + 1] = -FrameValue(written + i);
@@ -58,7 +80,7 @@ Result Run(double seconds, unsigned writeBlock, double writePpm, unsigned readBl
       if (ring.fill() > r.maxFill) r.maxFill = ring.fill();
       tw += writeStep;
     } else {
-      ring.read(buf.data(), readBlock, 2, prime, slack);
+      ring.read(buf.data(), readBlock, 2, prime, slack, grow, maxPrime);
       const bool glitch = ring.underruns() != lastUnderruns || ring.drops() != lastDrops;
       lastUnderruns = ring.underruns();
       lastDrops = ring.drops();
@@ -75,11 +97,13 @@ Result Run(double seconds, unsigned writeBlock, double writePpm, unsigned readBl
   }
   r.underruns = ring.underruns();
   r.drops = ring.drops();
+  r.extra = ring.extra();
   return r;
 }
 
 void Report(const char* name, const Result& r) {
-  std::printf("%s: underruns %u, drops %u, max fill %u\n", name, r.underruns, r.drops, r.maxFill);
+  std::printf("%s: underruns %u, drops %u, max fill %u, extra %u\n", name, r.underruns, r.drops, r.maxFill,
+              r.extra);
 }
 
 }  // namespace
@@ -140,6 +164,79 @@ int main() {
     check("null write queues silence", ring.fill() == WHACableRing::kFrames);
     ring.clear();
     check("clear empties and un-primes", ring.fill() == 0 && !ring.primed());
+  }
+  {
+    // The same 8 ms stall every 2 s: one underrun, then the queue holds the lost time (the reader
+    // waited for prime again), with or without adaptive latency.
+    const Result r = Run(60, 256, 0, 48, 0, 512, 1024, 0, 0, Stall{2.0, 0.008, true});
+    Report("recording side, Worker 8 ms late every 2 s, fixed prime", r);
+    check("a repeated equal stall underruns once", r.underruns == 1);
+  }
+  {
+    // Stalls of 0..12 ms, a different length each time (a VM, a busy PC): the fixed prime underruns
+    // at every new longest stall; the adaptive one adds a block each time and stops underrunning.
+    const Stall varied{2.0, 0.012, true, true};
+    const Result fixed = Run(120, 256, 0, 48, 0, 512, 1024, 0, 0, varied);
+    Report("recording side, Worker 0-12 ms late every 2 s, fixed prime", fixed);
+    const Result adaptive = Run(120, 256, 0, 48, 0, 512, 1024, 256, 2400, varied);
+    Report("recording side, Worker 0-12 ms late every 2 s, adaptive", adaptive);
+    check("adaptive: fewer underruns than fixed", adaptive.underruns < fixed.underruns);
+    check("adaptive: at most 2 underruns", adaptive.underruns <= 2);
+    check("adaptive: grew 1-2 blocks", adaptive.extra == 256 || adaptive.extra == 512);
+    check("adaptive: in order between re-primes", adaptive.continuous);
+  }
+  {
+    // The Worker reading the playback side, 8 ms late every 2 s.
+    const Result r = Run(60, 48, 0, 256, 0, 512, 1024, 256, 2400, Stall{2.0, 0.008, false});
+    Report("playback side, Worker 8 ms late every 2 s, adaptive", r);
+    check("at most 2 underruns", r.underruns <= 2);
+    check("in order between re-primes", r.continuous);
+  }
+  {
+    // The Worker reading the playback side 25 ms late every 2 s (a VM hiccup): the queue piles up
+    // while it is away and drains when it catches up with its missed blocks. That pile-up is not
+    // clock drift: nothing may be trimmed (a trim there drops frames and then underruns).
+    const Result r = Run(60, 48, 0, 256, 0, 512, 1024, 256, 2400, Stall{2.0, 0.025, false});
+    Report("playback side, Worker 25 ms late every 2 s, adaptive", r);
+    check("no frames dropped for a late Worker", r.drops == 0);
+    check("at most 2 underruns", r.underruns <= 2);
+    check("in order", r.continuous);
+  }
+  {
+    // The Worker writing the recording side 25 ms late every 2 s: its catch-up burst is not trimmed.
+    const Result r = Run(60, 256, 0, 48, 0, 512, 1024, 256, 2400, Stall{2.0, 0.025, true});
+    Report("recording side, Worker 25 ms late every 2 s, adaptive", r);
+    check("no frames dropped for a late Worker", r.drops == 0);
+    check("at most 3 underruns", r.underruns <= 3);
+  }
+  {
+    // 100 ms stalls: the latency grows to its cap and stops there.
+    const Result r = Run(60, 256, 0, 48, 0, 512, 1024, 256, 2400, Stall{2.0, 0.100, true});
+    Report("recording side, Worker 100 ms late every 2 s, adaptive", r);
+    check("extra stops at the cap (prime + extra <= 2400)", 512 + r.extra <= 2400 && r.extra >= 256 * 6);
+  }
+  {
+    WHACableRing ring;
+    std::vector<float> out(2 * 256);
+    ring.read(out.data(), 256, 2, 512, 1024, 256, 2400);  // not primed yet: silence, no underrun
+    ring.write(nullptr, 512, 2);
+    ring.read(out.data(), 256, 2, 512, 1024, 256, 2400);
+    ring.read(out.data(), 256, 2, 512, 1024, 256, 2400);
+    ring.read(out.data(), 256, 2, 512, 1024, 256, 2400);  // empty: underrun, grows
+    const bool grew = ring.extra() == 256;
+    ring.resetExtra();
+    check("an underrun grows by one block; resetExtra goes back to 0", grew && ring.extra() == 0);
+  }
+  {
+    // Windows played into the cable while no Worker read: the ring is full of stale frames. The first
+    // read starts from the newest `prime` frames at once (not 85 ms later, not with 170 ms latency).
+    WHACableRing ring;
+    std::vector<float> in(2 * WHACableRing::kFrames), out(2 * 256);
+    for (unsigned i = 0; i < WHACableRing::kFrames; ++i) in[2 * i] = in[2 * i + 1] = static_cast<float>(i);
+    ring.write(in.data(), WHACableRing::kFrames, 2);
+    ring.read(out.data(), 256, 2, 512, 1024);
+    check("a stale backlog starts from the newest prime frames",
+          out[0] == static_cast<float>(WHACableRing::kFrames - 512) && ring.fill() == 256);
   }
   {
     // Sample conversion (the driver's integer streams): round trips within one step, clipping at full scale.
