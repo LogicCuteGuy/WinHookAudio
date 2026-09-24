@@ -1,0 +1,4 @@
+#define WHA_FILE_DESCRIPTION "WinHookAudio Master ASIO driver"
+#define WHA_ORIGINAL_FILENAME "WinHookAudioMasterASIO64.dll"
+#define WHA_FILE_TYPE VFT_DLL
+#include "WHAVersionInfo.rc"

@@ -37,7 +37,7 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, voi
 }
 extern "C" HRESULT __stdcall DllCanUnloadNow() { return S_FALSE; }
 static const AsioRegistration kRegistrations[] = {
-    {&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master (512)"},
+    {&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master"},
 };
 // regsvr32 (elevated) WinHookAudioMasterASIO64.dll
 extern "C" HRESULT __stdcall DllRegisterServer() { return RegisterAsioDrivers(g_hModule, kRegistrations, 1); }

@@ -40,6 +40,8 @@ Implement the native C++/Win32 two-row grid with arbitrary channel maps and hori
 
 Acceptance: DAW opens the panel; closing the panel preserves audio; saving/reloading reproduces all channel assignments; unsupported choices are rejected before activation; device reorder/unplug does not reroute channels; stop/apply/restart updates the DAW correctly. Complete driver package/signing tests and selected DAW compatibility tests before calling the environment usable.
 
+Deployment packages (ADR 0013): `installer/WinHookAudio.iss` + `winhookaudio-devsetup` build locally with the test-signed driver (`README.md`, no CI); the Microsoft-signed driver (attestation, EV certificate) and SignPath signing of the user-mode files are still to do (`docs/signing.md`).
+
 ## Critical failure cases to preserve
 
 - “All devices” means all discovered compatible/available endpoints, not guaranteed simultaneous use of every driver or occupied pin.

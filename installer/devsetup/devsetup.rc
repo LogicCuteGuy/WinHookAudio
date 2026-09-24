@@ -1,0 +1,4 @@
+#define WHA_FILE_DESCRIPTION "WinHookAudio Virtual Cable device setup"
+#define WHA_ORIGINAL_FILENAME "winhookaudio-devsetup.exe"
+#define WHA_FILE_TYPE VFT_APP
+#include "WHAVersionInfo.rc"

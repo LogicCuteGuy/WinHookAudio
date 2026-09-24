@@ -1,7 +1,7 @@
 # ASIO SDK 2.3.3 vendoring under third_party/asio
 
 Date: 2026-09-15
-Status: accepted
+Status: accepted (release builds: see 0013, they use common/WHAAsio.h, not the SDK)
 
 ## Context
 Master Driver streaming needs `IASIO` (`DllGetClassObject`, `getChannels`, `getChannelInfo`, `bufferSwitch`, `controlPanel`, `hostCallback(ASIOResetRequest)`). `docs/implementation-plan.md:9` says pin SDK version and licensing before incorporating. Repo has no `asio.h`/`iasiodrv.h` — only `src/probe/asio_registry.cpp` registry enumeration. Datasheet FINAL v10 lists `ASIO SDK 2.3.3` as dependency. `DESKTOP-R1VU4L4` has Bitwig as Master host but tracer also uses SDK `host/sample` for offline gate without DAW.

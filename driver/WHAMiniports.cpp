@@ -618,7 +618,8 @@ void WHAWaveStream::UpdateLocked() {
     framesDone_ = target - bufferFrames_;
     pending = bufferFrames_;
   }
-  const unsigned prime = CablePrime(*cable_), slack = CableSlack(*cable_);
+  const unsigned prime = CablePrime(*cable_), slack = CableSlack(*cable_), grow = CableGrow(*cable_),
+                 maxPrime = CableMaxPrime(*cable_);
   const float* gain = (capture_ ? cable_->recordLevel : cable_->playLevel).gain;
   const ULONG ch = channels_;
   bool unity = true;
@@ -630,14 +631,14 @@ void WHAWaveStream::UpdateLocked() {
     BYTE* frames = buffer_ + ULONGLONG(offset) * frameBytes_;
     if (kind_ == WHASampleKind::Float32 && unity) {  // bit-exact, straight between buffer and ring
       if (capture_)
-        cable_->record.read(reinterpret_cast<float*>(frames), chunk, ch, prime, slack);
+        cable_->record.read(reinterpret_cast<float*>(frames), chunk, ch, prime, slack, grow, maxPrime);
       else
         cable_->play.write(reinterpret_cast<const float*>(frames), chunk, ch);
     } else {
       for (ULONG done = 0; done < chunk;) {
         const ULONG n = chunk - done < kScratchFrames ? chunk - done : kScratchFrames;
         BYTE* at = frames + ULONGLONG(done) * frameBytes_;
-        if (capture_) cable_->record.read(scratch_, n, ch, prime, slack);
+        if (capture_) cable_->record.read(scratch_, n, ch, prime, slack, grow, maxPrime);
         else SamplesToFloat(at, scratch_, n * ch, kind_);
         if (!unity)
           for (ULONG i = 0; i < n; ++i)

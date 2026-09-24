@@ -1,0 +1,4 @@
+#define WHA_FILE_DESCRIPTION "WinHookAudio Virtual Cable driver"
+#define WHA_ORIGINAL_FILENAME "WinHookAudio.sys"
+#define WHA_FILE_TYPE VFT_DRV
+#include "WHAVersionInfo.rc"

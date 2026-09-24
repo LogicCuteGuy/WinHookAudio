@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
   check("Master DLL exports DllGetClassObject -> IASIO", master.asio != nullptr);
   if (!master.asio) return 1;
   gMaster = master.asio;
-  const AsioRegistration masterReg[] = {{&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master (512)"}};
+  const AsioRegistration masterReg[] = {{&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master"}};
   RegistrationChecks("Master", master.dll, masterReg, 1);
   IASIO* m = master.asio;
   check("Master init -> ASIOTrue", m->init(GetDesktopWindow()) == ASIOTrue);

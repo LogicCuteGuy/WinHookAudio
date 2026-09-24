@@ -21,9 +21,9 @@ WinHookAudio.sys=1
 DefaultDestDir=13
 
 [Manufacturer]
-%ProviderName%=WHA,NTamd64
+%ProviderName%=WHA,NTamd64.10.0...16299
 
-[WHA.NTamd64]
+[WHA.NTamd64.10.0...16299]
 %WHA.DeviceDesc%=WHA.Device,Root\WinHookAudio
 
 [WHA.Device.NT]
@@ -388,7 +388,7 @@ ErrorControl=1
 ServiceBinary=%13%\WinHookAudio.sys
 
 [Strings]
-ProviderName="WinHookAudio"
+ProviderName="LogicCuteGuy"
 DiskName="WinHookAudio Driver Disk"
 WHA.DeviceDesc="WinHookAudio Virtual Cable"
 WHA.ServiceDesc="WinHookAudio Virtual Cable"

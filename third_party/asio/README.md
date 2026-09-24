@@ -7,7 +7,7 @@ Steinberg ASIO SDK 2.3.4 is used by `asio-master/` and `asio-bridge/` (the IASIO
 Since 2.3.4 the SDK is dual-licensed: the proprietary Steinberg ASIO License **or** GPLv3
 (`LICENSE.txt`). Building locally works under either. **Before distributing the driver, choose one:**
 GPLv3 makes the whole driver GPLv3; the proprietary license needs a signed Steinberg agreement
-(www.steinberg.net/en/company/developers.html). ADR 0007 assumed the proprietary license.
+(www.steinberg.net/en/company/developers.html). ADR 0007 assumed the proprietary license; since ADR 0013, release builds leave the SDK out (common/WHAAsio.h).
 
 ## Fetch
 

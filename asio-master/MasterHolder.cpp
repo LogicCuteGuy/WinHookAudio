@@ -1,4 +1,5 @@
 #include "MasterHolder.h"
+#include "CableEndpointSync.h"
 #include "KsAudio.h"
 #include "KsCapture.h"
 #include "HwOutputFifo.h"
@@ -234,8 +235,21 @@ void MasterHolder::openCables() {
   cableCount_ = static_cast<int>(probe.cables < 8 ? probe.cables : 8);
   cableError_ = 0;
   cableCountPub_ = cableCount_;
+  for (CableStat& st : cableStat_) st.rate = 0;  // no accepted format until this run's first exchange
+  // Windows keeps an endpoint's device format: have the cable endpoints follow what the driver accepts.
+  endpointSync_ = new CableEndpointSync([this](int c, uint32_t& rate, uint32_t& channels, uint32_t& format) {
+    if (c < 0 || c >= cableCountPub_.load()) return false;
+    const CableStat& st = cableStat_[c];
+    rate = st.rate.load();
+    channels = st.channels.load();
+    format = st.format.load();
+    return rate != 0;
+  });
+  endpointSync_->start();
 }
 void MasterHolder::closeCables() {
+  delete endpointSync_;  // joins its thread
+  endpointSync_ = nullptr;
   cableCountPub_ = 0;
   cableCount_ = 0;
   if (cableDevice_ != INVALID_HANDLE_VALUE) CloseHandle(cableDevice_);
@@ -262,6 +276,7 @@ bool MasterHolder::exchangeCable(int cable, uint32_t frames, bool hasRecord, uin
     st.errors.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
+  const bool formatChanged = st.rate.load() != h->rate || st.channels.load() != h->channels || st.format.load() != h->format;
   cableSent_[cable] = CableFormatSent{h->rate, h->channels, h->format};
   st.rate = h->rate;
   st.channels = h->channels;
@@ -274,6 +289,7 @@ bool MasterHolder::exchangeCable(int cable, uint32_t frames, bool hasRecord, uin
   st.playDrops = h->playDrops;
   st.recordUnderruns = h->recordUnderruns;
   st.recordDrops = h->recordDrops;
+  if (formatChanged && endpointSync_) endpointSync_->wake();  // after st.* hold the new format
   return true;
 }
 bool MasterHolder::cableStatus(int c, WHACableExchange& reply, uint64_t& exchanges, uint64_t& errors) const {
@@ -328,78 +344,62 @@ void MasterHolder::doTick() {
       }
     }
   }
-  // Shared Bridge sum: stack-allocated sum, frames from asioBuffer, toggle mixedActive
+  // Shared Bridge: numbered blocks (see WHABridgeShared). This tick is block t of each Bridge: the
+  // Bridge's Master OUT slots go to its clients as block t; its Master IN slots get the clients'
+  // block t - delay, summed (tanh), silence from a client that has not produced it yet (counted late).
   for (int bi = 0; bi < 4; ++bi) {
     auto* b = bridges_[bi];
     if (!b) continue;
     int frames = static_cast<int>(table_->general.asioBuffer);
     if (frames > static_cast<int>(kBridgeFrames)) frames = static_cast<int>(kBridgeFrames);
     if (frames <= 0) frames = 128;
-    // Stack sum for max 64*128 frames (avoid heap per tick)
-    float sum[64 * 128] = {};
-    // For larger frames, use heap fallback (not on audio path in 09 offline)
-    float* sumPtr = sum;
-    std::unique_ptr<float[]> heapSum;
-    if (frames > 128) {
-      heapSum = std::make_unique<float[]>(64 * frames);
-      std::memset(heapSum.get(), 0, 64 * frames * sizeof(float));
-      sumPtr = heapSum.get();
-    }
-    int nReady = 0;
-    for (int ci = 0; ci < 4; ++ci) {
-      if (b->ready[ci]) {
-        int active = b->activeBuf[ci] ? 1 : 0;
-        for (int ch = 0; ch < 64; ++ch) {
-          for (int f = 0; f < frames; ++f) {
-            sumPtr[ch * frames + f] += b->clientIn[ci][active][ch][f];
-          }
-        }
-        ++nReady;
-      }
-    }
-    if (nReady > 0) {
-      int nextActive = b->mixedActive ? 0 : 1;
-      for (int ch = 0; ch < 64; ++ch) {
-        for (int f = 0; f < frames; ++f) {
-          float s = sumPtr[ch * frames + f];
-          b->mixedIn[nextActive][ch][f] = std::tanh(s);
-        }
-      }
-      b->mixedActive = nextActive;
-      for (int ci = 0; ci < 4; ++ci) b->ready[ci] = 0;
-    } else {
-      for (int ch = 0; ch < 64; ++ch) for (int f = 0; f < frames; ++f) b->mixedIn[b->mixedActive][ch][f] = 0;
-    }
-    // Each BRIDGE(bi) slot picks its channel (BridgeChannelOf): a Master IN slot <- the clients' summed
-    // output on that channel; a Master OUT slot -> that input of every client (broadcast, summed when
-    // two OUT slots pick one channel). A channel no OUT slot feeds any more is cleared once.
+    const int64_t t = b->masterBlocks;
     const WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + bi);
-    for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
-      const int ch = table_->masterIn[ii].type == want ? BridgeChannelOf(table_->masterIn[ii]) : -1;
-      if (ch >= 0) std::memcpy(masterAudio_ + (512 + ii) * 4096, b->mixedIn[b->mixedActive][ch], frames * sizeof(float));
-    }
+    // Master OUT -> block t for every client. Each BRIDGE(bi) OUT slot picks its channel
+    // (BridgeChannelOf); two slots on one channel are summed. A channel of this ring slot that was fed
+    // when the slot was last used, and is not now, is cleared.
+    const uint32_t slot = static_cast<uint32_t>(t % kBridgeRing);
+    float (*to)[kBridgeFrames] = b->toClients[slot];
     uint64_t fed = 0;
     for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
       const int ch = table_->masterOut[oi].type == want ? BridgeChannelOf(table_->masterOut[oi]) : -1;
       if (ch < 0) continue;
       const float* src = masterAudio_ + oi * 4096;
-      const bool first = (fed & (1ull << ch)) == 0;
-      fed |= 1ull << ch;
-      for (int ci = 0; ci < static_cast<int>(kBridgeClients); ++ci) {
-        float* dst = b->clientOut[ci][0][ch];
-        if (first) std::memcpy(dst, src, frames * sizeof(float));
-        else for (int f = 0; f < frames; ++f) dst[f] += src[f];
+      if (fed & (1ull << ch)) {
+        for (int f = 0; f < frames; ++f) to[ch][f] += src[f];
+      } else {
+        std::memcpy(to[ch], src, frames * sizeof(float));
+        fed |= 1ull << ch;
       }
     }
-    for (uint64_t stale = bridgeFed_[bi] & ~fed; stale; stale &= stale - 1) {
+    for (uint64_t stale = bridgeFed_[bi][slot] & ~fed; stale; stale &= stale - 1) {
       unsigned long ch = 0;
       _BitScanForward64(&ch, stale);
-      for (int ci = 0; ci < static_cast<int>(kBridgeClients); ++ci)
-        std::memset(b->clientOut[ci][0][ch], 0, kBridgeFrames * sizeof(float));
+      std::memset(to[ch], 0, kBridgeFrames * sizeof(float));
     }
-    bridgeFed_[bi] = fed;
-    // The Master Clock drives every Bridge client each tick (after clientOut is fresh), whether or not
-    // a client was ready: a client that missed one tick must not wait for its fallback timeout.
+    bridgeFed_[bi][slot] = fed;
+    // Clients' block t - delay -> Master IN slots.
+    const int64_t mixBlock = t - BridgeDelayBlocks(table_->general.bridgeBuffer[bi], table_->general.asioBuffer);
+    bool have[kBridgeClients] = {};
+    for (uint32_t ci = 0; ci < kBridgeClients; ++ci) {
+      const int64_t produced = b->clientBlocks[ci];
+      if (b->owner[ci] == 0 || produced < 0 || mixBlock < 0) continue;  // no app, not running, or too early
+      have[ci] = produced > mixBlock;
+      if (!have[ci]) b->clientLate[ci] = b->clientLate[ci] + 1;
+    }
+    const uint32_t mixSlot = static_cast<uint32_t>((mixBlock < 0 ? 0 : mixBlock) % kBridgeRing);
+    for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+      const int ch = table_->masterIn[ii].type == want ? BridgeChannelOf(table_->masterIn[ii]) : -1;
+      if (ch < 0) continue;
+      float* dst = masterAudio_ + (512 + ii) * 4096;
+      std::memset(dst, 0, frames * sizeof(float));
+      for (uint32_t ci = 0; ci < kBridgeClients; ++ci)
+        if (have[ci])
+          for (int f = 0; f < frames; ++f) dst[f] += b->fromClient[ci][mixSlot][ch][f];
+      for (int f = 0; f < frames; ++f) dst[f] = std::tanh(dst[f]);
+    }
+    // Publish block t (after its audio), then wake every client.
+    InterlockedExchange64(&b->masterBlocks, t + 1);
     for (int ci = 0; ci < 4; ++ci)
       if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
   }

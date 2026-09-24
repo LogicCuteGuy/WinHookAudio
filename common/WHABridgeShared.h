@@ -15,25 +15,42 @@ namespace wha {
 constexpr uint32_t kBridgeClients = 4;
 constexpr uint32_t kBridgeChannels = 64;
 constexpr uint32_t kBridgeFrames = 1024;  // = largest valid ASIO/Bridge buffer (IsValidMasterClock)
-constexpr uint32_t kBridgeBuffers = 2;
+constexpr uint32_t kBridgeRing = 6;       // blocks kept each way; the delay is at most kBridgeRing - 1
 #define WHA_BRIDGE_CLIENTS wha::kBridgeClients
 #define WHA_BRIDGE_CHANNELS wha::kBridgeChannels
 #define WHA_BRIDGE_FRAMES wha::kBridgeFrames
-#define WHA_BRIDGE_BUFFERS wha::kBridgeBuffers
 
+// Blocks are numbered. Master block t (one Master Clock tick): the Worker writes the Bridge's Master
+// OUT slots into toClients[t % kBridgeRing], then sets masterBlocks = t + 1 and wakes the clients. A
+// client runs one period per block, in order, catching up after bunched ticks: block m's input from
+// toClients[m % ring], its output into fromClient[its place][m % ring], then clientBlocks = m + 1. At
+// block t the Worker mixes each client's block t - delay (BridgeDelayBlocks): a client that is late by
+// less than the delay loses nothing, instead of a lost or repeated block per late tick.
 #pragma pack(push, 1)
 struct WHABridgeShared {
   // Client place i: the process ID of the app holding it, 0 = free. Claimed with a compare-exchange on
   // init, given back when that app closes the driver; a place whose process has exited is taken back.
   volatile int32_t owner[WHA_BRIDGE_CLIENTS] = {};
-  volatile int32_t ready[WHA_BRIDGE_CLIENTS] = {};
-  volatile int32_t activeBuf[WHA_BRIDGE_CLIENTS] = {};
-  float clientIn[WHA_BRIDGE_CLIENTS][WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
-  float clientOut[WHA_BRIDGE_CLIENTS][WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
-  float mixedIn[WHA_BRIDGE_BUFFERS][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
-  volatile int32_t mixedActive = 0;
+  // 64-bit counters at 8-byte offsets (16 = after owner[]): whole reads and writes on x64.
+  volatile int64_t masterBlocks = 0;                     // blocks the Worker has published
+  volatile int64_t clientBlocks[WHA_BRIDGE_CLIENTS] = {};  // blocks a client has produced; -1 = not running
+  volatile int64_t clientLate[WHA_BRIDGE_CLIENTS] = {};    // blocks mixed as silence: the client was late
+  volatile int64_t clientSkipped[WHA_BRIDGE_CLIENTS] = {}; // blocks a client skipped after falling a ring behind
+  float fromClient[WHA_BRIDGE_CLIENTS][kBridgeRing][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
+  float toClients[kBridgeRing][WHA_BRIDGE_CHANNELS][WHA_BRIDGE_FRAMES] = {};
 };
 #pragma pack(pop)
+static_assert(offsetof(WHABridgeShared, masterBlocks) % 8 == 0 && offsetof(WHABridgeShared, clientBlocks) % 8 == 0,
+              "Bridge block counters must be 8-byte aligned");
+
+// How many blocks a Bridge client's output trails the Master (its GENERAL Bridge buffer on top of one
+// block): 1 + ceil(bridgeBuffer / asioBuffer), 2..kBridgeRing - 1. Also what the client reports as
+// output latency, in blocks.
+constexpr int BridgeDelayBlocks(uint32_t bridgeBuffer, uint32_t asioBuffer) {
+  const uint32_t extra = asioBuffer ? (bridgeBuffer + asioBuffer - 1) / asioBuffer : 1;
+  const uint32_t delay = 1 + extra;
+  return delay < 2 ? 2 : delay > kBridgeRing - 1 ? static_cast<int>(kBridgeRing - 1) : static_cast<int>(delay);
+}
 
 // ---- Offline validation (no threads, no SHM) ----
 
@@ -59,7 +76,7 @@ inline bool TryAddBridgeClient(WHABridgeShared& b, int32_t ownerPid, int32_t* ou
 }
 inline void RemoveBridgeClient(WHABridgeShared& b, int32_t clientId) {
   if (clientId < 0 || clientId >= static_cast<int32_t>(kBridgeClients)) return;
-  b.ready[clientId] = 0;
+  b.clientBlocks[clientId] = -1;
   b.owner[clientId] = 0;
 }
 
@@ -87,9 +104,6 @@ inline int FindBridgeSlot(const WHASlot* slots, uint32_t count, WHASlotType type
   return -1;
 }
 
-constexpr bool IsValidBridgeReady(int32_t v) { return v == 0 || v == 1; }
-constexpr bool IsValidBridgeActiveBuf(int32_t v) { return v == 0 || v == 1; }
-
 // Soft-clip sum preserves loudness: tanh(sum) not average.
 // Two DAWs at -6dB (0.5) => sum 1.0 => tanh(1.0)=0.761 not 0.5 average.
 inline float SoftClipMix(float sum) { return std::tanh(sum); }
@@ -114,11 +128,13 @@ inline float MixBridgeClients(const float* samples, const int32_t* ready, int nC
 static_assert(WHA_BRIDGE_CLIENTS == 4, "Four clients per Bridge");
 static_assert(WHA_BRIDGE_CHANNELS == 64, "64 channels per Bridge");
 static_assert(WHA_BRIDGE_FRAMES == 1024, "1024 frames per Bridge buffer");
-static_assert(sizeof(WHABridgeShared::clientIn) == WHA_BRIDGE_CLIENTS * WHA_BRIDGE_BUFFERS * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
-              "clientIn size");
-static_assert(sizeof(WHABridgeShared::clientOut) == WHA_BRIDGE_CLIENTS * WHA_BRIDGE_BUFFERS * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
-              "clientOut size");
-static_assert(sizeof(WHABridgeShared) > 4 * 1024 * 1024, "Bridge shared ~4.5MB");
+static_assert(sizeof(WHABridgeShared::fromClient) == WHA_BRIDGE_CLIENTS * kBridgeRing * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
+              "fromClient size");
+static_assert(sizeof(WHABridgeShared::toClients) == kBridgeRing * WHA_BRIDGE_CHANNELS * WHA_BRIDGE_FRAMES * sizeof(float),
+              "toClients size");
+static_assert(sizeof(WHABridgeShared) > 7 * 1024 * 1024, "Bridge shared ~7.9MB (fits its 8MB view)");
+static_assert(BridgeDelayBlocks(128, 128) == 2 && BridgeDelayBlocks(256, 128) == 3 && BridgeDelayBlocks(1024, 64) == 5,
+              "Bridge delay: 1 + buffer in blocks, 2..kBridgeRing - 1");
 static_assert(kBridgeClients == 4, "kBridgeClients 4");
 static_assert(kBridgeChannels == 64, "kBridgeChannels 64");
 static_assert(kBridgeFrames == 1024, "kBridgeFrames 1024");

@@ -1,0 +1,36 @@
+// WHAVersionInfo.rc - the VERSIONINFO every WinHookAudio binary carries (Properties > Details:
+// company, copyright, product, version). Each binary's own .rc defines WHA_FILE_DESCRIPTION,
+// WHA_ORIGINAL_FILENAME and WHA_FILE_TYPE (VFT_DLL / VFT_APP / VFT_DRV), then includes this file.
+
+#include <winver.h>
+#include "WHAVersion.h"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION WHA_VERSION_MAJOR, WHA_VERSION_MINOR, WHA_VERSION_PATCH, 0
+PRODUCTVERSION WHA_VERSION_MAJOR, WHA_VERSION_MINOR, WHA_VERSION_PATCH, 0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE WHA_FILE_TYPE
+FILESUBTYPE 0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", WHA_AUTHOR
+      VALUE "FileDescription", WHA_FILE_DESCRIPTION
+      VALUE "FileVersion", WHA_VERSION_STRING
+      VALUE "InternalName", WHA_ORIGINAL_FILENAME
+      VALUE "LegalCopyright", WHA_COPYRIGHT " - " WHA_LICENSE
+      VALUE "OriginalFilename", WHA_ORIGINAL_FILENAME
+      VALUE "ProductName", WHA_PRODUCT_NAME
+      VALUE "ProductVersion", WHA_VERSION_STRING
+      VALUE "Comments", "Made by " WHA_AUTHOR " - " WHA_URL
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

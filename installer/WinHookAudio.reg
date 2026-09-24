@@ -2,7 +2,7 @@ Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Master]
 "CLSID"="{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}"
-"Description"="WinHookAudio Master (512)"
+"Description"="WinHookAudio Master"
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\WinHookAudio Bridge 1]
 "CLSID"="{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}"

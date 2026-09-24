@@ -1,36 +1,98 @@
-; WinHookAudio Installer — Inno Setup 6.x
-; 5 CLSIDs + WinHookAudio.sys + WinHookAudio.inf/.cat + Firewall 6980-6981
+; WinHookAudio Installer - Inno Setup 6.3+ (build with installer\build-installer.ps1)
+; ASIO: 5 CLSIDs (Master + Bridge 1-4). Virtual Cable: WinHookAudio.sys, chosen on the Components page:
+;   cable\signed  Microsoft-signed driver package (normal Windows), only when installer\driver-signed\ has one
+;   cable\test    test-signed package from driver\build.cmd: trusts the test certificate, turns on Test Mode
+; Firewall: UDP 6980-6981 (WHAA network stream).
 
-#define MyAppName "WinHookAudio"
-#define MyAppVersion "1.0.0"
-#define MyAppPublisher "WinHookAudio"
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
+#ifndef BuildDir
+  #define BuildDir AddBackslash(SourcePath) + "..\build\Release"
+#endif
+#ifndef TestDriverDir
+  #define TestDriverDir AddBackslash(SourcePath) + "..\build\driver"
+#endif
+#ifndef SignedDriverDir
+  #define SignedDriverDir AddBackslash(SourcePath) + "driver-signed"
+#endif
+#ifndef OutputDir
+  #define OutputDir AddBackslash(SourcePath) + "..\build\installer"
+#endif
+#define HaveSignedDriver FileExists(SignedDriverDir + "\WinHookAudio.sys")
+#define HaveTestDriver FileExists(TestDriverDir + "\WinHookAudio.sys")
 
 [Setup]
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-DefaultDirName={pf}\WinHookAudio
+AppId=WinHookAudio
+AppName=WinHookAudio
+AppVersion={#AppVersion}
+AppPublisher=LogicCuteGuy
+AppCopyright=Copyright (c) 2026 LogicCuteGuy - MIT License
+AppPublisherURL=https://github.com/LogicCuteGuy/WinHookAudio
+AppSupportURL=https://github.com/LogicCuteGuy/WinHookAudio/issues
+DefaultDirName={autopf}\WinHookAudio
 DefaultGroupName=WinHookAudio
-OutputBaseFilename=WinHookAudio-Setup
-Compression=lzma
+DisableProgramGroupPage=yes
+LicenseFile=..\LICENSE
+OutputDir={#OutputDir}
+OutputBaseFilename=WinHookAudio-Setup-{#AppVersion}
+Compression=lzma2
 SolidCompression=yes
+WizardStyle=modern
 PrivilegesRequired=admin
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+UninstallDisplayName=WinHookAudio
+; Setup exe Properties > Details
+VersionInfoCompany=LogicCuteGuy
+VersionInfoCopyright=Copyright (c) 2026 LogicCuteGuy - MIT License
+VersionInfoDescription=WinHookAudio Setup (made by LogicCuteGuy)
+VersionInfoProductName=WinHookAudio
+VersionInfoTextVersion={#AppVersion}
+VersionInfoProductTextVersion={#AppVersion}
 
-[Tasks]
-Name: "testsigning"; Description: "Enable Windows test-signing (only for a test-signed Virtual Cable driver; needs reboot)"; Flags: unchecked
+[Types]
+Name: "full"; Description: "Full installation"
+Name: "custom"; Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "asio"; Description: "ASIO drivers: WinHookAudio Master + Bridge 1-4"; Types: full custom; Flags: fixed
+#if HaveSignedDriver || HaveTestDriver
+Name: "cable"; Description: "Virtual Cable driver (8 cables as Windows sound devices)"; Types: full
+#endif
+#if HaveSignedDriver
+Name: "cable\signed"; Description: "Signed driver (normal Windows)"; Types: full; Flags: exclusive
+#endif
+#if HaveTestDriver
+  #if HaveSignedDriver
+Name: "cable\test"; Description: "Not signed: test-signed driver, turns on Windows Test Mode (restart, Secure Boot off)"; Flags: exclusive
+  #else
+Name: "cable\test"; Description: "Not signed: test-signed driver, turns on Windows Test Mode (restart, Secure Boot off)"; Types: full; Flags: exclusive
+  #endif
+#endif
 
 [Files]
-Source: "..\build\Release\WinHookAudioMasterASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\Release\WinHookAudioBridgeASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion
-; Virtual Cable kernel driver (WDK): optional until WinHookAudio.sys is built and signed
-Source: "WinHookAudio.sys"; DestDir: "{app}\driver"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "WinHookAudio.inf"; DestDir: "{app}\driver"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "WinHookAudio.cat"; DestDir: "{app}\driver"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#BuildDir}\WinHookAudioMasterASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDir}\WinHookAudioBridgeASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDir}\winhookaudio-devsetup.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"
+#if HaveSignedDriver
+Source: "{#SignedDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
+Source: "{#SignedDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
+Source: "{#SignedDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
+#endif
+#if HaveTestDriver
+Source: "{#TestDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudioTest.cer"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
+#endif
 
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Master"; ValueType: string; ValueName: "CLSID"; ValueData: "{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Master"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Master (512)"
+Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Master"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Master"
 Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 1"; ValueType: string; ValueName: "CLSID"; ValueData: "{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 1"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Bridge 1"
 Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 2"; ValueType: string; ValueName: "CLSID"; ValueData: "{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}"; Flags: uninsdeletekey
@@ -58,16 +120,132 @@ Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E371
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 
 [Run]
-Filename: "pnputil"; Parameters: "/add-driver ""{app}\driver\WinHookAudio.inf"" /install"; Flags: runhidden; StatusMsg: "Installing WinHookAudio driver..."; Check: VirtualCableIncluded
-Filename: "bcdedit"; Parameters: "/set testsigning on"; Flags: runhidden; StatusMsg: "Enabling testsigning..."; Tasks: testsigning
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""WinHookAudio"" dir=in action=allow protocol=UDP localport=6980-6981"; Flags: runhidden; StatusMsg: "Configuring firewall..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""WinHookAudio"" dir=in action=allow protocol=UDP localport=6980-6981"; Flags: runhidden; StatusMsg: "Configuring firewall..."
 
 [UninstallRun]
-Filename: "pnputil"; Parameters: "/delete-driver WinHookAudio.inf /uninstall /force"; Flags: runhidden; Check: VirtualCableIncluded
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""WinHookAudio"""; Flags: runhidden
+Filename: "{app}\winhookaudio-devsetup.exe"; Parameters: "remove"; Flags: runhidden; RunOnceId: "RemoveCable"
+Filename: "{sys}\certutil.exe"; Parameters: "-delstore Root ""WinHookAudio Test"""; Flags: runhidden; RunOnceId: "UntrustRoot"
+Filename: "{sys}\certutil.exe"; Parameters: "-delstore TrustedPublisher ""WinHookAudio Test"""; Flags: runhidden; RunOnceId: "UntrustPublisher"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""WinHookAudio"""; Flags: runhidden; RunOnceId: "Firewall"
 
 [Code]
-function VirtualCableIncluded: Boolean;
+const
+  SetupKey = 'SOFTWARE\WinHookAudio\Setup';
+
+var
+  TestSigningWasOn: Boolean;   // before this setup ran
+  RestartNeeded: Boolean;
+
+function TestSigningOn: Boolean;
+var
+  Options: String;
 begin
-  Result := FileExists(ExpandConstant('{app}\driver\WinHookAudio.sys'));
+  Result := RegQueryStringValue(HKLM64, 'SYSTEM\CurrentControlSet\Control', 'SystemStartOptions', Options) and
+            (Pos('TESTSIGNING', Uppercase(Options)) > 0);
+end;
+
+function SecureBootOn: Boolean;
+var
+  Value: Cardinal;
+begin
+  Result := RegQueryDWordValue(HKLM64, 'SYSTEM\CurrentControlSet\Control\SecureBoot\State',
+                               'UEFISecureBootEnabled', Value) and (Value = 1);
+end;
+
+function InitializeSetup: Boolean;
+begin
+  TestSigningWasOn := TestSigningOn;
+  Result := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+#if HaveTestDriver
+  if (CurPageID = wpSelectComponents) and WizardIsComponentSelected('cable\test') and not TestSigningWasOn and
+     SecureBootOn then
+    Result := SuppressibleMsgBox('Secure Boot is on, so Windows cannot turn on Test Mode and the test-signed ' +
+      'Virtual Cable driver will not load.' + #13#10#13#10 +
+      'Turn Secure Boot off in the PC''s UEFI settings first, or choose another option.' + #13#10#13#10 +
+      'Continue anyway?', mbConfirmation, MB_YESNO, IDNO) = IDYES;
+#endif
+end;
+
+// Runs a program and reports a failure; returns its exit code (-1 = could not start).
+function RunStep(const What, FileName, Params: String): Integer;
+begin
+  WizardForm.StatusLabel.Caption := What;
+  if not Exec(FileName, Params, '', SW_HIDE, ewWaitUntilTerminated, Result) then
+    Result := -1;
+end;
+
+#if HaveSignedDriver || HaveTestDriver
+procedure InstallVirtualCable;
+var
+  Code: Integer;
+  Cer, Inf: String;
+begin
+  Cer := ExpandConstant('{app}\driver\WinHookAudioTest.cer');
+  Inf := ExpandConstant('{app}\driver\WinHookAudio.inf');
+#if HaveTestDriver
+  if WizardIsComponentSelected('cable\test') then begin
+    RunStep('Trusting the WinHookAudio test certificate...', ExpandConstant('{sys}\certutil.exe'),
+            '-f -addstore Root "' + Cer + '"');
+    RunStep('Trusting the WinHookAudio test certificate...', ExpandConstant('{sys}\certutil.exe'),
+            '-f -addstore TrustedPublisher "' + Cer + '"');
+    if not TestSigningWasOn then begin
+      Code := RunStep('Turning on Windows Test Mode...', ExpandConstant('{sys}\bcdedit.exe'), '/set testsigning on');
+      if Code = 0 then begin
+        RegWriteDWordValue(HKLM64, SetupKey, 'TestSigningTurnedOn', 1);
+        RestartNeeded := True;
+      end else
+        SuppressibleMsgBox('Could not turn on Windows Test Mode (bcdedit exit ' + IntToStr(Code) + '). ' +
+          'Secure Boot may be on. The Virtual Cable driver will not load until Test Mode is on.',
+          mbError, MB_OK, IDOK);
+    end;
+  end;
+#endif
+  Code := RunStep('Installing the Virtual Cable driver...', ExpandConstant('{app}\winhookaudio-devsetup.exe'),
+                  'install "' + Inf + '"');
+  if Code = 3010 then
+    RestartNeeded := True
+  else if Code <> 0 then
+    SuppressibleMsgBox('The Virtual Cable driver was not installed (winhookaudio-devsetup exit ' + IntToStr(Code) +
+      '). The ASIO drivers are installed.' + #13#10#13#10 +
+      'If Test Mode was just turned on, restart Windows, then run as administrator:' + #13#10 +
+      '"' + ExpandConstant('{app}') + '\winhookaudio-devsetup.exe" install "' + Inf + '"', mbError, MB_OK, IDOK);
+end;
+
+#endif
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+#if HaveSignedDriver || HaveTestDriver
+  if (CurStep = ssPostInstall) and WizardIsComponentSelected('cable') then
+    InstallVirtualCable;
+#endif
+end;
+
+function NeedRestart: Boolean;
+begin
+  Result := RestartNeeded;
+end;
+
+// Uninstall: turn Test Mode off again only when this setup turned it on.
+var
+  TurnTestSigningOff: Boolean;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Value: Cardinal;
+  Code: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+    TurnTestSigningOff := RegQueryDWordValue(HKLM64, SetupKey, 'TestSigningTurnedOn', Value) and (Value = 1);
+  if CurUninstallStep = usPostUninstall then begin
+    if TurnTestSigningOff then
+      Exec(ExpandConstant('{sys}\bcdedit.exe'), '/set testsigning off', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    RegDeleteKeyIncludingSubkeys(HKLM64, SetupKey);
+    RegDeleteKeyIfEmpty(HKLM64, 'SOFTWARE\WinHookAudio');
+  end;
 end;

@@ -277,9 +277,9 @@ bool CheckBridgeRegion() {
   wha::RemoveBridgeClient(*b, 1);  // an app closes: its place is free again
   if (wha::CountBridgeClients(*b) != 3) return false;
   if (!wha::TryAddBridgeClient(*b, 104, &id) || id != 1) return false;
-  if (!wha::IsValidBridgeReady(0) || !wha::IsValidBridgeReady(1)) return false;
-  if (wha::IsValidBridgeReady(2)) return false;
-  if (!wha::IsValidBridgeActiveBuf(0) || !wha::IsValidBridgeActiveBuf(1)) return false;
+  if (b->clientBlocks[1] != -1) return false;  // a freed place is not mixed
+  if (wha::BridgeDelayBlocks(128, 128) != 2 || wha::BridgeDelayBlocks(1024, 64) != static_cast<int>(wha::kBridgeRing) - 1)
+    return false;
   // Soft-clip preserves loudness: tanh(1.0)=0.761 not 0.5 average
   float samples[4] = {0.5f, 0.5f, 0.0f, 0.0f};
   int32_t ready[4] = {1, 1, 0, 0};
