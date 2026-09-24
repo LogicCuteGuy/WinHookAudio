@@ -27,6 +27,7 @@ AppId=WinHookAudio
 AppName=WinHookAudio
 AppVersion={#AppVersion}
 AppPublisher=LogicCuteGuy
+AppCopyright=Copyright (c) 2026 LogicCuteGuy - MIT License
 AppPublisherURL=https://github.com/LogicCuteGuy/WinHookAudio
 AppSupportURL=https://github.com/LogicCuteGuy/WinHookAudio/issues
 DefaultDirName={autopf}\WinHookAudio
@@ -43,6 +44,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 UninstallDisplayName=WinHookAudio
+; Setup exe Properties > Details
+VersionInfoCompany=LogicCuteGuy
+VersionInfoCopyright=Copyright (c) 2026 LogicCuteGuy - MIT License
+VersionInfoDescription=WinHookAudio Setup (made by LogicCuteGuy)
+VersionInfoProductName=WinHookAudio
+VersionInfoTextVersion={#AppVersion}
+VersionInfoProductTextVersion={#AppVersion}
 
 [Types]
 Name: "full"; Description: "Full installation"

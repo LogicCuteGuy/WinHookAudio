@@ -42,8 +42,10 @@ set CFLAGS=/nologo /c /kernel /GS /Gy /GR- /Zi /O2 /W4 /WX /Zp8 /std:c++17 /D_AM
  /DNTDDI_VERSION=0x0A000008 /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DPOOL_NX_OPTIN=1 /X ^
  /I"%KM%" /I"%KM%\crt" /I"%SHARED%" /Fd"%OBJ%\WinHookAudio.pdb"
 cl %CFLAGS% /Fo"%OBJ%\\" "%~dp0WHAAdapter.cpp" "%~dp0WHAMiniports.cpp" || exit /b 1
+rem Version info (Properties > Details: LogicCuteGuy, version, copyright): common\WHAVersionInfo.rc
+rc /nologo /i "%~dp0..\common" /fo "%OBJ%\WinHookAudio.res" "%~dp0WinHookAudio.rc" || exit /b 1
 link /nologo /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:GsDriverEntry /NODEFAULTLIB /OPT:REF /OPT:ICF /DEBUG ^
- /PDB:"%OUT%\WinHookAudio.pdb" /OUT:"%OUT%\WinHookAudio.sys" "%OBJ%\WHAAdapter.obj" "%OBJ%\WHAMiniports.obj" ^
+ /PDB:"%OUT%\WinHookAudio.pdb" /OUT:"%OUT%\WinHookAudio.sys" "%OBJ%\WHAAdapter.obj" "%OBJ%\WHAMiniports.obj" "%OBJ%\WinHookAudio.res" ^
  "%LIBKM%\ntoskrnl.lib" "%LIBKM%\hal.lib" "%LIBKM%\portcls.lib" "%LIBKM%\stdunk.lib" "%LIBKM%\ks.lib" ^
  "%LIBKM%\wdmsec.lib" "%LIBKM%\libcntpr.lib" "%LIBKM%\BufferOverflowFastFailK.lib" || exit /b 1
 

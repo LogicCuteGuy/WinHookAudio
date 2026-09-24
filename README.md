@@ -71,9 +71,14 @@ Code signing is in [docs/signing.md](docs/signing.md).
 - [Architecture](docs/architecture.md) and [implementation plan](docs/implementation-plan.md)
 - [Decisions (ADRs)](docs/adr/) and [domain words](CONTEXT.md)
 
+## Credits
+
+WinHookAudio is made by **[LogicCuteGuy](https://github.com/LogicCuteGuy)**: design, ASIO drivers,
+Virtual Cable driver, Control Panel, installer.
+
 ## License
 
-[MIT](LICENSE). Third-party parts are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE), Copyright (c) 2026 LogicCuteGuy. Third-party parts are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 
 ## Support the project

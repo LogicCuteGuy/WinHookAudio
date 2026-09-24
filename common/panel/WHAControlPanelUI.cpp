@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "WHASlotsFile.h"
+#include "WHAVersion.h"
 
 namespace wha {
 
@@ -738,7 +739,7 @@ bool CableDriverRunning(std::string* status) {
 // ABOUT + Save contract (13)
 AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   AboutInfo info;
-  info.version = "1.0.0";
+  info.version = WHA_VERSION_STRING;
   info.sysRunning = CableDriverRunning(&info.sysStatus);
   info.clsidCount = 5;
   info.configPath = ConfigDir() + "\\ (" + shm::kRoutesFile + ", " + shm::kSettingsFile + ")";

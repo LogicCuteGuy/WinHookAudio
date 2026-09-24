@@ -388,7 +388,7 @@ ErrorControl=1
 ServiceBinary=%13%\WinHookAudio.sys
 
 [Strings]
-ProviderName="WinHookAudio"
+ProviderName="LogicCuteGuy"
 DiskName="WinHookAudio Driver Disk"
 WHA.DeviceDesc="WinHookAudio Virtual Cable"
 WHA.ServiceDesc="WinHookAudio Virtual Cable"

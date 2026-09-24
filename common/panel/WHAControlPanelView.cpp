@@ -1,5 +1,6 @@
 #include "WHAControlPanelView.h"
 #include "virtual/WHACableFormat.h"
+#include "WHAVersion.h"
 
 #include <windows.h>
 
@@ -645,6 +646,10 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
 
 void DrawAbout(PanelModel& edit, const AboutInfo& info, PanelViewResult& result) {
   ImGui::Text("WinHookAudio %s", info.version.c_str());
+  ImGui::Text("Made by %s", WHA_AUTHOR);
+  ImGui::TextDisabled("%s - %s", WHA_COPYRIGHT, WHA_LICENSE);
+  ImGui::TextDisabled("%s", WHA_URL);
+  ImGui::Separator();
   ImGui::Text("WinHookAudio.sys: %s", info.sysStatus.c_str());
   ImGui::Text("ASIO CLSIDs: %d (Master + Bridge1..4)", info.clsidCount);
   ImGui::TextWrapped("Saved to: %s", info.configPath.c_str());

@@ -1,6 +1,7 @@
 # Third-party notices
 
-WinHookAudio's own code is under the [MIT License](LICENSE). The release binaries also contain
+WinHookAudio is made by LogicCuteGuy. Its own code is under the [MIT License](LICENSE),
+Copyright (c) 2026 LogicCuteGuy. The release binaries also contain
 the libraries below. Their source is not stored in this repository: `scripts/Fetch-ThirdParty.ps1`
 downloads the pinned versions into `third_party/` (ignored by git).
 

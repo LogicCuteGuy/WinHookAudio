@@ -1,0 +1,4 @@
+#define WHA_FILE_DESCRIPTION "WinHookAudio Bridge ASIO driver (Bridge 1-4)"
+#define WHA_ORIGINAL_FILENAME "WinHookAudioBridgeASIO64.dll"
+#define WHA_FILE_TYPE VFT_DLL
+#include "WHAVersionInfo.rc"
