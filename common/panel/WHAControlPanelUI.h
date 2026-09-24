@@ -158,6 +158,9 @@ bool AssignSource(PanelModel& model, bool isInput, uint32_t index, WHASlotType t
 bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* deviceId, int32_t side);
 // Whether AssignHw could use this device for that slot (listed, or room in the list).
 bool CanAssignHw(const PanelModel& model, bool isInput, uint32_t index, const char* deviceId);
+// A BRIDGE(n) slot on app channel `channel` (0 = Ch 1): INPUTS rows may share one; an OUTPUTS channel
+// is taken by one row.
+bool CanAssignBridge(const PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t channel);
 // What a slot carries, for the Source column: "Microphone · L", "Virtual Cable 2", "Rx3 · Ch1", "Bridge1".
 // hwDevices: HwDeviceNames of the slot's direction (nullptr: unknown).
 std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const* hwDevices);
@@ -166,6 +169,16 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const
 std::string VirtualCableLabel(const WHAGeneral& general, int cable);
 std::string NetworkStreamLabel(const WHANetworkStream& stream, bool isInput, int index);
 std::string BridgeLabel(int bridge, const WHABridgeShared* shared);
+
+// Bridge popup (read-only): each channel the app sees, and the Master row it is routed to. One line
+// per row (INPUTS rows may share a channel); a channel no row picks is one unrouted line.
+struct BridgeRoute {
+  int channel = 0;         // the app's channel, 0 = Ch 1
+  int masterSlot = -1;     // Master INPUTS (app outputs) or OUTPUTS (app inputs) row, -1 = not routed
+  std::string masterName;  // that row's name as the Master DAW sees it
+};
+// appOutputs: the app's outputs, summed into Master INPUTS; else its inputs, from Master OUTPUTS.
+std::vector<BridgeRoute> BridgeRoutes(const WHASlotTable& table, int bridgeIndex, bool appOutputs);
 
 // GENERAL HW status: requested versus actual. `stats` is the streaming Master's (nullptr: the DAW has
 // not started the driver); `saved` is the Slot Table's GENERAL now. HW settings are read when the

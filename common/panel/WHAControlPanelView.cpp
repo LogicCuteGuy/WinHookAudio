@@ -145,12 +145,30 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
   if (ImGui::BeginMenu("Bridge")) {
     ImGui::TextDisabled(isInput ? "Audio from other ASIO apps that pick \"WinHookAudio Bridge N\"."
                                 : "Audio to other ASIO apps that pick \"WinHookAudio Bridge N\".");
-    ImGui::TextDisabled("Their channels follow the order of Bridge rows in this list.");
+    ImGui::TextDisabled("Ch N is channel N in that app. Each app gets at least 2 channels.");
+    if (!isInput) ImGui::TextDisabled("A greyed channel is already used by another OUTPUTS row.");
     for (int b = 0; b < 4; ++b) {
       const auto type = static_cast<WHASlotType>(SLOT_BRIDGE1 + b);
+      auto channelItem = [&](int ch) {
+        char item[16];
+        std::snprintf(item, sizeof(item), "Ch %d", ch + 1);
+        if (ImGui::MenuItem(item, nullptr, s.type == type && s.srcChannel == ch, CanAssignBridge(edit, isInput, idx, type, ch)))
+          AssignSource(edit, isInput, idx, type, ch, 0);
+      };
       ImGui::PushID(b);
-      if (ImGui::MenuItem(BridgeLabel(b, bridges ? bridges[b] : nullptr).c_str(), nullptr, s.type == type))
-        AssignSource(edit, isInput, idx, type, 0, 0);
+      if (ImGui::BeginMenu(BridgeLabel(b, bridges ? bridges[b] : nullptr).c_str())) {
+        constexpr int kFirstPage = 16;  // Ch 1-16 directly, the rest in pages of 16
+        for (int ch = 0; ch < kFirstPage; ++ch) channelItem(ch);
+        for (int page = kFirstPage; page < static_cast<int>(kBridgeChannels); page += kFirstPage) {
+          char label[24];
+          std::snprintf(label, sizeof(label), "Ch %d-%d", page + 1, page + kFirstPage);
+          if (ImGui::BeginMenu(label)) {
+            for (int ch = page; ch < page + kFirstPage; ++ch) channelItem(ch);
+            ImGui::EndMenu();
+          }
+        }
+        ImGui::EndMenu();
+      }
       ImGui::PopID();
     }
     ImGui::EndMenu();
@@ -616,6 +634,72 @@ void ApplyPanelStyle() {
   style.FrameRounding = 3.0f;
   style.Colors[ImGuiCol_WindowBg] = ImVec4(0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f);
   style.Colors[ImGuiCol_ChildBg] = style.Colors[ImGuiCol_WindowBg];
+}
+
+namespace {
+
+// One direction of the Bridge popup: "Out 1  ->  Master IN 4  Drums L", unrouted channels greyed.
+void DrawBridgeRoutes(const WHASlotTable& table, int bridgeIndex, bool appOutputs) {
+  const std::vector<BridgeRoute> routes = BridgeRoutes(table, bridgeIndex, appOutputs);
+  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+  if (!ImGui::BeginTable(appOutputs ? "outs" : "ins", 3, kFlags)) return;
+  ImGui::TableSetupColumn("This app", ImGuiTableColumnFlags_WidthFixed, 90);
+  ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30);
+  ImGui::TableSetupColumn(appOutputs ? "Master input" : "Master output");
+  ImGui::TableHeadersRow();
+  int lastChannel = -1;
+  for (const BridgeRoute& r : routes) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    if (r.channel != lastChannel) ImGui::Text("%s %d", appOutputs ? "Out" : "In", r.channel + 1);
+    lastChannel = r.channel;
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(appOutputs ? "->" : "<-");
+    ImGui::TableNextColumn();
+    if (r.masterSlot < 0) ImGui::TextDisabled("not routed (silent)");
+    else ImGui::Text("%s %d  %s", appOutputs ? "IN" : "OUT", r.masterSlot + 1, r.masterName.c_str());
+  }
+  ImGui::EndTable();
+}
+
+}  // namespace
+
+PanelViewResult DrawBridgePanel(const WHASlotTable& table, int bridgeIndex, const WHABridgeShared* shared, bool masterOpen) {
+  PanelViewResult result;
+  const ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(io.DisplaySize);
+  constexpr ImGuiWindowFlags kRoot = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+  ImGui::Begin("WinHookAudio Bridge", nullptr, kRoot);
+
+  ImGui::Text("WinHookAudio Bridge %d", bridgeIndex + 1);
+  ImGui::Separator();
+  ImGui::TextUnformatted("Master:");
+  ImGui::SameLine();
+  if (masterOpen) {
+    ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1), "open");
+    ImGui::SameLine();
+    ImGui::Text("  %u Hz Â· %u samples", table.general.sampleRate, table.general.asioBuffer);
+  } else {
+    ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.4f, 1), "not open - open WinHookAudio Master in your main DAW");
+  }
+  if (shared) ImGui::Text("Apps on this Bridge: %d / %u", CountBridgeClients(*shared), kBridgeClients);
+
+  const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+  ImGui::BeginChild("routes", ImVec2(0, -footer));
+  ImGui::SeparatorText("TO MASTER (this app's outputs)");
+  DrawBridgeRoutes(table, bridgeIndex, true);
+  ImGui::SeparatorText("FROM MASTER (this app's inputs)");
+  DrawBridgeRoutes(table, bridgeIndex, false);
+  ImGui::Spacing();
+  ImGui::TextDisabled("Channels are set in the Master panel: Source > Bridge > Bridge %d > Ch.", bridgeIndex + 1);
+  ImGui::EndChild();
+
+  ImGui::Separator();
+  if (ImGui::Button("Close")) result.close = true;
+  ImGui::End();
+  return result;
 }
 
 PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABridgeShared* bridges[4]) {

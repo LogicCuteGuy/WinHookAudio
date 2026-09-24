@@ -11,6 +11,8 @@
 #include "WHASharedMemory.h"
 
 #include <atomic>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace wha {
@@ -60,6 +62,12 @@ class WinHookBridgeASIO : public IASIO {
 
   long countBridgeChannels(bool isInput) const;
   const WHASlot* bridgeSlot(bool isInput, long n) const;
+  bool claimClientPlace();
+  void releaseClientPlace();
+  std::string dawView() const;   // what the Slave DAW sees: rate, buffer, channel counts and names
+  void snapshotDawView();        // the DAW (re)queried getChannels
+  void checkTableChanged();      // clock thread: a Save changed what the DAW sees -> one reset request
+  void requestReset();
   static DWORD WINAPI clockProc(LPVOID self);
   void runClock();
   void clockTick();
@@ -91,6 +99,11 @@ class WinHookBridgeASIO : public IASIO {
   std::atomic<uint64_t> samplePosition_{0};
   std::atomic<uint64_t> sampleTimeNs_{0};
   std::atomic<uint64_t> clockTicks_{0};
+
+  std::mutex dawViewMutex_;
+  std::string dawView_;             // as the DAW last queried it
+  bool resetPending_ = false;       // one reset request until the DAW re-queries getChannels
+  std::atomic<uint32_t> seenVersion_{0};  // Slot Table version the clock thread last compared
 };
 
 }  // namespace wha

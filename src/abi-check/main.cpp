@@ -267,13 +267,16 @@ bool CheckBridgeRegion() {
   if (wha::IsValidBridgeClientCount(5)) return false;
   if (wha::IsValidBridgeClientCount(-1)) return false;
   int32_t id = -1;
-  if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (id != 0 || b->clientCount != 1) return false;
-  if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (!wha::TryAddBridgeClient(*b, &id)) return false;
-  if (b->clientCount != 4) return false;
-  if (wha::TryAddBridgeClient(*b, &id)) return false;  // 5th rejected
+  if (!wha::TryAddBridgeClient(*b, 100, &id)) return false;
+  if (id != 0 || wha::CountBridgeClients(*b) != 1) return false;
+  if (!wha::TryAddBridgeClient(*b, 101, &id)) return false;
+  if (!wha::TryAddBridgeClient(*b, 102, &id)) return false;
+  if (!wha::TryAddBridgeClient(*b, 103, &id)) return false;
+  if (wha::CountBridgeClients(*b) != 4) return false;
+  if (wha::TryAddBridgeClient(*b, 104, &id)) return false;  // 5th rejected
+  wha::RemoveBridgeClient(*b, 1);  // an app closes: its place is free again
+  if (wha::CountBridgeClients(*b) != 3) return false;
+  if (!wha::TryAddBridgeClient(*b, 104, &id) || id != 1) return false;
   if (!wha::IsValidBridgeReady(0) || !wha::IsValidBridgeReady(1)) return false;
   if (wha::IsValidBridgeReady(2)) return false;
   if (!wha::IsValidBridgeActiveBuf(0) || !wha::IsValidBridgeActiveBuf(1)) return false;

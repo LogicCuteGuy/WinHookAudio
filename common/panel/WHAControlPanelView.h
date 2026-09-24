@@ -46,6 +46,11 @@ struct PanelViewResult {
 // functions and are applied after the list is drawn, so indices stay stable while iterating.
 PanelViewResult DrawControlPanel(PanelModel& edit, PanelViewState& state, WHABridgeShared* bridges[4]);
 
+// Draws one frame of the Bridge popup: read-only, what this Bridge's app gets from the Master and where
+// its channels go. Reads the live table (a Master Save shows up at once); routing is edited only in
+// the Master panel. masterOpen: a Master DAW has the Master driver open now.
+PanelViewResult DrawBridgePanel(const WHASlotTable& table, int bridgeIndex, const WHABridgeShared* shared, bool masterOpen);
+
 // Dark #1E1E1E theme from the datasheet.
 void ApplyPanelStyle();
 

@@ -179,8 +179,22 @@ int main() {
     master->Release();
   }
 
-  // Bridge: 4 clients, 5th rejected
+  // Bridge without a Master: refused, with the reason
   {
+    auto* alone = new WinHookBridgeASIO(0);
+    check("bridge init without a Master returns ASIOFalse", alone->init(nullptr) == ASIOFalse);
+    char msg[124] = {};
+    alone->getErrorMessage(msg);
+    check("bridge without a Master says to open it first", std::strstr(msg, "Open WinHookAudio Master") != nullptr);
+    long in = -1, out = -1;
+    check("bridge without a Master has no channels", alone->getChannels(&in, &out) == ASE_NotPresent);
+    alone->Release();
+  }
+
+  // Bridge: 4 clients, 5th rejected (a Master is open)
+  {
+    auto* master = new WinHookMasterASIO();
+    check("master open for the Bridge clients", master->init(nullptr) == ASIOTrue);
     WinHookBridgeASIO* bridges[5] = {};
     bool bridgePass = true;
     for (int i = 0; i < 4; ++i) {
@@ -193,15 +207,77 @@ int main() {
     char msg[124] = {};
     bridges[4]->getErrorMessage(msg);
     check("bridge 5th client explains why", std::strstr(msg, "full") != nullptr);
-    long in = 0, out = 0;
-    ASIOError err = bridges[0]->getChannels(&in, &out);
-    check("bridge getChannels", err == ASE_OK && in >= 0 && out >= 0);
-    if (in > 0) {
-      ASIOChannelInfo ci{}; ci.channel = 0; ci.isInput = ASIOTrue;
-      check("bridge getChannelInfo", bridges[0]->getChannelInfo(&ci) == ASE_OK);
+    bridges[4]->Release();
+    bridges[4] = nullptr;
+    // An app closes the driver: its place is free for the next app (no "full" after restarts).
+    bridges[1]->Release();
+    bridges[1] = new WinHookBridgeASIO(0);
+    check("bridge place given back on close, next app gets it", bridges[1]->init(nullptr) == ASIOTrue);
+    // An app that exited without closing (crash): its place is taken over when the Bridge is full.
+    HANDLE sharedMap = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, shm::kBridgeSharedNames[0] + 7);
+    auto* shared = sharedMap ? static_cast<WHABridgeShared*>(MapViewOfFile(sharedMap, FILE_MAP_ALL_ACCESS, 0, 0, shm::kBridgeSharedSize)) : nullptr;
+    check("bridge region open", shared && CountBridgeClients(*shared) == 4);
+    if (shared) {
+      bridges[0]->Release();  // place 0 free ...
+      bridges[0] = nullptr;
+      shared->owner[0] = 0x7FFFFFFC;  // ... then held by an app that is gone (no such process)
+      bridges[4] = new WinHookBridgeASIO(0);
+      check("bridge place of an exited app taken over", bridges[4]->init(nullptr) == ASIOTrue &&
+                                                            shared->owner[0] == static_cast<int32_t>(GetCurrentProcessId()) &&
+                                                            CountBridgeClients(*shared) == 4);
+      UnmapViewOfFile(shared);
     }
-    check("bridge outputReady not needed", bridges[0]->outputReady() == ASE_NotPresent);
+    if (sharedMap) CloseHandle(sharedMap);
+    // A Save that changes what the Slave DAW sees (a Bridge channel added in the Master panel): the
+    // Bridge asks its DAW to reset once, while streaming. A Per-Thing-only Save: no reset.
+    {
+      HANDLE map = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, shm::kSlotTableName + 7);
+      auto* t = map ? static_cast<WHASlotTable*>(MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize)) : nullptr;
+      WinHookBridgeASIO* slave = bridges[1];
+      ASIOCallbacks cbs{};
+      cbs.bufferSwitch = HostBufferSwitch;
+      cbs.asioMessage = HostAsioMessage;
+      ASIOBufferInfo bufs[1]{};
+      bufs[0].isInput = ASIOFalse;
+      long bin = 0, bout = 0;
+      slave->getChannels(&bin, &bout);  // what the DAW sees
+      const bool streaming = t && slave->createBuffers(bufs, 1, static_cast<long>(t->general.asioBuffer), &cbs) == ASE_OK &&
+                             slave->start() == ASE_OK;
+      check("bridge streams for the Save checks", streaming);
+      if (streaming) {
+        gResetRequests = 0;
+        t->general.virtualBuffer = t->general.virtualBuffer == 256 ? 512 : 256;
+        ++t->version;
+        check("bridge: Save the DAW cannot see -> no reset", WaitResets(0));
+        const uint32_t k = t->masterInCount;
+        t->masterIn[k] = WHASlot{};
+        t->masterIn[k].type = SLOT_BRIDGE1;
+        t->masterIn[k].enabled = 1;
+        t->masterIn[k].srcChannel = 3;  // Ch 4: the app's outputs grow to 4
+        t->masterInCount = k + 1;
+        ++t->version;
+        check("bridge: Save adding Bridge1 Ch4 -> one DAW reset", WaitResets(1));
+        long in4 = 0, out4 = 0;
+        slave->getChannels(&in4, &out4);  // the DAW handles the reset and re-queries
+        check("bridge: after the reset the DAW sees 4 outputs", out4 == 4);
+        ++t->version;  // saved again, nothing changed for the DAW
+        check("bridge: unchanged Save after re-query -> no reset", WaitResets(1));
+        slave->stop();
+        slave->disposeBuffers();
+        t->masterInCount = k;
+        ++t->version;
+      }
+      if (t) UnmapViewOfFile(t);
+      if (map) CloseHandle(map);
+    }
+    long in = 0, out = 0;
+    ASIOError err = bridges[1]->getChannels(&in, &out);
+    check("bridge getChannels: at least a stereo pair", err == ASE_OK && in >= 2 && out >= 2);
+    ASIOChannelInfo ci{}; ci.channel = 0; ci.isInput = ASIOTrue;
+    check("bridge getChannelInfo", bridges[1]->getChannelInfo(&ci) == ASE_OK);
+    check("bridge outputReady not needed", bridges[1]->outputReady() == ASE_NotPresent);
     for (int i = 0; i < 5; ++i) if (bridges[i]) bridges[i]->Release();
+    master->Release();
   }
 
   std::printf("{\"schema_version\":1,\"operation\":\"host_sample\",\"stream_verified\":false,\"pass\":%s}\n", pass ? "true" : "false");

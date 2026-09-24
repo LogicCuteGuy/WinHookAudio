@@ -140,6 +140,20 @@ void HeadlessView() {
   Frame(bridge, bstate);
   check("Bridge GENERAL renders read-only", bstate.activeTab == kTabGeneral && !SetHwBuffer(bridge, 128));
 
+  // Bridge popup view (read-only): renders a 512-slot table, open and closed Master, no edits.
+  WHABridgeShared* shared = new WHABridgeShared();
+  shared->owner[0] = 100;
+  bool bridgeClose = false;
+  for (int i = 0; i < 3; ++i) {
+    io.DisplaySize = ImVec2(560, 540);
+    io.DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();
+    bridgeClose |= DrawBridgePanel(bridge.table, 0, i == 0 ? shared : nullptr, i != 1).close;
+    ImGui::Render();
+  }
+  delete shared;
+  check("Bridge popup view renders without closing", !bridgeClose);
+
   ImGui::DestroyContext(ctx);
 }
 
@@ -242,6 +256,18 @@ void PopupSmoke() {
     std::_Exit(1);  // Close() is stuck; don't hang ctest
   }
   closer.join();
+
+  // The Bridge popup: the small read-only view in a real (hidden) DX11 window.
+  ControlPanelHost bridgeHost;
+  bridgeHost.table = &live;
+  bridgeHost.isMaster = false;
+  bridgeHost.bridgeIndex = 1;
+  bridgeHost.hidden = true;
+  bridgeHost.autoCloseAfterFrames = 5;
+  ControlPanelWindow bridgePopup;
+  check("Bridge popup opens", bridgePopup.Open(bridgeHost));
+  check("Bridge popup renders 5 DX11 frames", bridgePopup.WaitClosed(15000) && bridgePopup.FramesRendered() == 5 &&
+                                                  bridgePopup.LastError().empty());
 }
 
 }  // namespace
@@ -249,10 +275,13 @@ void PopupSmoke() {
 int main() {
   // Manual look: WHA_PANEL_GUI_SHOW=1 opens a visible Master popup on a 512-slot table until it is closed.
   char show[8] = {};
+  // WHA_PANEL_GUI_SHOW=bridge opens the Bridge 1 popup instead.
   if (GetEnvironmentVariableA("WHA_PANEL_GUI_SHOW", show, sizeof(show)) > 0) {
     WHASlotTable live = MakeTable512();
     ControlPanelHost host;
     host.table = &live;
+    host.isMaster = std::strcmp(show, "bridge") != 0;
+    host.bridgeIndex = 0;
     host.slotsJsonPath = "%TEMP%\\wha-panel-gui-show\\slots.json";
     ControlPanelWindow popup;
     popup.Open(host);

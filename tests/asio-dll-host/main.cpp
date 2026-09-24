@@ -181,17 +181,18 @@ int main(int argc, char** argv) {
   // uses its in-process cable loop, as on a machine without the driver.
   HANDLE cableDriver = CreateFileW(WHA_CABLE_USER_PATH, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
 
-  // The routing a user would set in the Control Panel: IN0/OUT0 VIRTUAL loopback, IN1/OUT1 BRIDGE1.
+  // The routing a user would set in the Control Panel: IN0/OUT0 VIRTUAL loopback, IN1/OUT1 BRIDGE1 Ch2
+  // (a picked channel, not the first: the Slave DAW's Ch1 stays silent).
   HANDLE tableMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                        static_cast<DWORD>(shm::kSlotTableSize), shm::kSlotTableName + 7);
   auto* table = static_cast<WHASlotTable*>(MapViewOfFile(tableMap, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize));
   *table = WHASlotTable{};
   table->masterInCount = 2;
   table->masterIn[0] = Slot(SLOT_VIRTUAL, 0, false, "Loop In");
-  table->masterIn[1] = Slot(SLOT_BRIDGE1, 0, false, "From Slave DAW");
+  table->masterIn[1] = Slot(SLOT_BRIDGE1, 1, false, "From Slave DAW");
   table->masterOutCount = 2;
   table->masterOut[0] = Slot(SLOT_VIRTUAL, 0, true, "Loop Out");
-  table->masterOut[1] = Slot(SLOT_BRIDGE1, 0, false, "To Slave DAW");
+  table->masterOut[1] = Slot(SLOT_BRIDGE1, 1, false, "To Slave DAW");
   table->general.sampleRate = static_cast<uint32_t>(kRate);
   table->general.asioBuffer = kBlock;
   table->version = 1;
@@ -240,16 +241,23 @@ int main(int argc, char** argv) {
   if (b) {
     check("Bridge init -> ASIOTrue", b->init(GetDesktopWindow()) == ASIOTrue);
     long bIn = 0, bOut = 0;
-    check("Bridge channels: in = Master OUT BRIDGE1, out = Master IN BRIDGE1",
-          b->getChannels(&bIn, &bOut) == ASE_OK && bIn == 1 && bOut == 1);
+    check("Bridge channels: a stereo pair (Ch2 routed, Ch1 silent)",
+          b->getChannels(&bIn, &bOut) == ASE_OK && bIn == 2 && bOut == 2);
     ASIOChannelInfo bci{};
+    bci.channel = 1;
     bci.isInput = ASIOTrue;
-    check("Bridge input named after Master OUT slot", b->getChannelInfo(&bci) == ASE_OK && std::strcmp(bci.name, "To Slave DAW") == 0);
+    check("Bridge input Ch2 named after Master OUT slot", b->getChannelInfo(&bci) == ASE_OK && std::strcmp(bci.name, "To Slave DAW") == 0);
+    ASIOChannelInfo unrouted{};
+    unrouted.channel = 0;
+    unrouted.isInput = ASIOTrue;
+    check("Bridge unrouted channel named 'Bridge1 Ch1'", b->getChannelInfo(&unrouted) == ASE_OK && std::strcmp(unrouted.name, "Bridge1 Ch1") == 0);
+    unrouted.channel = 2;
+    check("Bridge channel past the count rejected", b->getChannelInfo(&unrouted) == ASE_InvalidParameter);
     ASIOCallbacks bcb{};
     bcb.bufferSwitch = BridgeSwitch;
     bcb.asioMessage = BridgeMessage;
-    gBridgeBufs[0] = {ASIOTrue, 0, {}};
-    gBridgeBufs[1] = {ASIOFalse, 0, {}};
+    gBridgeBufs[0] = {ASIOTrue, 1, {}};
+    gBridgeBufs[1] = {ASIOFalse, 1, {}};
     check("Bridge createBuffers", b->createBuffers(gBridgeBufs, 2, kBlock, &bcb) == ASE_OK);
     check("Bridge start", b->start() == ASE_OK);
   }

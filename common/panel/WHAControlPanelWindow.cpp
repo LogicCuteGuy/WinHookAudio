@@ -33,6 +33,20 @@ std::string Utf8(const wchar_t* w) {
   return buf;
 }
 
+// The hardware ID the endpoint's driver was installed for (DEVPKEY_Device_MatchingDeviceId).
+constexpr PROPERTYKEY kMatchingDeviceId = {{0xa8b865dd, 0x2e3d, 0x4094, {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6}}, 8};
+
+// One of our own Virtual Cable endpoints (driver\WinHookAudio.inf, Root\WinHookAudio): the Source menu
+// offers them as Virtual Cable, not as HW.
+bool IsOwnCable(IPropertyStore* props) {
+  PROPVARIANT v;
+  PropVariantInit(&v);
+  const bool own = SUCCEEDED(props->GetValue(kMatchingDeviceId, &v)) && v.vt == VT_LPWSTR &&
+                   _wcsicmp(v.pwszVal, L"Root\\WinHookAudio") == 0;
+  PropVariantClear(&v);
+  return own;
+}
+
 // Active render/capture endpoints for the GENERAL HW device choices (panel thread; its own COM init).
 PanelDevices EnumerateEndpoints() {
   PanelDevices out;
@@ -52,7 +66,7 @@ PanelDevices EnumerateEndpoints() {
         PROPVARIANT v;
         PropVariantInit(&v);
         if (SUCCEEDED(d->GetId(&id)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &props)) &&
-            SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR) {
+            !IsOwnCable(props) && SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR) {
           PanelEndpoint ep{Utf8(id), Utf8(v.pwszVal)};
           if (ep.id.size() < kEndpointIdLen) (flow == eRender ? out.render : out.capture).push_back(ep);
         }
@@ -77,6 +91,8 @@ PanelDevices EnumerateEndpoints() {
 
 constexpr int kClientWidth = 1180;
 constexpr int kClientHeight = 720;
+constexpr int kBridgeClientWidth = 560;
+constexpr int kBridgeClientHeight = 540;
 
 bool WriteFileReplace(const std::string& path, const std::string& data, DWORD* error) {
   const std::string tmp = path + ".tmp";
@@ -299,10 +315,11 @@ void ControlPanelWindow::Run() {
 
   wchar_t title[96];
   if (host_.isMaster) swprintf_s(title, L"WinHookAudio Master - Control Panel");
-  else swprintf_s(title, L"WinHookAudio Bridge%d - Control Panel", host_.bridgeIndex + 1);
+  else swprintf_s(title, L"WinHookAudio Bridge %d - Control Panel", host_.bridgeIndex + 1);
   constexpr DWORD kStyle = WS_OVERLAPPEDWINDOW;
   constexpr DWORD kExStyle = WS_EX_TOPMOST;
-  RECT rc{0, 0, kClientWidth, kClientHeight};
+  // The Bridge popup is a small read-only view (DrawBridgePanel); the Master gets the full panel.
+  RECT rc{0, 0, host_.isMaster ? kClientWidth : kBridgeClientWidth, host_.isMaster ? kClientHeight : kBridgeClientHeight};
   AdjustWindowRectEx(&rc, kStyle, FALSE, kExStyle);
   HWND hwnd = CreateWindowExW(kExStyle, className, title, kStyle, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left,
                               rc.bottom - rc.top, nullptr, nullptr, module, this);
@@ -354,10 +371,12 @@ void ControlPanelWindow::Run() {
   WHASlotTable baseline = edit.table;
   PanelViewState state;
   state.bridgeIndex = host_.isMaster ? -1 : host_.bridgeIndex;
-  PanelDevices devices = EnumerateEndpoints();
+  PanelDevices devices = host_.isMaster ? EnumerateEndpoints() : PanelDevices{};  // the Bridge popup lists none
   state.devices = &devices;
   std::vector<HwStatusLine> hwStatus;
   ULONGLONG hwStatusAt = 0;
+  bool masterOpen = false;
+  ULONGLONG masterOpenAt = 0;
   const float clear[4] = {0x1E / 255.0f, 0x1E / 255.0f, 0x1E / 255.0f, 1.0f};
 
   bool running = true;
@@ -385,7 +404,15 @@ void ControlPanelWindow::Run() {
       hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices, &host_.table->hwMore);
       state.hwStatus = &hwStatus;
     }
-    PanelViewResult r = DrawControlPanel(edit, state, host_.bridges);
+    if (!host_.isMaster && GetTickCount64() - masterOpenAt >= 500) {  // Master_Tick exists while a Master is open
+      masterOpenAt = GetTickCount64();
+      HANDLE tick = OpenEventA(SYNCHRONIZE, FALSE, shm::kMasterTickName + 7);
+      masterOpen = tick != nullptr;
+      if (tick) CloseHandle(tick);
+    }
+    const int bridge = host_.bridgeIndex >= 0 && host_.bridgeIndex < 4 ? host_.bridgeIndex : 0;
+    PanelViewResult r = host_.isMaster ? DrawControlPanel(edit, state, host_.bridges)
+                                       : DrawBridgePanel(*host_.table, bridge, host_.bridges[bridge], masterOpen);
     ImGui::Render();
     gpu.context->OMSetRenderTargets(1, &gpu.rtv, nullptr);
     gpu.context->ClearRenderTargetView(gpu.rtv, clear);

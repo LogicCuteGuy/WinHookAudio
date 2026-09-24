@@ -7,6 +7,7 @@
 #include "virtual/WHARingBuffer.h"
 #include <winioctl.h>
 #include "virtual/WHACableProtocol.h"
+#include <intrin.h>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -357,21 +358,34 @@ void MasterHolder::doTick() {
     } else {
       for (int ch = 0; ch < 64; ++ch) for (int f = 0; f < frames; ++f) b->mixedIn[b->mixedActive][ch][f] = 0;
     }
-    // k-th Master IN slot of type BRIDGE(bi) <- summed client output k;
-    // k-th Master OUT slot of type BRIDGE(bi) -> input k of every client (broadcast).
+    // Each BRIDGE(bi) slot picks its channel (BridgeChannelOf): a Master IN slot <- the clients' summed
+    // output on that channel; a Master OUT slot -> that input of every client (broadcast, summed when
+    // two OUT slots pick one channel). A channel no OUT slot feeds any more is cleared once.
     const WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + bi);
-    int k = 0;
-    for (uint32_t ii = 0; ii < table_->masterInCount && k < static_cast<int>(kBridgeChannels); ++ii) {
-      if (table_->masterIn[ii].type != want) continue;
-      std::memcpy(masterAudio_ + (512 + ii) * 4096, b->mixedIn[b->mixedActive][k++], frames * sizeof(float));
+    for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+      const int ch = table_->masterIn[ii].type == want ? BridgeChannelOf(table_->masterIn[ii]) : -1;
+      if (ch >= 0) std::memcpy(masterAudio_ + (512 + ii) * 4096, b->mixedIn[b->mixedActive][ch], frames * sizeof(float));
     }
-    k = 0;
-    for (uint32_t oi = 0; oi < table_->masterOutCount && k < static_cast<int>(kBridgeChannels); ++oi) {
-      if (table_->masterOut[oi].type != want) continue;
+    uint64_t fed = 0;
+    for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
+      const int ch = table_->masterOut[oi].type == want ? BridgeChannelOf(table_->masterOut[oi]) : -1;
+      if (ch < 0) continue;
+      const float* src = masterAudio_ + oi * 4096;
+      const bool first = (fed & (1ull << ch)) == 0;
+      fed |= 1ull << ch;
+      for (int ci = 0; ci < static_cast<int>(kBridgeClients); ++ci) {
+        float* dst = b->clientOut[ci][0][ch];
+        if (first) std::memcpy(dst, src, frames * sizeof(float));
+        else for (int f = 0; f < frames; ++f) dst[f] += src[f];
+      }
+    }
+    for (uint64_t stale = bridgeFed_[bi] & ~fed; stale; stale &= stale - 1) {
+      unsigned long ch = 0;
+      _BitScanForward64(&ch, stale);
       for (int ci = 0; ci < static_cast<int>(kBridgeClients); ++ci)
-        std::memcpy(b->clientOut[ci][0][k], masterAudio_ + oi * 4096, frames * sizeof(float));
-      ++k;
+        std::memset(b->clientOut[ci][0][ch], 0, kBridgeFrames * sizeof(float));
     }
+    bridgeFed_[bi] = fed;
     // The Master Clock drives every Bridge client each tick (after clientOut is fresh), whether or not
     // a client was ready: a client that missed one tick must not wait for its fallback timeout.
     for (int ci = 0; ci < 4; ++ci)

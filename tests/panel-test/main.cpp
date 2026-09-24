@@ -164,6 +164,14 @@ int main() {
     check("HW device change is DAW-visible (reset)", DawVisibleChanged(original, dev.table));
     check("SetHwRenderDevice default (empty)", SetHwRenderDevice(dev, "") && dev.table.general.hwRenderId[0] == 0);
     check("back to default: no reset", !DawVisibleChanged(original, dev.table));
+    {
+      PanelModel br = genModel;
+      AddInput(br);
+      check("Bridge1 Ch2 on IN 0", AssignSource(br, true, 0, SLOT_BRIDGE1, 1, 0));
+      const WHASlotTable bridgeBefore = br.table;
+      check("Bridge channel move Ch2 -> Ch4 is DAW-visible (reset)",
+            AssignSource(br, true, 0, SLOT_BRIDGE1, 3, 0) && DawVisibleChanged(bridgeBefore, br.table));
+    }
     const std::string tooLong(kEndpointIdLen, 'x');
     check("SetHwCaptureDevice too long rejected", !SetHwCaptureDevice(dev, tooLong.c_str()) && dev.table.general.hwCaptureId[0] == 0);
     check("SetHwCaptureDevice Bridge fail", !SetHwCaptureDevice(bridgeGen, cable));
@@ -220,9 +228,42 @@ int main() {
     SetInputType(nm, 2, SLOT_NETWORK);
     check("NETWORK stream 2 ch 1 -> 'Rx3 Ch1'", SetInputSource(nm, 2, 0, 2) && dawName(nm, 2, true) == "Rx3 Ch1");
     check("NETWORK stream 8 rejected", !SetInputSource(nm, 2, 0, 8));
-    SetInputType(nm, 0, SLOT_BRIDGE1);
-    SetInputType(nm, 2, SLOT_BRIDGE1);
-    check("BRIDGE1 slots named by their order", dawName(nm, 0, true) == "Bridge1 Ch1" && dawName(nm, 2, true) == "Bridge1 Ch2");
+    check("AssignSource Bridge1 Ch3 and Ch1", AssignSource(nm, true, 0, SLOT_BRIDGE1, 2, 0) && AssignSource(nm, true, 2, SLOT_BRIDGE1, 0, 0));
+    check("BRIDGE1 slots named by the channel they pick, not their order",
+          dawName(nm, 0, true) == "Bridge1 Ch3" && dawName(nm, 2, true) == "Bridge1 Ch1");
+    check("Bridge source label shows the channel", SlotSourceLabel(nm.table.masterIn[0], true, nullptr) == "Bridge1 Â· Ch3");
+    check("Bridge channel 65 rejected", !AssignSource(nm, true, 0, SLOT_BRIDGE1, 64, 0) && nm.table.masterIn[0].srcChannel == 2);
+    check("INPUTS rows may share a Bridge channel", CanAssignBridge(nm, true, 2, SLOT_BRIDGE1, 2));
+    check("Bridge channel count: at least 2, up to the highest picked",
+          BridgeChannelCount(nm.table.masterIn, nm.table.masterInCount, SLOT_BRIDGE1) == 3 &&
+          BridgeChannelCount(nm.table.masterIn, nm.table.masterInCount, SLOT_BRIDGE2) == 2);
+    check("FindBridgeSlot: channel -> row, unrouted -> -1",
+          FindBridgeSlot(nm.table.masterIn, nm.table.masterInCount, SLOT_BRIDGE1, 2) == 0 &&
+          FindBridgeSlot(nm.table.masterIn, nm.table.masterInCount, SLOT_BRIDGE1, 1) == -1);
+    check("AssignSource Bridge2 Ch2 on an output", AssignSource(nm, false, 0, SLOT_BRIDGE2, 1, 0));
+    check("an OUTPUTS Bridge channel is taken by one row",
+          !CanAssignBridge(nm, false, 1, SLOT_BRIDGE2, 1) && CanAssignBridge(nm, false, 0, SLOT_BRIDGE2, 1) &&
+          CanAssignBridge(nm, false, 1, SLOT_BRIDGE2, 0) && CanAssignBridge(nm, false, 1, SLOT_BRIDGE1, 1));
+    {
+      // Bridge popup lines: IN 1 and IN 3 on Bridge1 Ch3 (shared), OUT 2 on Bridge1 Ch1.
+      WHASlotTable bt{};
+      bt.masterInCount = 3;
+      bt.masterOutCount = 2;
+      bt.masterIn[0].type = SLOT_BRIDGE1; bt.masterIn[0].srcChannel = 2; SetSlotName(bt.masterIn[0], "Drums");
+      bt.masterIn[2].type = SLOT_BRIDGE1; bt.masterIn[2].srcChannel = 2;
+      bt.masterOut[1].type = SLOT_BRIDGE1; bt.masterOut[1].srcChannel = 0;
+      bt.masterIn[1].type = SLOT_BRIDGE2; bt.masterIn[1].srcChannel = 5;  // another Bridge: not listed
+      const std::vector<BridgeRoute> outs = BridgeRoutes(bt, 0, true);
+      check("Bridge popup outputs: Ch1-2 unrouted, Ch3 -> IN 1 'Drums' and IN 3",
+            outs.size() == 4 && outs[0].channel == 0 && outs[0].masterSlot == -1 && outs[1].channel == 1 &&
+                outs[1].masterSlot == -1 && outs[2].channel == 2 && outs[2].masterSlot == 0 && outs[2].masterName == "Drums" &&
+                outs[3].channel == 2 && outs[3].masterSlot == 2 && outs[3].masterName == "Bridge1 Ch3");
+      const std::vector<BridgeRoute> ins = BridgeRoutes(bt, 0, false);
+      check("Bridge popup inputs: Ch1 <- OUT 2, Ch2 unrouted",
+            ins.size() == 2 && ins[0].masterSlot == 1 && ins[0].masterName == "Bridge1 Ch1" && ins[1].masterSlot == -1);
+      check("Bridge popup: bad Bridge index lists nothing", BridgeRoutes(bt, 4, true).empty());
+    }
+    SetOutputType(nm, 0, SLOT_NONE);
     SetInputName(nm, 1, "Vocal Mic");
     check("a name the user typed is kept", dawName(nm, 1, true) == "Vocal Mic");
     SetInputSource(nm, 1, 0, 0);
@@ -306,7 +347,8 @@ int main() {
           NetworkStreamLabel(rx, true, 2) == "Rx3  from 192.168.1.50:6980 \xC2\xB7 PCM 32 \xC2\xB7 2 ch");
     auto shared = std::make_unique<WHABridgeShared>();
     check("Bridge label: no app", BridgeLabel(0, shared.get()) == "Bridge 1  (no app connected)");
-    shared->clientCount = 2;
+    shared->owner[0] = 100;
+    shared->owner[2] = 200;
     check("Bridge label: 2 apps", BridgeLabel(1, shared.get()) == "Bridge 2  (2 apps connected)");
     check("Bridge label: unknown", BridgeLabel(3, nullptr) == "Bridge 4");
     check("AssignSource Tx2 Ch2 on an output", AssignSource(nm, false, 1, SLOT_NETWORK, 1, 1) &&

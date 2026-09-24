@@ -112,6 +112,7 @@ class MasterHolder {
   HANDLE workerDone_ = nullptr;  // auto-reset, set after each Master_Tick doTick (wakes waitWorker)
   std::atomic<uint64_t> routed_{0};  // the Master Clock tick count the Worker has routed up to
   HANDLE bridgeTicks_[4][4] = {};
+  uint64_t bridgeFed_[4] = {};  // Worker thread: Bridge channels an OUT slot fed last tick (bit = channel)
   HANDLE thread_ = nullptr;
   bool running_ = false;
   bool stopRequested_ = false;

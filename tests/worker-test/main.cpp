@@ -43,7 +43,7 @@ int main() {
   for (int f = 0; f < 128; ++f) masterAudio[512 * 4096 + 1 * 4096 + f] = 0.0f;
 
   auto bridge = std::make_unique<WHABridgeShared>();
-  bridge->clientCount = 2;
+  bridge->owner[0] = 100; bridge->owner[1] = 101;
   bridge->ready[0] = 1; bridge->ready[1] = 1;
   bridge->activeBuf[0] = 0; bridge->activeBuf[1] = 0;
   for (int ch = 0; ch < 1; ++ch) for (int f = 0; f < 128; ++f) {

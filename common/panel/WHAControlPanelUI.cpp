@@ -167,7 +167,8 @@ bool IsValidSource(WHASlotType type, int32_t srcChannel, int32_t streamId) {
       return streamId >= 0 && streamId < static_cast<int32_t>(kNetStreams) && srcChannel >= 0 &&
              srcChannel < static_cast<int32_t>(kMaxPcmChannels);
     case SLOT_VIRTUAL: return srcChannel >= 0 && srcChannel < 2 * kVirtualSlotCables;  // cable * 2 + side
-    default: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kMax);
+    case SLOT_NONE: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kMax);
+    default: return srcChannel >= 0 && srcChannel < static_cast<int32_t>(kBridgeChannels);  // Bridge app channel
   }
 }
 
@@ -580,6 +581,15 @@ bool AssignHw(PanelModel& model, bool isInput, uint32_t index, const char* devic
   return device >= 0 && AssignSource(model, isInput, index, SLOT_HW, side, device);
 }
 
+bool CanAssignBridge(const PanelModel& model, bool isInput, uint32_t index, WHASlotType type, int32_t channel) {
+  const uint32_t count = isInput ? model.table.masterInCount : model.table.masterOutCount;
+  if (index >= count || !IsBridgeType(type) || !IsValidSource(type, channel, 0)) return false;
+  if (isInput) return true;  // one app channel may feed several INPUTS rows
+  for (uint32_t i = 0; i < count; ++i)  // OUTPUTS: one row per app channel
+    if (i != index && model.table.masterOut[i].type == type && BridgeChannelOf(model.table.masterOut[i]) == channel) return false;
+  return true;
+}
+
 std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const* hwDevices) {
   char buf[96];
   switch (slot.type) {
@@ -601,7 +611,7 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const
       std::snprintf(buf, sizeof(buf), "%s%d \xC2\xB7 Ch%d", isInput ? "Rx" : "Tx", slot.streamId + 1, slot.srcChannel + 1);
       return buf;
     default:
-      std::snprintf(buf, sizeof(buf), "Bridge%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1);
+      std::snprintf(buf, sizeof(buf), "Bridge%d Â· Ch%d", static_cast<int>(slot.type - SLOT_BRIDGE1) + 1, slot.srcChannel + 1);
       return buf;
   }
 }
@@ -624,12 +634,32 @@ std::string NetworkStreamLabel(const WHANetworkStream& stream, bool isInput, int
   return buf;
 }
 
+std::vector<BridgeRoute> BridgeRoutes(const WHASlotTable& table, int bridgeIndex, bool appOutputs) {
+  std::vector<BridgeRoute> routes;
+  if (bridgeIndex < 0 || bridgeIndex >= static_cast<int>(kBridgeCount)) return routes;
+  const auto type = static_cast<WHASlotType>(SLOT_BRIDGE1 + bridgeIndex);
+  const WHASlot* slots = appOutputs ? table.masterIn : table.masterOut;
+  const uint32_t count = std::min(appOutputs ? table.masterInCount : table.masterOutCount, kMax);
+  const long channels = BridgeChannelCount(slots, count, type);
+  for (int ch = 0; ch < channels; ++ch) {
+    const size_t first = routes.size();
+    for (uint32_t i = 0; i < count; ++i) {
+      if (slots[i].type != type || BridgeChannelOf(slots[i]) != ch) continue;
+      char name[kNameLen];
+      DawChannelName(slots, count, i, appOutputs, nullptr, name);
+      routes.push_back({ch, static_cast<int>(i), name});
+    }
+    if (routes.size() == first) routes.push_back({ch, -1, ""});
+  }
+  return routes;
+}
+
 std::string BridgeLabel(int bridge, const WHABridgeShared* shared) {
   char buf[64];
   if (!shared) {
     std::snprintf(buf, sizeof(buf), "Bridge %d", bridge + 1);
   } else {
-    const int apps = shared->clientCount;
+    const int apps = CountBridgeClients(*shared);
     if (apps <= 0) std::snprintf(buf, sizeof(buf), "Bridge %d  (no app connected)", bridge + 1);
     else std::snprintf(buf, sizeof(buf), "Bridge %d  (%d app%s connected)", bridge + 1, apps, apps == 1 ? "" : "s");
   }
@@ -689,9 +719,7 @@ AboutInfo GetAboutInfo(const PanelModel& model, WHABridgeShared* bridges[4]) {
   for (int i = 0; i < 4; ++i) {
     char buf[32];
     if (bridges && bridges[i]) {
-      int count = bridges[i]->clientCount;
-      if (count > 4) count = 4;
-      if (count < 0) count = 0;
+      const int count = CountBridgeClients(*bridges[i]);
       std::snprintf(buf, sizeof(buf), "Bridge%d: %d/4", i + 1, count);
     } else {
       // No Shared Bridge mapped in this process: client count is unknown (slot count is not client count).

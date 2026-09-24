@@ -30,8 +30,7 @@ WinHookBridgeASIO::~WinHookBridgeASIO() {
 #endif
   stop();
   disposeBuffers();
-  if (bridgeShared_ && clientId_ >= 0) bridgeShared_->ready[clientId_] = 0;
-  // The client slot itself is not released: WHABridgeShared has no per-slot ownership yet.
+  releaseClientPlace();
   if (tableChanged_) CloseHandle(tableChanged_);
   if (slotTable_) UnmapViewOfFile(slotTable_);
   if (bridgeShared_) UnmapViewOfFile(bridgeShared_);
@@ -55,63 +54,140 @@ long WinHookBridgeASIO::countBridgeChannels(bool isInput) const {
   // Client inputs come from Master OUT slots, client outputs feed Master IN slots.
   const WHASlot* slots = isInput ? slotTable_->masterOut : slotTable_->masterIn;
   const uint32_t count = isInput ? slotTable_->masterOutCount : slotTable_->masterInCount;
-  long n = 0;
-  for (uint32_t i = 0; i < count; ++i) if (slots[i].type == want) ++n;
-  return n < static_cast<long>(kBridgeChannels) ? n : static_cast<long>(kBridgeChannels);
+  return BridgeChannelCount(slots, count, want);
 }
+// The Master slot on channel n, or nullptr when no slot picks it (a silent channel).
 const WHASlot* WinHookBridgeASIO::bridgeSlot(bool isInput, long n) const {
   if (!slotTable_ || n < 0 || n >= countBridgeChannels(isInput)) return nullptr;
   const WHASlotType want = static_cast<WHASlotType>(SLOT_BRIDGE1 + bridgeIndex_);
   const WHASlot* slots = isInput ? slotTable_->masterOut : slotTable_->masterIn;
   const uint32_t count = isInput ? slotTable_->masterOutCount : slotTable_->masterInCount;
-  long idx = 0;
-  for (uint32_t i = 0; i < count; ++i)
-    if (slots[i].type == want && idx++ == n) return &slots[i];
-  return nullptr;
+  const int i = FindBridgeSlot(slots, count, want, static_cast<int>(n));
+  return i >= 0 ? &slots[i] : nullptr;
+}
+
+namespace {
+
+// A place's owner still runs. A process ID that cannot be opened for another reason than "no such
+// process" (access denied) counts as running, so a live app never loses its place.
+bool ProcessRunning(DWORD pid) {
+  HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+  if (!h) return GetLastError() != ERROR_INVALID_PARAMETER;
+  const bool running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+  CloseHandle(h);
+  return running;
+}
+
+}  // namespace
+
+// One of the Bridge's 4 places for this driver instance (other processes claim at the same time: the
+// compare-exchange decides). A free place first; when all 4 are held, one whose app has exited (crashed,
+// killed) is taken over.
+bool WinHookBridgeASIO::claimClientPlace() {
+  const auto me = static_cast<LONG>(GetCurrentProcessId());
+  auto* owner = reinterpret_cast<volatile LONG*>(bridgeShared_->owner);
+  for (int32_t i = 0; i < static_cast<int32_t>(kBridgeClients); ++i)
+    if (InterlockedCompareExchange(&owner[i], me, 0) == 0) { clientId_ = i; break; }
+  for (int32_t i = 0; clientId_ < 0 && i < static_cast<int32_t>(kBridgeClients); ++i) {
+    const LONG held = owner[i];
+    if (held != 0 && held != me && !ProcessRunning(static_cast<DWORD>(held)) &&
+        InterlockedCompareExchange(&owner[i], me, held) == held)
+      clientId_ = i;
+  }
+  if (clientId_ < 0) return false;
+  bridgeShared_->ready[clientId_] = 0;  // nothing from a previous holder in the next sum
+  return true;
+}
+
+// Gives the place back when the app closes the driver (Release, or a DAW switching drivers).
+void WinHookBridgeASIO::releaseClientPlace() {
+  if (!bridgeShared_ || clientId_ < 0) return;
+  bridgeShared_->ready[clientId_] = 0;
+  auto* owner = reinterpret_cast<volatile LONG*>(bridgeShared_->owner);
+  InterlockedCompareExchange(&owner[clientId_], 0, static_cast<LONG>(GetCurrentProcessId()));
+  clientId_ = -1;
+}
+
+std::string WinHookBridgeASIO::dawView() const {
+  const WHASlotTable& t = *slotTable_;
+  std::string view = std::to_string(t.general.sampleRate) + "/" + std::to_string(t.general.asioBuffer);
+  for (const bool isInput : {true, false}) {
+    const long n = countBridgeChannels(isInput);
+    view += "|" + std::to_string(n);
+    const WHASlot* slots = isInput ? t.masterOut : t.masterIn;
+    const uint32_t count = isInput ? t.masterOutCount : t.masterInCount;
+    for (long ch = 0; ch < n; ++ch) {
+      const WHASlot* slot = bridgeSlot(isInput, ch);
+      char name[kNameLen] = "-";
+      if (slot) DawChannelName(slots, count, static_cast<uint32_t>(slot - slots), !isInput, nullptr, name);
+      view += ";";
+      view += name;
+    }
+  }
+  return view;
+}
+
+void WinHookBridgeASIO::snapshotDawView() {
+  const uint32_t version = slotTable_->version;
+  std::string view = dawView();
+  std::lock_guard<std::mutex> lock(dawViewMutex_);
+  dawView_ = std::move(view);
+  resetPending_ = false;
+  seenVersion_ = version;
+}
+
+void WinHookBridgeASIO::requestReset() {
+  {
+    std::lock_guard<std::mutex> lock(dawViewMutex_);
+    if (resetPending_) return;
+    resetPending_ = true;
+  }
+  if (callbacks_.asioMessage && callbacks_.asioMessage(kAsioSelectorSupported, kAsioResetRequest, nullptr, nullptr) == 1)
+    callbacks_.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+}
+
+// A Save (Master panel or a Bridge popup) bumps the Slot Table version. The Bridge has no TableChanged
+// of its own (that event is the Master's, auto-reset), so the clock thread compares versions each period
+// and rebuilds the view only when one moved.
+void WinHookBridgeASIO::checkTableChanged() {
+  const uint32_t version = slotTable_->version;
+  if (version == seenVersion_.load()) return;
+  seenVersion_ = version;
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(dawViewMutex_);
+    changed = !resetPending_ && dawView() != dawView_;
+  }
+  if (changed) requestReset();  // e.g. a Bridge channel added in the Master panel: FL re-queries getChannels
 }
 
 ASIOBool WinHookBridgeASIO::init(void* sysHandle) {
   (void)sysHandle;
   if (initialized_) return ASIOTrue;
+  // The Master owns the Slot Table, the Bridge regions and the clock: without an open Master there is
+  // nothing to bridge to. Only the Master creates Master_Tick, so it tells whether one is open now.
+  constexpr const char* kNoMaster = "Open WinHookAudio Master in your main DAW first";
+  HANDLE masterTick = OpenEventA(SYNCHRONIZE, FALSE, shm::kMasterTickName + 7);
+  if (!masterTick) {
+    std::snprintf(errorText_, sizeof(errorText_), "%s", kNoMaster);
+    return ASIOFalse;
+  }
+  CloseHandle(masterTick);
   slotTableMapping_ = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, shm::kSlotTableName + 7);
-  if (!slotTableMapping_) {
-    // For offline test without Master, create a minimal table
-    slotTableMapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(shm::kSlotTableSize), shm::kSlotTableName + 7);
-    if (!slotTableMapping_) {
-      std::snprintf(errorText_, sizeof(errorText_), "Slot Table unavailable %lu", GetLastError());
-      return ASIOFalse;
-    }
-  }
-  slotTable_ = static_cast<WHASlotTable*>(MapViewOfFile(slotTableMapping_, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize));
-  if (!slotTable_) return ASIOFalse;
-  // Bridge shared
+  if (slotTableMapping_)
+    slotTable_ = static_cast<WHASlotTable*>(MapViewOfFile(slotTableMapping_, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize));
   bridgeMapping_ = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, shm::kBridgeSharedNames[bridgeIndex_] + 7);
-  if (!bridgeMapping_) {
-    bridgeMapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(shm::kBridgeSharedSize), shm::kBridgeSharedNames[bridgeIndex_] + 7);
-    if (!bridgeMapping_) return ASIOFalse;
+  if (bridgeMapping_)
+    bridgeShared_ = static_cast<WHABridgeShared*>(MapViewOfFile(bridgeMapping_, FILE_MAP_ALL_ACCESS, 0, 0, shm::kBridgeSharedSize));
+  if (!slotTable_ || !bridgeShared_ || slotTable_->version == 0) {
+    std::snprintf(errorText_, sizeof(errorText_), "%s", kNoMaster);
+    return ASIOFalse;  // the destructor releases what was opened
   }
-  bridgeShared_ = static_cast<WHABridgeShared*>(MapViewOfFile(bridgeMapping_, FILE_MAP_ALL_ACCESS, 0, 0, shm::kBridgeSharedSize));
-  if (!bridgeShared_) return ASIOFalse;
-  // Allocate clientId
-  if (!TryAddBridgeClient(*bridgeShared_, &clientId_)) {
-    std::snprintf(errorText_, sizeof(errorText_), "Bridge%d full (4/4) - use Bridge2/3/4", bridgeIndex_ + 1);
+  if (!claimClientPlace()) {
+    std::snprintf(errorText_, sizeof(errorText_), "Bridge %d is full (4 apps) - use another Bridge", bridgeIndex_ + 1);
     return ASIOFalse;
   }
   bridgeTick_ = CreateEventA(nullptr, FALSE, FALSE, shm::kBridgeTickNames[bridgeIndex_][clientId_] + 7);
-  if (slotTable_->version == 0) {
-    // Offline test: ensure at least one bridge slot
-    slotTable_->masterInCount = 1;
-    slotTable_->masterIn[0].type = static_cast<WHASlotType>(SLOT_BRIDGE1 + bridgeIndex_);
-    slotTable_->masterIn[0].enabled = 1;
-    TruncateCopy(slotTable_->masterIn[0].name, kNameLen, "Bridge Ch1");
-    slotTable_->masterOutCount = 1;
-    slotTable_->masterOut[0].type = static_cast<WHASlotType>(SLOT_BRIDGE1 + bridgeIndex_);
-    slotTable_->masterOut[0].enabled = 1;
-    TruncateCopy(slotTable_->masterOut[0].name, kNameLen, "Bridge Ch1");
-    slotTable_->general.sampleRate = kMasterClockRateDefault;
-    slotTable_->general.asioBuffer = kMasterClockBufferDefault;
-    slotTable_->version = 1;
-  }
   bufferSize_ = static_cast<long>(slotTable_->general.asioBuffer);
   sampleRate_ = static_cast<double>(slotTable_->general.sampleRate);
   initialized_ = true;
@@ -150,6 +226,7 @@ ASIOError WinHookBridgeASIO::getChannels(long* numInputChannels, long* numOutput
   if (!initialized_) return ASE_NotPresent;
   if (numInputChannels) *numInputChannels = countBridgeChannels(true);
   if (numOutputChannels) *numOutputChannels = countBridgeChannels(false);
+  snapshotDawView();
   return ASE_OK;
 }
 ASIOError WinHookBridgeASIO::getLatencies(long* inputLatency, long* outputLatency) {
@@ -198,8 +275,8 @@ ASIOError WinHookBridgeASIO::getSamplePosition(ASIOSamples* sPos, ASIOTimeStamp*
 ASIOError WinHookBridgeASIO::getChannelInfo(ASIOChannelInfo* info) {
   if (!info || !slotTable_) return ASE_InvalidParameter;
   const bool isInput = info->isInput != ASIOFalse;
+  if (info->channel < 0 || info->channel >= countBridgeChannels(isInput)) return ASE_InvalidParameter;
   const WHASlot* slot = bridgeSlot(isInput, info->channel);
-  if (!slot) return ASE_InvalidParameter;
   info->isActive = ASIOFalse;
   for (const Binding& b : bindings_)
     if (b.isInput == isInput && b.channel == info->channel) info->isActive = ASIOTrue;
@@ -209,7 +286,8 @@ ASIOError WinHookBridgeASIO::getChannelInfo(ASIOChannelInfo* info) {
   const WHASlot* slots = isInput ? slotTable_->masterOut : slotTable_->masterIn;
   const uint32_t count = isInput ? slotTable_->masterOutCount : slotTable_->masterInCount;
   char name[kNameLen];
-  DawChannelName(slots, count, static_cast<uint32_t>(slot - slots), !isInput, nullptr, name);  // Bridge slots only
+  if (slot) DawChannelName(slots, count, static_cast<uint32_t>(slot - slots), !isInput, nullptr, name);  // Bridge slots only
+  else std::snprintf(name, sizeof(name), "Bridge%d Ch%ld", bridgeIndex_ + 1, info->channel + 1);  // no slot: silent
   TruncateCopy(info->name, sizeof(info->name), name);
   return ASE_OK;
 }
@@ -263,6 +341,7 @@ void WinHookBridgeASIO::runClock() {
     WaitForSingleObject(bridgeTick_, periodMs);
     if (clockStop_.load()) break;
     clockTick();
+    checkTableChanged();  // after the period: a changed view only asks the DAW to reset
   }
   if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
 }
@@ -298,9 +377,7 @@ ASIOError WinHookBridgeASIO::controlPanel() {
   host.isMaster = false;
   host.bridgeIndex = bridgeIndex_;
   host.onSaved = [this](bool reset) {
-    if (reset && callbacks_.asioMessage &&
-        callbacks_.asioMessage(kAsioSelectorSupported, kAsioResetRequest, nullptr, nullptr) == 1)
-      callbacks_.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+    if (reset) requestReset();
   };
   return panel_->Open(host) ? ASE_OK : ASE_NotPresent;
 #else

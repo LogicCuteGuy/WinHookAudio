@@ -202,9 +202,11 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
         std::strncmp(HwDeviceId(a, true, d), HwDeviceId(b, true, d), kEndpointIdLen) != 0)
       return true;
   // A HW slot moved to another device may need that device opened (and changes its channel name).
+  // A Bridge slot's channel is in its automatic name ("Bridge1 Ch3").
   auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
     return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0 ||
-           (x.type == SLOT_HW && HwDeviceOf(x) != HwDeviceOf(y));
+           (x.type == SLOT_HW && HwDeviceOf(x) != HwDeviceOf(y)) ||
+           (IsBridgeType(x.type) && x.srcChannel != y.srcChannel);
   };
   for (uint32_t i = 0; i < a.masterInCount && i < kMax; ++i)
     if (slotDiffers(a.masterIn[i], b.masterIn[i])) return true;
@@ -244,7 +246,7 @@ inline void ShortDeviceName(const char* friendly, char* out, std::size_t outLen)
 // OUTPUTS); a Bridge slot's channel is its order among that Bridge's slots (see MasterHolder).
 // hwDevices: friendly names of this direction's HW devices, by device index (kHwDevices entries;
 // nullptr or a nullptr/"" entry = unknown: "HW In L", "HW In 2 L").
-inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput,
+inline void AutoSlotName(const WHASlot* slots, [[maybe_unused]] uint32_t count, uint32_t index, bool isInput,
                          const char* const* hwDevices, char* out) {
   const WHASlot& s = slots[index];
   const int ch = s.srcChannel + 1;
@@ -264,12 +266,9 @@ inline void AutoSlotName(const WHASlot* slots, uint32_t count, uint32_t index, b
     }
     case SLOT_VIRTUAL: std::snprintf(out, kNameLen, "Virtual %d %c", VirtualCableOf(s) + 1, VirtualSideOf(s) ? 'R' : 'L'); break;
     case SLOT_NETWORK: std::snprintf(out, kNameLen, "%s%d Ch%d", isInput ? "Rx" : "Tx", s.streamId + 1, ch); break;
-    default: {  // SLOT_BRIDGE1..4
-      int k = 1;
-      for (uint32_t i = 0; i < index && i < count; ++i) k += slots[i].type == s.type ? 1 : 0;
-      std::snprintf(out, kNameLen, "Bridge%d Ch%d", static_cast<int>(s.type - SLOT_BRIDGE1) + 1, k);
+    default:  // SLOT_BRIDGE1..4: the channel the slot picks in the Bridge app
+      std::snprintf(out, kNameLen, "Bridge%d Ch%d", static_cast<int>(s.type - SLOT_BRIDGE1) + 1, ch);
       break;
-    }
   }
 }
 
