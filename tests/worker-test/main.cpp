@@ -22,12 +22,12 @@ int main() {
   table.masterInCount = 3;
   table.masterIn[0].type = SLOT_VIRTUAL; table.masterIn[0].enabled = 1; table.masterIn[0].loopback = 1; table.masterIn[0].srcChannel = 0;
   TruncateCopy(table.masterIn[0].name, kNameLen, "VRChat Out");
-  table.masterIn[1].type = SLOT_VIRTUAL; table.masterIn[1].enabled = 1; table.masterIn[1].loopback = 1; table.masterIn[1].srcChannel = 2;
+  table.masterIn[1].type = SLOT_VIRTUAL; table.masterIn[1].enabled = 1; table.masterIn[1].loopback = 1; table.masterIn[1].srcChannel = 8;  // Virtual 2 L (cable * 8 + channel)
   TruncateCopy(table.masterIn[1].name, kNameLen, "Loopback VRCT");
   table.masterIn[2].type = SLOT_BRIDGE1; table.masterIn[2].enabled = 1; table.masterIn[2].srcChannel = 0;
   TruncateCopy(table.masterIn[2].name, kNameLen, "FL+Live Sum");
   table.masterOutCount = 2;
-  table.masterOut[0].type = SLOT_VIRTUAL; table.masterOut[0].enabled = 1; table.masterOut[0].loopback = 1; table.masterOut[0].srcChannel = 2;
+  table.masterOut[0].type = SLOT_VIRTUAL; table.masterOut[0].enabled = 1; table.masterOut[0].loopback = 1; table.masterOut[0].srcChannel = 8;  // Virtual 2 L
   TruncateCopy(table.masterOut[0].name, kNameLen, "To VRCT");
   table.masterOut[1].type = SLOT_BRIDGE1; table.masterOut[1].enabled = 1; table.masterOut[1].srcChannel = 0;
   TruncateCopy(table.masterOut[1].name, kNameLen, "To FL+Live");
@@ -43,7 +43,7 @@ int main() {
   for (int f = 0; f < 128; ++f) masterAudio[512 * 4096 + 1 * 4096 + f] = 0.0f;
 
   auto bridge = std::make_unique<WHABridgeShared>();
-  bridge->clientCount = 2;
+  bridge->owner[0] = 100; bridge->owner[1] = 101;
   bridge->ready[0] = 1; bridge->ready[1] = 1;
   bridge->activeBuf[0] = 0; bridge->activeBuf[1] = 0;
   for (int ch = 0; ch < 1; ++ch) for (int f = 0; f < 128; ++f) {

@@ -1,15 +1,15 @@
 /build/
 # ASIO SDK payload (Steinberg license) — keep README, ignore SDK files
-/third_party/asio/asio.h
-/third_party/asio/asiodrv.h
-/third_party/asio/asiodrivers.*
-/third_party/asio/host/
+/third_party/asio/*
+!/third_party/asio/README.md
 # ImGui payload — keep README, ignore SDK files
-/third_party/imgui/imgui.h
-/third_party/imgui/imgui.cpp
-/third_party/imgui/backends/
+/third_party/imgui/*
+!/third_party/imgui/README.md
 # WDK payload — keep README, ignore SDK files
 /third_party/wdk/
 # Vorbis/r8brain payload — keep README, ignore SDK files
-/third_party/libvorbis/
-third_party/r8brain/
+/third_party/libvorbis/*
+!/third_party/libvorbis/README.md
+/third_party/libogg/
+/third_party/r8brain/*
+!/third_party/r8brain/README.md

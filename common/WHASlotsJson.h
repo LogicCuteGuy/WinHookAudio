@@ -50,6 +50,14 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   if (table.general.virtualCables != 8 && table.general.virtualCables != 64)
     return fail("general virtualCables must be 8 or 64");
   if (std::strlen(table.general.virtualName) >= 32) return fail("general virtualName too long");
+  if (strnlen(table.general.hwRenderId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwRenderId too long");
+  if (strnlen(table.general.hwCaptureId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwCaptureId too long");
+  for (int d = 0; d + 1 < kHwDevices; ++d)
+    if (strnlen(table.hwMore.renderId[d], kEndpointIdLen) >= kEndpointIdLen ||
+        strnlen(table.hwMore.captureId[d], kEndpointIdLen) >= kEndpointIdLen)
+      return fail("general more HW device id too long");
+  for (const WHACableSetting& c : table.cables)
+    if (!IsValidCableSetting(c)) return fail("general cables: channels 2/4/6/8, format 0..4");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -481,7 +489,25 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += "\"jitterPcm\":" + std::to_string(t.general.jitterPcm) + ",";
   out += "\"jitterVorbis\":" + std::to_string(t.general.jitterVorbis) + ",";
   out += "\"virtualCables\":" + std::to_string(t.general.virtualCables) + ",";
-  out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName);
+  out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName) + ",";
+  out += "\"hwRenderId\":" + detail::EscapeJsonString(t.general.hwRenderId) + ",";
+  out += "\"hwCaptureId\":" + detail::EscapeJsonString(t.general.hwCaptureId) + ",";
+  // HW devices 2..4 of each direction (WHAHwMore; "" = none).
+  for (int dir = 0; dir < 2; ++dir) {
+    out += dir == 0 ? "\"hwRenderMore\":[" : ",\"hwCaptureMore\":[";
+    for (int d = 0; d + 1 < kHwDevices; ++d) {
+      if (d) out += ",";
+      out += detail::EscapeJsonString(dir == 0 ? t.hwMore.renderId[d] : t.hwMore.captureId[d]);
+    }
+    out += "]";
+  }
+  // Virtual Cable formats. Its presence also marks VIRTUAL srcChannel as cable * 8 + channel.
+  out += ",\"cables\":[";
+  for (int c = 0; c < kVirtualSlotCables; ++c) {
+    if (c) out += ",";
+    out += "{\"channels\":" + std::to_string(t.cables[c].channels) + ",\"format\":" + std::to_string(t.cables[c].format) + "}";
+  }
+  out += "]";
   out += "},";
   out += "\"netTx\":[";
   for (int i = 0; i < WHA_NET_STREAMS; ++i) {
@@ -515,6 +541,7 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
   WHASlot tmpOut[WHA_MAX] = {};
   uint32_t parsedIn = 0, parsedOut = 0;
   bool inCountSeen = false, outCountSeen = false;
+  bool haveCables = false;  // absent: a file from before 8-channel cables (VIRTUAL srcChannel = cable * 2 + side)
 
   while (true) {
     detail::SkipWs(s, p);
@@ -673,6 +700,41 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
           if (v.size() >= 32) return fail("virtualName too long");
           TruncateCopy(out.general.virtualName, 32, v.c_str());
           haveVN = true;
+        } else if (gkey == "hwRenderId" || gkey == "hwCaptureId") {  // optional: absent in older files = default device
+          std::string v;
+          if (!detail::ParseString(s, p, v)) return fail(gkey.c_str());
+          if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
+          TruncateCopy(gkey == "hwRenderId" ? out.general.hwRenderId : out.general.hwCaptureId, kEndpointIdLen, v.c_str());
+        } else if (gkey == "hwRenderMore" || gkey == "hwCaptureMore") {  // optional: absent = one device each way
+          if (!detail::Expect(s, p, '[')) return fail("HW device list [");
+          for (int d = 0; d + 1 < kHwDevices; ++d) {
+            std::string v;
+            if (!detail::ParseString(s, p, v)) return fail("HW device list id");
+            if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
+            TruncateCopy(gkey == "hwRenderMore" ? out.hwMore.renderId[d] : out.hwMore.captureId[d], kEndpointIdLen, v.c_str());
+            detail::SkipWs(s, p);
+            if (d + 2 < kHwDevices && !detail::Expect(s, p, ',')) return fail("HW device list ,");
+          }
+          if (!detail::Expect(s, p, ']')) return fail("HW device list ]");
+        } else if (gkey == "cables") {  // optional: absent = every cable stereo float
+          if (!detail::Expect(s, p, '[')) return fail("cables [");
+          for (int c = 0; c < kVirtualSlotCables; ++c) {
+            if (!detail::Expect(s, p, '{')) return fail("cables {");
+            for (int field = 0; field < 2; ++field) {
+              std::string ckey;
+              uint32_t v = 0;
+              if (!detail::ParseString(s, p, ckey) || !detail::Expect(s, p, ':') || !detail::ParseUInt(s, p, v) || v > 255)
+                return fail("cables field");
+              if (ckey == "channels") out.cables[c].channels = static_cast<uint8_t>(v);
+              else if (ckey == "format") out.cables[c].format = static_cast<uint8_t>(v);
+              else return fail("cables unknown field");
+              if (field == 0 && !detail::Expect(s, p, ',')) return fail("cables ,");
+            }
+            if (!detail::Expect(s, p, '}')) return fail("cables }");
+            if (c + 1 < kVirtualSlotCables && !detail::Expect(s, p, ',')) return fail("cables list ,");
+          }
+          if (!detail::Expect(s, p, ']')) return fail("cables ]");
+          haveCables = true;
         } else return fail("unknown general key");
         detail::SkipWs(s, p);
         if (p < s.size() && s[p] == ',') {
@@ -728,6 +790,14 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
   out.masterOutCount = parsedOut;
   for (uint32_t i = 0; i < parsedIn; ++i) out.masterIn[i] = tmpIn[i];
   for (uint32_t i = 0; i < parsedOut; ++i) out.masterOut[i] = tmpOut[i];
+  if (!haveCables) {  // stereo cables: Virtual N L/R -> channel 1/2 of cable N
+    auto convert = [](WHASlot& slot) {
+      if (slot.type == SLOT_VIRTUAL && slot.srcChannel >= 0)
+        slot.srcChannel = (slot.srcChannel / 2) * kVirtualCableChannels + slot.srcChannel % 2;
+    };
+    for (uint32_t i = 0; i < parsedIn; ++i) convert(out.masterIn[i]);
+    for (uint32_t i = 0; i < parsedOut; ++i) convert(out.masterOut[i]);
+  }
   if (!ValidateSlots(out, error)) return false;
   return true;
 }

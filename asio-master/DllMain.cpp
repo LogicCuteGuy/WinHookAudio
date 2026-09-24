@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "WinHookMasterASIO.h"
+#include "WHARegister.h"
 
 using namespace wha;
 
@@ -35,5 +36,15 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, voi
   return CLASS_E_CLASSNOTAVAILABLE;
 }
 extern "C" HRESULT __stdcall DllCanUnloadNow() { return S_FALSE; }
-extern "C" HRESULT __stdcall DllRegisterServer() { return S_OK; }
-extern "C" HRESULT __stdcall DllUnregisterServer() { return S_OK; }
+static const AsioRegistration kRegistrations[] = {
+    {&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master (512)"},
+};
+// regsvr32 (elevated) WinHookAudioMasterASIO64.dll
+extern "C" HRESULT __stdcall DllRegisterServer() { return RegisterAsioDrivers(g_hModule, kRegistrations, 1); }
+extern "C" HRESULT __stdcall DllUnregisterServer() { return UnregisterAsioDrivers(kRegistrations, 1); }
+// Counters of the Master streaming in this process (WHAMasterStats.h); -1 when none is.
+extern "C" int __stdcall WHAGetMasterStats(WHAMasterStats* out) {
+  WinHookMasterASIO* master = WinHookMasterASIO::streaming();
+  if (!master || !out) return -1;
+  return master->stats(out) ? 0 : -1;
+}

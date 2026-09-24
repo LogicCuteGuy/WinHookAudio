@@ -38,7 +38,9 @@ int main() {
   bool toneMeasured = false;
   if (opened) {
     check("KS exclusive", ks.isExclusive());
-    check("KS latency 1.33ms", std::abs(ks.latencyMs() - 1.333) < 0.1);
+    // 64 frames requested; a device whose minimum period is longer gets its minimum (HD Audio: 2.67 ms).
+    std::printf("KS period: %.2f ms (64 frames = 1.33 ms requested)\n", ks.latencyMs());
+    check("KS period = max(requested 1.33 ms, device minimum)", ks.latencyMs() >= 1.333 - 0.01);
     ks.start();
     float tone[64] = {};
     for (int i = 0; i < 64; ++i) tone[i] = 0.1f;

@@ -2,87 +2,67 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
-#include <functiondiscoverykeys_devpkey.h>
+
+#include <cstdio>
 
 namespace wha {
+
+namespace {
+
+struct ClientLock {  // exclusive SRW lock for the scope
+  explicit ClientLock(SRWLOCK& lock) : lock_(lock) { AcquireSRWLockExclusive(&lock_); }
+  ~ClientLock() { ReleaseSRWLockExclusive(&lock_); }
+  ClientLock(const ClientLock&) = delete;
+  ClientLock& operator=(const ClientLock&) = delete;
+  SRWLOCK& lock_;
+};
+
+}  // namespace
 
 KsAudio::KsAudio() = default;
 KsAudio::~KsAudio() { close(); }
 
-bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames) {
+bool KsAudio::fail(const char* step, HRESULT hr) {
+  lastError_ = hr;
+  lastStep_ = step;
+  char msg[160];
+  std::snprintf(msg, sizeof(msg), "WinHookAudio KsAudio: %s failed 0x%08lX\n", step, static_cast<unsigned long>(hr));
+  OutputDebugStringA(msg);
+  close();
+  return false;
+}
+
+bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames, const char* endpointId) {
   close();
   sampleRate_ = sampleRate;
   bufferFrames_ = bufferFrames;
   exclusive_ = false;
+  lastError_ = S_OK;
+  lastStep_ = "";
+  capacityFrames_ = 0;
+  streamLatencyFrames_ = 0;
+  endpointId_.clear();
+  writes_ = 0;
+  framesWritten_ = 0;
+  underruns_ = 0;
+  drops_ = 0;
+  minFill_ = -1;
+  maxFill_ = 0;
 
-  HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  comInitialized_ = SUCCEEDED(hr);
-  bool needUninit = comInitialized_;
-
-  IMMDeviceEnumerator* enumerator = nullptr;
-  hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator);
-  if (FAILED(hr)) { if (needUninit) CoUninitialize(); return false; }
-
-  IMMDevice* device = nullptr;
-  hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-  enumerator->Release();
-  if (FAILED(hr)) { if (needUninit) CoUninitialize(); return false; }
-
-  hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient_);
-  device->Release();
-  if (FAILED(hr)) { if (needUninit) CoUninitialize(); return false; }
-
-  WAVEFORMATEX* mixFormat = nullptr;
-  hr = audioClient_->GetMixFormat(&mixFormat);
-  if (FAILED(hr)) {
-    if (needUninit) CoUninitialize();
-    comInitialized_ = false;
-    return false;
-  }
-
-  WAVEFORMATEXTENSIBLE extFmt{};
-  extFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  extFmt.Format.nChannels = 2;
-  extFmt.Format.nSamplesPerSec = sampleRate;
-  extFmt.Format.wBitsPerSample = 32;
-  extFmt.Format.nBlockAlign = extFmt.Format.nChannels * extFmt.Format.wBitsPerSample / 8;
-  extFmt.Format.nAvgBytesPerSec = extFmt.Format.nSamplesPerSec * extFmt.Format.nBlockAlign;
-  extFmt.Format.cbSize = 22;
-  extFmt.Samples.wValidBitsPerSample = 32;
-  extFmt.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
-  extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
-  WAVEFORMATEX* fmtPtr = reinterpret_cast<WAVEFORMATEX*>(&extFmt);
-  // If mix is not float, use PCM
-  if (mixFormat && mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-    auto* mixExt = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(mixFormat);
-    if (mixExt->SubFormat != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) {
-      extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-    }
-  } else if (mixFormat && mixFormat->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
-    extFmt.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-  }
-  CoTaskMemFree(mixFormat);
-  mixFormat = nullptr;
-
-  // Exclusive only — no shared fallback (busy pin must surface as failure)
-  hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, 0, bufferFrames * 10000000 / sampleRate, bufferFrames * 10000000 / sampleRate, fmtPtr, nullptr);
-  if (FAILED(hr)) {
-    audioClient_->Release();
-    audioClient_ = nullptr;
-    if (needUninit) CoUninitialize();
-    comInitialized_ = false;
-    return false;
-  }
+  comInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+  KsOpenResult r;
+  if (!KsOpenExclusive(eRender, endpointId, sampleRate, bufferFrames, blockFrames, r)) return fail(r.step, r.error);
+  audioClient_ = r.client;
+  format_ = r.format;
   exclusive_ = true;
+  bufferFrames_ = r.periodFrames;
+  capacityFrames_ = r.capacityFrames;
+  streamLatencyFrames_ = r.streamLatencyFrames;
+  endpointId_ = r.endpointId;
+  blockFrames_ = blockFrames > 0 ? blockFrames : bufferFrames_;
 
-  hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
-  if (FAILED(hr)) {
-    audioClient_->Release();
-    audioClient_ = nullptr;
-    if (needUninit) CoUninitialize();
-    comInitialized_ = false;
-    return false;
-  }
+  HRESULT hr = audioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&renderClient_);
+  if (FAILED(hr)) return fail("GetService IAudioRenderClient", hr);
 
   hr = audioClient_->GetService(__uuidof(IAudioClock), (void**)&audioClock_);
   // Not fatal if no clock
@@ -93,6 +73,7 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames) {
 }
 
 void KsAudio::close() {
+  ClientLock lock(clientLock_);
   if (renderClient_) { renderClient_->Release(); renderClient_ = nullptr; }
   if (audioClock_) { audioClock_->Release(); audioClock_ = nullptr; }
   if (audioClient_) { audioClient_->Stop(); audioClient_->Release(); audioClient_ = nullptr; }
@@ -102,34 +83,65 @@ void KsAudio::close() {
 }
 
 bool KsAudio::start() {
-  if (!audioClient_) return false;
+  ClientLock lock(clientLock_);
+  if (!audioClient_ || !renderClient_) return false;
+  // Queue silence up to the target fill: the first Worker writes land ahead of the device, and the
+  // Master Clock starts at its steady state instead of bursting to fill the buffer.
+  BYTE* buffer = nullptr;
+  const UINT32 prefill = static_cast<UINT32>(targetFill() > 0 ? targetFill() : bufferFrames_);
+  if (SUCCEEDED(renderClient_->GetBuffer(prefill, &buffer)) &&
+      SUCCEEDED(renderClient_->ReleaseBuffer(prefill, AUDCLNT_BUFFERFLAGS_SILENT)))
+    framesWritten_.fetch_add(prefill);
   HRESULT hr = audioClient_->Start();
   return SUCCEEDED(hr);
 }
 void KsAudio::stop() {
+  ClientLock lock(clientLock_);
   if (audioClient_) audioClient_->Stop();
 }
 
-bool KsAudio::write(const float* data, int frames, int channels) {
+bool KsAudio::write(const float* data, int frames, int channels) { return writeFrames(data, frames, channels, false); }
+bool KsAudio::writeInterleaved(const float* data, int frames, int channels) {
+  return writeFrames(data, frames, channels, true);
+}
+
+// Source channel c -> device channel c; others silent.
+bool KsAudio::writeFrames(const float* data, int frames, int channels, bool interleaved) {
+  ClientLock lock(clientLock_);
   if (!renderClient_ || !audioClient_) return false;
   UINT32 padding = 0;
   audioClient_->GetCurrentPadding(&padding);
   UINT32 bufferFrames = 0;
   audioClient_->GetBufferSize(&bufferFrames);
   UINT32 available = bufferFrames - padding;
-  if (available < (UINT32)frames) return false;
+  if (available < (UINT32)frames) { drops_.fetch_add(1); return false; }
+  if (padding == 0 && writes_.load() > 0) underruns_.fetch_add(1);  // device ran dry before this block
+  const int32_t fill = static_cast<int32_t>(padding);
+  if (minFill_.load() < 0 || fill < minFill_.load()) minFill_ = fill;
+  if (fill > maxFill_.load()) maxFill_ = fill;
   BYTE* buffer = nullptr;
   HRESULT hr = renderClient_->GetBuffer(frames, &buffer);
   if (FAILED(hr)) return false;
-  // Interleave float data
-  float* out = reinterpret_cast<float*>(buffer);
   for (int f = 0; f < frames; ++f) {
-    for (int ch = 0; ch < channels; ++ch) {
-      out[f * channels + ch] = data[ch * frames + f];
+    for (int ch = 0; ch < kKsDeviceChannels; ++ch) {
+      const float v = ch >= channels ? 0.0f : interleaved ? data[f * channels + ch] : data[ch * frames + f];
+      KsToDevice(format_, v, buffer, f * kKsDeviceChannels + ch);
     }
   }
   hr = renderClient_->ReleaseBuffer(frames, 0);
+  if (SUCCEEDED(hr)) {
+    writes_.fetch_add(1);
+    framesWritten_.fetch_add(frames);
+  }
   return SUCCEEDED(hr);
+}
+
+long KsAudio::padding(int64_t* written) const {
+  ClientLock lock(clientLock_);
+  if (written) *written = framesWritten_.load();  // write() and start() change it under this lock
+  if (!audioClient_) return -1;
+  UINT32 queued = 0;
+  return SUCCEEDED(audioClient_->GetCurrentPadding(&queued)) ? static_cast<long>(queued) : -1;
 }
 
 double KsAudio::latencyMs() const {

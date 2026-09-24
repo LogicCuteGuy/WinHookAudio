@@ -1,0 +1,499 @@
+; WinHookAudio.inf - WinHookAudio Virtual Cable (PortCls WaveRT, root-enumerated Root\WinHookAudio).
+; Each cable: a playback endpoint (Windows apps play into it -> DAW input) and a recording endpoint
+; (DAW output -> Windows apps record it). driver/build.cmd stamps DriverVer and builds the catalog.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%ProviderName%
+CatalogFile=WinHookAudio.cat
+DriverVer=01/01/2026,1.0.0.0
+PnpLockdown=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[SourceDisksFiles]
+WinHookAudio.sys=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[Manufacturer]
+%ProviderName%=WHA,NTamd64
+
+[WHA.NTamd64]
+%WHA.DeviceDesc%=WHA.Device,Root\WinHookAudio
+
+[WHA.Device.NT]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration,WDMAUDIO.Registration
+CopyFiles=WHA.CopyFiles
+AddReg=WHA.AddReg
+
+[WHA.CopyFiles]
+WinHookAudio.sys
+
+[WHA.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,redbook"
+HKR,,Driver,,WinHookAudio.sys
+HKR,Drivers,SubClasses,,"wave,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\wave\wdmaud.drv,Description,,%WHA.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%WHA.DeviceDesc%
+; Endpoint names (the topology filters' endpoint pin Name GUID, WHAMiniports.cpp)
+HKLM,%MediaCategories%\%Output1.NameGuid%,Name,,%Output1.Name%
+HKLM,%MediaCategories%\%Output1.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input1.NameGuid%,Name,,%Input1.Name%
+HKLM,%MediaCategories%\%Input1.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output2.NameGuid%,Name,,%Output2.Name%
+HKLM,%MediaCategories%\%Output2.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input2.NameGuid%,Name,,%Input2.Name%
+HKLM,%MediaCategories%\%Input2.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output3.NameGuid%,Name,,%Output3.Name%
+HKLM,%MediaCategories%\%Output3.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input3.NameGuid%,Name,,%Input3.Name%
+HKLM,%MediaCategories%\%Input3.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output4.NameGuid%,Name,,%Output4.Name%
+HKLM,%MediaCategories%\%Output4.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input4.NameGuid%,Name,,%Input4.Name%
+HKLM,%MediaCategories%\%Input4.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output5.NameGuid%,Name,,%Output5.Name%
+HKLM,%MediaCategories%\%Output5.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input5.NameGuid%,Name,,%Input5.Name%
+HKLM,%MediaCategories%\%Input5.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output6.NameGuid%,Name,,%Output6.Name%
+HKLM,%MediaCategories%\%Output6.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input6.NameGuid%,Name,,%Input6.Name%
+HKLM,%MediaCategories%\%Input6.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output7.NameGuid%,Name,,%Output7.Name%
+HKLM,%MediaCategories%\%Output7.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input7.NameGuid%,Name,,%Input7.Name%
+HKLM,%MediaCategories%\%Input7.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Output8.NameGuid%,Name,,%Output8.Name%
+HKLM,%MediaCategories%\%Output8.NameGuid%,Display,1,00,00,00,00
+HKLM,%MediaCategories%\%Input8.NameGuid%,Name,,%Input8.Name%
+HKLM,%MediaCategories%\%Input8.NameGuid%,Display,1,00,00,00,00
+
+[WHA.Device.NT.Interfaces]
+; Reference strings = subdevice names in WHAAdapter.cpp
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave1%,WHA.I.OutputWave1
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave1%,WHA.I.OutputWave1
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave1%,WHA.I.OutputWave1
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology1%,WHA.I.OutputTopology1
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology1%,WHA.I.OutputTopology1
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave1%,WHA.I.InputWave1
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave1%,WHA.I.InputWave1
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave1%,WHA.I.InputWave1
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology1%,WHA.I.InputTopology1
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology1%,WHA.I.InputTopology1
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave2%,WHA.I.OutputWave2
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave2%,WHA.I.OutputWave2
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave2%,WHA.I.OutputWave2
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology2%,WHA.I.OutputTopology2
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology2%,WHA.I.OutputTopology2
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave2%,WHA.I.InputWave2
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave2%,WHA.I.InputWave2
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave2%,WHA.I.InputWave2
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology2%,WHA.I.InputTopology2
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology2%,WHA.I.InputTopology2
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave3%,WHA.I.OutputWave3
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave3%,WHA.I.OutputWave3
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave3%,WHA.I.OutputWave3
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology3%,WHA.I.OutputTopology3
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology3%,WHA.I.OutputTopology3
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave3%,WHA.I.InputWave3
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave3%,WHA.I.InputWave3
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave3%,WHA.I.InputWave3
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology3%,WHA.I.InputTopology3
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology3%,WHA.I.InputTopology3
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave4%,WHA.I.OutputWave4
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave4%,WHA.I.OutputWave4
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave4%,WHA.I.OutputWave4
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology4%,WHA.I.OutputTopology4
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology4%,WHA.I.OutputTopology4
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave4%,WHA.I.InputWave4
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave4%,WHA.I.InputWave4
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave4%,WHA.I.InputWave4
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology4%,WHA.I.InputTopology4
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology4%,WHA.I.InputTopology4
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave5%,WHA.I.OutputWave5
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave5%,WHA.I.OutputWave5
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave5%,WHA.I.OutputWave5
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology5%,WHA.I.OutputTopology5
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology5%,WHA.I.OutputTopology5
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave5%,WHA.I.InputWave5
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave5%,WHA.I.InputWave5
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave5%,WHA.I.InputWave5
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology5%,WHA.I.InputTopology5
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology5%,WHA.I.InputTopology5
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave6%,WHA.I.OutputWave6
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave6%,WHA.I.OutputWave6
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave6%,WHA.I.OutputWave6
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology6%,WHA.I.OutputTopology6
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology6%,WHA.I.OutputTopology6
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave6%,WHA.I.InputWave6
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave6%,WHA.I.InputWave6
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave6%,WHA.I.InputWave6
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology6%,WHA.I.InputTopology6
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology6%,WHA.I.InputTopology6
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave7%,WHA.I.OutputWave7
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave7%,WHA.I.OutputWave7
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave7%,WHA.I.OutputWave7
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology7%,WHA.I.OutputTopology7
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology7%,WHA.I.OutputTopology7
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave7%,WHA.I.InputWave7
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave7%,WHA.I.InputWave7
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave7%,WHA.I.InputWave7
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology7%,WHA.I.InputTopology7
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology7%,WHA.I.InputTopology7
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputWave8%,WHA.I.OutputWave8
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_OutputWave8%,WHA.I.OutputWave8
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_OutputWave8%,WHA.I.OutputWave8
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_OutputTopology8%,WHA.I.OutputTopology8
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_OutputTopology8%,WHA.I.OutputTopology8
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputWave8%,WHA.I.InputWave8
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_InputWave8%,WHA.I.InputWave8
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_InputWave8%,WHA.I.InputWave8
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_InputTopology8%,WHA.I.InputTopology8
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_InputTopology8%,WHA.I.InputTopology8
+
+[WHA.I.OutputWave1]
+AddReg=WHA.I.OutputWave1.AddReg
+[WHA.I.OutputWave1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave1.Desc%
+
+[WHA.I.OutputTopology1]
+AddReg=WHA.I.OutputTopology1.AddReg
+[WHA.I.OutputTopology1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology1.Desc%
+; The endpoint on this filter's endpoint pin; without an association Windows keeps it "not present".
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave1]
+AddReg=WHA.I.InputWave1.AddReg
+[WHA.I.InputWave1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave1.Desc%
+
+[WHA.I.InputTopology1]
+AddReg=WHA.I.InputTopology1.AddReg
+[WHA.I.InputTopology1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology1.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave2]
+AddReg=WHA.I.OutputWave2.AddReg
+[WHA.I.OutputWave2.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave2.Desc%
+
+[WHA.I.OutputTopology2]
+AddReg=WHA.I.OutputTopology2.AddReg
+[WHA.I.OutputTopology2.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology2.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave2]
+AddReg=WHA.I.InputWave2.AddReg
+[WHA.I.InputWave2.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave2.Desc%
+
+[WHA.I.InputTopology2]
+AddReg=WHA.I.InputTopology2.AddReg
+[WHA.I.InputTopology2.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology2.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave3]
+AddReg=WHA.I.OutputWave3.AddReg
+[WHA.I.OutputWave3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave3.Desc%
+
+[WHA.I.OutputTopology3]
+AddReg=WHA.I.OutputTopology3.AddReg
+[WHA.I.OutputTopology3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology3.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave3]
+AddReg=WHA.I.InputWave3.AddReg
+[WHA.I.InputWave3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave3.Desc%
+
+[WHA.I.InputTopology3]
+AddReg=WHA.I.InputTopology3.AddReg
+[WHA.I.InputTopology3.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology3.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave4]
+AddReg=WHA.I.OutputWave4.AddReg
+[WHA.I.OutputWave4.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave4.Desc%
+
+[WHA.I.OutputTopology4]
+AddReg=WHA.I.OutputTopology4.AddReg
+[WHA.I.OutputTopology4.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology4.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave4]
+AddReg=WHA.I.InputWave4.AddReg
+[WHA.I.InputWave4.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave4.Desc%
+
+[WHA.I.InputTopology4]
+AddReg=WHA.I.InputTopology4.AddReg
+[WHA.I.InputTopology4.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology4.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave5]
+AddReg=WHA.I.OutputWave5.AddReg
+[WHA.I.OutputWave5.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave5.Desc%
+
+[WHA.I.OutputTopology5]
+AddReg=WHA.I.OutputTopology5.AddReg
+[WHA.I.OutputTopology5.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology5.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave5]
+AddReg=WHA.I.InputWave5.AddReg
+[WHA.I.InputWave5.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave5.Desc%
+
+[WHA.I.InputTopology5]
+AddReg=WHA.I.InputTopology5.AddReg
+[WHA.I.InputTopology5.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology5.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave6]
+AddReg=WHA.I.OutputWave6.AddReg
+[WHA.I.OutputWave6.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave6.Desc%
+
+[WHA.I.OutputTopology6]
+AddReg=WHA.I.OutputTopology6.AddReg
+[WHA.I.OutputTopology6.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology6.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave6]
+AddReg=WHA.I.InputWave6.AddReg
+[WHA.I.InputWave6.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave6.Desc%
+
+[WHA.I.InputTopology6]
+AddReg=WHA.I.InputTopology6.AddReg
+[WHA.I.InputTopology6.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology6.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave7]
+AddReg=WHA.I.OutputWave7.AddReg
+[WHA.I.OutputWave7.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave7.Desc%
+
+[WHA.I.OutputTopology7]
+AddReg=WHA.I.OutputTopology7.AddReg
+[WHA.I.OutputTopology7.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology7.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave7]
+AddReg=WHA.I.InputWave7.AddReg
+[WHA.I.InputWave7.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave7.Desc%
+
+[WHA.I.InputTopology7]
+AddReg=WHA.I.InputTopology7.AddReg
+[WHA.I.InputTopology7.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology7.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.OutputWave8]
+AddReg=WHA.I.OutputWave8.AddReg
+[WHA.I.OutputWave8.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputWave8.Desc%
+
+[WHA.I.OutputTopology8]
+AddReg=WHA.I.OutputTopology8.AddReg
+[WHA.I.OutputTopology8.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.OutputTopology8.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.I.InputWave8]
+AddReg=WHA.I.InputWave8.AddReg
+[WHA.I.InputWave8.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputWave8.Desc%
+
+[WHA.I.InputTopology8]
+AddReg=WHA.I.InputTopology8.AddReg
+[WHA.I.InputTopology8.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%WHA.InputTopology8.Desc%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+[WHA.Device.NT.HW]
+AddReg=WHA.HW.AddReg
+
+[WHA.HW.AddReg]
+; Sound device; system and administrators full, everyone may stream (as Microsoft's sample).
+HKR,,DeviceType,0x10001,0x0000001D
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)"
+
+[WHA.Device.NT.Services]
+AddService=WinHookAudio,0x00000002,WHA.Service
+
+[WHA.Service]
+DisplayName=%WHA.ServiceDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\WinHookAudio.sys
+
+[Strings]
+ProviderName="WinHookAudio"
+DiskName="WinHookAudio Driver Disk"
+WHA.DeviceDesc="WinHookAudio Virtual Cable"
+WHA.ServiceDesc="WinHookAudio Virtual Cable"
+WHA.OutputWave1.Desc="WinHookAudio Virtual 1 Playback Wave"
+WHA.OutputTopology1.Desc="WinHookAudio Virtual 1 Playback Topology"
+WHA.InputWave1.Desc="WinHookAudio Virtual 1 Recording Wave"
+WHA.InputTopology1.Desc="WinHookAudio Virtual 1 Recording Topology"
+Output1.Name="WinHookAudio Output 1"
+Output1.NameGuid="{5EDB54C0-7282-42F3-9C57-F483AE5A32AC}"
+Input1.Name="WinHookAudio Input 1"
+Input1.NameGuid="{5EDB54D0-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave1="OutputWave1"
+KSNAME_OutputTopology1="OutputTopology1"
+KSNAME_InputWave1="InputWave1"
+KSNAME_InputTopology1="InputTopology1"
+WHA.OutputWave2.Desc="WinHookAudio Virtual 2 Playback Wave"
+WHA.OutputTopology2.Desc="WinHookAudio Virtual 2 Playback Topology"
+WHA.InputWave2.Desc="WinHookAudio Virtual 2 Recording Wave"
+WHA.InputTopology2.Desc="WinHookAudio Virtual 2 Recording Topology"
+Output2.Name="WinHookAudio Output 2"
+Output2.NameGuid="{5EDB54C1-7282-42F3-9C57-F483AE5A32AC}"
+Input2.Name="WinHookAudio Input 2"
+Input2.NameGuid="{5EDB54D1-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave2="OutputWave2"
+KSNAME_OutputTopology2="OutputTopology2"
+KSNAME_InputWave2="InputWave2"
+KSNAME_InputTopology2="InputTopology2"
+WHA.OutputWave3.Desc="WinHookAudio Virtual 3 Playback Wave"
+WHA.OutputTopology3.Desc="WinHookAudio Virtual 3 Playback Topology"
+WHA.InputWave3.Desc="WinHookAudio Virtual 3 Recording Wave"
+WHA.InputTopology3.Desc="WinHookAudio Virtual 3 Recording Topology"
+Output3.Name="WinHookAudio Output 3"
+Output3.NameGuid="{5EDB54C2-7282-42F3-9C57-F483AE5A32AC}"
+Input3.Name="WinHookAudio Input 3"
+Input3.NameGuid="{5EDB54D2-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave3="OutputWave3"
+KSNAME_OutputTopology3="OutputTopology3"
+KSNAME_InputWave3="InputWave3"
+KSNAME_InputTopology3="InputTopology3"
+WHA.OutputWave4.Desc="WinHookAudio Virtual 4 Playback Wave"
+WHA.OutputTopology4.Desc="WinHookAudio Virtual 4 Playback Topology"
+WHA.InputWave4.Desc="WinHookAudio Virtual 4 Recording Wave"
+WHA.InputTopology4.Desc="WinHookAudio Virtual 4 Recording Topology"
+Output4.Name="WinHookAudio Output 4"
+Output4.NameGuid="{5EDB54C3-7282-42F3-9C57-F483AE5A32AC}"
+Input4.Name="WinHookAudio Input 4"
+Input4.NameGuid="{5EDB54D3-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave4="OutputWave4"
+KSNAME_OutputTopology4="OutputTopology4"
+KSNAME_InputWave4="InputWave4"
+KSNAME_InputTopology4="InputTopology4"
+WHA.OutputWave5.Desc="WinHookAudio Virtual 5 Playback Wave"
+WHA.OutputTopology5.Desc="WinHookAudio Virtual 5 Playback Topology"
+WHA.InputWave5.Desc="WinHookAudio Virtual 5 Recording Wave"
+WHA.InputTopology5.Desc="WinHookAudio Virtual 5 Recording Topology"
+Output5.Name="WinHookAudio Output 5"
+Output5.NameGuid="{5EDB54C4-7282-42F3-9C57-F483AE5A32AC}"
+Input5.Name="WinHookAudio Input 5"
+Input5.NameGuid="{5EDB54D4-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave5="OutputWave5"
+KSNAME_OutputTopology5="OutputTopology5"
+KSNAME_InputWave5="InputWave5"
+KSNAME_InputTopology5="InputTopology5"
+WHA.OutputWave6.Desc="WinHookAudio Virtual 6 Playback Wave"
+WHA.OutputTopology6.Desc="WinHookAudio Virtual 6 Playback Topology"
+WHA.InputWave6.Desc="WinHookAudio Virtual 6 Recording Wave"
+WHA.InputTopology6.Desc="WinHookAudio Virtual 6 Recording Topology"
+Output6.Name="WinHookAudio Output 6"
+Output6.NameGuid="{5EDB54C5-7282-42F3-9C57-F483AE5A32AC}"
+Input6.Name="WinHookAudio Input 6"
+Input6.NameGuid="{5EDB54D5-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave6="OutputWave6"
+KSNAME_OutputTopology6="OutputTopology6"
+KSNAME_InputWave6="InputWave6"
+KSNAME_InputTopology6="InputTopology6"
+WHA.OutputWave7.Desc="WinHookAudio Virtual 7 Playback Wave"
+WHA.OutputTopology7.Desc="WinHookAudio Virtual 7 Playback Topology"
+WHA.InputWave7.Desc="WinHookAudio Virtual 7 Recording Wave"
+WHA.InputTopology7.Desc="WinHookAudio Virtual 7 Recording Topology"
+Output7.Name="WinHookAudio Output 7"
+Output7.NameGuid="{5EDB54C6-7282-42F3-9C57-F483AE5A32AC}"
+Input7.Name="WinHookAudio Input 7"
+Input7.NameGuid="{5EDB54D6-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave7="OutputWave7"
+KSNAME_OutputTopology7="OutputTopology7"
+KSNAME_InputWave7="InputWave7"
+KSNAME_InputTopology7="InputTopology7"
+WHA.OutputWave8.Desc="WinHookAudio Virtual 8 Playback Wave"
+WHA.OutputTopology8.Desc="WinHookAudio Virtual 8 Playback Topology"
+WHA.InputWave8.Desc="WinHookAudio Virtual 8 Recording Wave"
+WHA.InputTopology8.Desc="WinHookAudio Virtual 8 Recording Topology"
+Output8.Name="WinHookAudio Output 8"
+Output8.NameGuid="{5EDB54C7-7282-42F3-9C57-F483AE5A32AC}"
+Input8.Name="WinHookAudio Input 8"
+Input8.NameGuid="{5EDB54D7-7282-42F3-9C57-F483AE5A32AC}"
+KSNAME_OutputWave8="OutputWave8"
+KSNAME_OutputTopology8="OutputTopology8"
+KSNAME_InputWave8="InputWave8"
+KSNAME_InputTopology8="InputTopology8"
+MediaCategories="SYSTEM\CurrentControlSet\Control\MediaCategories"
+KSNODETYPE_ANY="{00000000-0000-0000-0000-000000000000}"
+PKEY_AudioEndpoint_Association="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_REALTIME="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSCATEGORY_TOPOLOGY="{DDA54A40-1E4C-11D1-A050-405705C10000}"

@@ -38,56 +38,6 @@ bool ParsePcmPayload(const uint8_t* payload, uint32_t payloadBytes, float* out, 
   return false;
 }
 
-std::vector<uint8_t> VorbisEncode(const float* data, uint32_t channels, uint32_t frames, float quality) {
-  // Stub: if libvorbis not available, fallback to PCM_F32
-  (void)quality;
-  return BuildPcmPayload(data, channels, frames, WHA_PCM_F32);
-}
-bool VorbisDecode(const uint8_t* payload, uint32_t payloadBytes, float* out, uint32_t channels, uint32_t frames, float quality) {
-  (void)quality;
-  return ParsePcmPayload(payload, payloadBytes, out, channels, frames, WHA_PCM_F32);
-}
-bool Resample(const float* in, uint32_t inFrames, uint32_t inRate, float* out, uint32_t outFrames, uint32_t outRate, uint32_t channels) {
-  // Stub: if r8brain not available, simple linear resample or memcpy if same rate
-  if (inRate == outRate) {
-    uint32_t frames = inFrames < outFrames ? inFrames : outFrames;
-    std::memcpy(out, in, frames * channels * sizeof(float));
-    return true;
-  }
-  // Simple linear interpolation stub
-  for (uint32_t ch = 0; ch < channels; ++ch) {
-    for (uint32_t f = 0; f < outFrames; ++f) {
-      double srcPos = (double)f * inFrames / outFrames;
-      uint32_t srcIdx = static_cast<uint32_t>(srcPos);
-      double frac = srcPos - srcIdx;
-      if (srcIdx + 1 < inFrames) out[f * channels + ch] = static_cast<float>(in[srcIdx * channels + ch] * (1 - frac) + in[(srcIdx + 1) * channels + ch] * frac);
-      else out[f * channels + ch] = in[srcIdx * channels + ch];
-    }
-  }
-  return true;
-}
-
-WHACodebook BuildCodebook(uint32_t streamId, uint32_t sampleRate, uint32_t channels, float quality) {
-  WHACodebook cb;
-  cb.streamId = streamId;
-  cb.sampleRate = sampleRate;
-  cb.channels = channels;
-  cb.quality = quality;
-  // Stub: 3 headers as dummy bytes (ident/comment/codebook)
-  cb.headers.resize(100);
-  for (size_t i = 0; i < cb.headers.size(); ++i) cb.headers[i] = static_cast<uint8_t>(i & 0xFF);
-  return cb;
-}
-
-bool ValidateCodebook(const WHACodebook& cb) {
-  if (cb.streamId >= kNetStreams) return false;
-  if (cb.sampleRate != 44100 && cb.sampleRate != 48000 && cb.sampleRate != 96000) return false;
-  if (cb.channels < 1 || cb.channels > 128) return false;
-  if (cb.quality < 0.1f || cb.quality > 1.0f) return false;
-  if (cb.headers.empty()) return false;
-  return true;
-}
-
 bool SendWhaaPacket(const WHAAPacketHeader& header, const uint8_t* payload, const char* ip, uint16_t port) {
   if (!IsValidWhaaPayload(header.payloadBytes)) return false;
   WSADATA wsa;

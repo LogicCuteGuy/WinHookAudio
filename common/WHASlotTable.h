@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace wha {
@@ -19,6 +20,7 @@ constexpr uint32_t kMasterClockBitsDefault = 32u;
 constexpr uint32_t kMasterClockBufferDefault = 128u;
 constexpr uint32_t kMaxPcmChannels = 32;
 constexpr uint32_t kMaxVorbisChannels = 128;
+constexpr uint32_t kEndpointIdLen = 64;  // "{0.0.0.00000000}.{guid}" is 55 chars
 
 // Backward compat macros (prefer constexpr above)
 #define WHA_MAX wha::kMax
@@ -58,7 +60,10 @@ struct WHAGeneral {
   uint32_t sampleRate = WHA_MASTER_CLOCK_RATE_DEFAULT;
   uint32_t bitDepth = WHA_MASTER_CLOCK_BITS_DEFAULT;
   uint32_t asioBuffer = WHA_MASTER_CLOCK_BUFFER_DEFAULT;
-  // Per-thing Worker FIFOs — Worker adapts to Master Clock, no DAW reset.
+  // Per-thing Worker FIFOs — Worker adapts to Master Clock, no DAW reset. Except hwBuffer: the HW
+  // device period, applied when the Worker opens the device, and part of the reported latencies.
+  // A request below the device's minimum period gets the minimum (the reported latency follows the
+  // period actually used); 0 = Auto = the minimum.
   uint32_t hwBuffer = 64;
   uint32_t virtualBuffer = 256;
   uint32_t bridgeBuffer[WHA_BRIDGE_COUNT] = {128, 128, 128, 128};
@@ -68,6 +73,9 @@ struct WHAGeneral {
   uint32_t jitterVorbis = 50;
   uint32_t virtualCables = 8;  // 8 or 64 (GENERAL Virtual Cables)
   char virtualName[32] = "WinHookAudio Virtual";
+  // HW slot endpoints (IMMDevice IDs); empty = the Windows default device of that direction.
+  char hwRenderId[kEndpointIdLen] = "";
+  char hwCaptureId[kEndpointIdLen] = "";
 };
 
 struct WHANetworkStream {
@@ -76,6 +84,25 @@ struct WHANetworkStream {
   WHACodec codec = WHA_PCM_F32;
   float quality = 0.4f;
   uint32_t channels = 2;
+};
+
+// HW devices per direction: device 0 is GENERAL hwRenderId / hwCaptureId (the output one is the
+// Master Clock), devices 1..3 are here ("" = not in the list). A HW slot's streamId is its device.
+// Appended after netRx, so every earlier field keeps its offset.
+constexpr int32_t kHwDevices = 4;
+struct WHAHwMore {
+  char renderId[kHwDevices - 1][kEndpointIdLen] = {};
+  char captureId[kHwDevices - 1][kEndpointIdLen] = {};
+};
+
+// Per Virtual Cable: its channels (2, 4, 6, 8) and sample format (WHASampleKind: 0 = 32-bit float,
+// 1 = 16, 2 = 24, 3 = 32-bit PCM, 4 = 24 bits in 32). The rate is the Master Clock's. The Worker sends
+// them to the driver, whose endpoints then offer exactly this format. Appended after hwMore.
+constexpr int32_t kVirtualSlotCables = 8;
+struct WHACableSetting {
+  uint8_t channels = 2;
+  uint8_t format = 0;
+  uint8_t _pad[2] = {};
 };
 
 struct WHASlotTable {
@@ -87,8 +114,27 @@ struct WHASlotTable {
   WHAGeneral general = {};
   WHANetworkStream netTx[WHA_NET_STREAMS] = {};
   WHANetworkStream netRx[WHA_NET_STREAMS] = {};
+  WHAHwMore hwMore = {};
+  WHACableSetting cables[kVirtualSlotCables] = {};
 };
 #pragma pack(pop)
+
+// Endpoint ID of HW device `device` of one direction (see WHAHwMore); nullptr out of range.
+inline const char* HwDeviceId(const WHASlotTable& t, bool isInput, int device) {
+  if (device == 0) return isInput ? t.general.hwCaptureId : t.general.hwRenderId;
+  if (device < 0 || device >= kHwDevices) return nullptr;
+  return isInput ? t.hwMore.captureId[device - 1] : t.hwMore.renderId[device - 1];
+}
+inline char* HwDeviceId(WHASlotTable& t, bool isInput, int device) {
+  return const_cast<char*>(HwDeviceId(static_cast<const WHASlotTable&>(t), isInput, device));
+}
+// Device 0 is always in the list ("" = the Windows default); 1..3 when they have an ID.
+inline bool HwDeviceListed(const WHASlotTable& t, bool isInput, int device) {
+  const char* id = HwDeviceId(t, isInput, device);
+  return id && (device == 0 || id[0]);
+}
+// A HW slot's device: its streamId; one out of range (older files) is device 0.
+inline int HwDeviceOf(const WHASlot& s) { return s.streamId > 0 && s.streamId < kHwDevices ? s.streamId : 0; }
 
 // ---- Offline validation (no I/O, no threads) ----
 
@@ -152,6 +198,110 @@ constexpr bool IsValidMasterClock(uint32_t rate, uint32_t buffer) {
   const bool bufferOk =
       buffer == 64 || buffer == 128 || buffer == 256 || buffer == 512 || buffer == 1024;
   return rateOk && bufferOk;
+}
+
+// What the Master DAW sees through getChannels/getChannelInfo/getSampleRate/getBufferSize/
+// getLatencies. A change here needs hostCallback(ASIOResetRequest). The HW devices and period count
+// too: the Worker opens them at start, and they set the reported latencies. Other Per-Thing buffers
+// and routing fields do not.
+inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
+  if (a.masterInCount != b.masterInCount || a.masterOutCount != b.masterOutCount) return true;
+  if (a.general.sampleRate != b.general.sampleRate || a.general.asioBuffer != b.general.asioBuffer) return true;
+  if (a.general.hwBuffer != b.general.hwBuffer) return true;
+  for (int d = 0; d < kHwDevices; ++d)
+    if (std::strncmp(HwDeviceId(a, false, d), HwDeviceId(b, false, d), kEndpointIdLen) != 0 ||
+        std::strncmp(HwDeviceId(a, true, d), HwDeviceId(b, true, d), kEndpointIdLen) != 0)
+      return true;
+  // A HW slot moved to another device may need that device opened (and changes its channel name).
+  // A Bridge or Virtual slot's channel is in its automatic name ("Bridge1 Ch3", "Virtual 2 R").
+  auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
+    return x.type != y.type || x.enabled != y.enabled || std::strncmp(x.name, y.name, kNameLen) != 0 ||
+           (x.type == SLOT_HW && HwDeviceOf(x) != HwDeviceOf(y)) ||
+           ((IsBridgeType(x.type) || x.type == SLOT_VIRTUAL) && x.srcChannel != y.srcChannel);
+  };
+  for (uint32_t i = 0; i < a.masterInCount && i < kMax; ++i)
+    if (slotDiffers(a.masterIn[i], b.masterIn[i])) return true;
+  for (uint32_t i = 0; i < a.masterOutCount && i < kMax; ++i)
+    if (slotDiffers(a.masterOut[i], b.masterOut[i])) return true;
+  return false;
+}
+
+// HW slots take one channel of a stereo device (KsEndpoint kKsDeviceChannels): srcChannel 0 = L, 1 = R.
+constexpr int32_t kHwSlotChannels = 2;
+
+// VIRTUAL slots take one channel of a Virtual Cable: srcChannel = cable * 8 + channel (0 = L, 1 = R,
+// then C, LFE, ... up to the cable's channel count), cables 1..8. A channel past the cable's count is
+// silent. (Files from before 8-channel cables stored cable * 2 + side; DeserializeSlots converts them.)
+constexpr int32_t kVirtualCableChannels = 8;
+inline int VirtualCableOf(const WHASlot& s) {
+  return s.srcChannel < 0 ? 0 : (s.srcChannel / kVirtualCableChannels) % kVirtualSlotCables;
+}
+inline int VirtualChannelOf(const WHASlot& s) { return s.srcChannel < 0 ? 0 : s.srcChannel % kVirtualCableChannels; }
+constexpr bool IsValidCableSetting(const WHACableSetting& c) {
+  return (c.channels == 2 || c.channels == 4 || c.channels == 6 || c.channels == 8) && c.format <= 4;
+}
+
+// A name nobody chose: what an empty slot shows.
+inline bool IsPlaceholderName(const char* name) {
+  return name == nullptr || name[0] == '\0' || std::strncmp(name, "- empty -", kNameLen) == 0;
+}
+
+// A device's friendly name without the driver part, short enough for "<name> R" in an ASIO channel
+// name: "Microphone (High Definition Audio Device)" -> "Microphone". Empty in, empty out.
+inline void ShortDeviceName(const char* friendly, char* out, std::size_t outLen) {
+  constexpr std::size_t kMaxShort = kNameLen - 3;  // room for " L" and the terminator
+  std::size_t n = 0;
+  if (friendly)
+    while (friendly[n] && n < kMaxShort && !(friendly[n] == ' ' && friendly[n + 1] == '(')) ++n;
+  if (n >= outLen) n = outLen - 1;
+  if (friendly && n) std::memcpy(out, friendly, n);
+  out[n] = '\0';
+}
+
+// The name a slot gets when its source is assigned and nobody named it: what it carries, so the DAW's
+// channel list reads "Microphone L" instead of "- empty -". `slots` is the slot's list (INPUTS or
+// OUTPUTS); a Bridge slot's channel is its order among that Bridge's slots (see MasterHolder).
+// hwDevices: friendly names of this direction's HW devices, by device index (kHwDevices entries;
+// nullptr or a nullptr/"" entry = unknown: "HW In L", "HW In 2 L").
+inline void AutoSlotName(const WHASlot* slots, [[maybe_unused]] uint32_t count, uint32_t index, bool isInput,
+                         const char* const* hwDevices, char* out) {
+  const WHASlot& s = slots[index];
+  const int ch = s.srcChannel + 1;
+  switch (s.type) {
+    case SLOT_NONE: std::snprintf(out, kNameLen, "- empty -"); break;
+    case SLOT_HW: {
+      const int d = HwDeviceOf(s);
+      char device[kNameLen];
+      ShortDeviceName(hwDevices ? hwDevices[d] : nullptr, device, sizeof(device));
+      if (!device[0] && d == 0) std::snprintf(device, sizeof(device), "HW %s", isInput ? "In" : "Out");
+      else if (!device[0]) std::snprintf(device, sizeof(device), "HW %s %d", isInput ? "In" : "Out", d + 1);
+      if (s.srcChannel == 0 || s.srcChannel == 1)
+        std::snprintf(out, kNameLen, "%s %c", device, s.srcChannel == 0 ? 'L' : 'R');
+      else
+        std::snprintf(out, kNameLen, "%s Ch%d", device, ch);
+      break;
+    }
+    case SLOT_VIRTUAL: {  // "Virtual 2 L", "Virtual 2 R", then "Virtual 2 Ch3" (which speaker depends on the cable)
+      const int c = VirtualChannelOf(s);
+      if (c < 2) std::snprintf(out, kNameLen, "Virtual %d %c", VirtualCableOf(s) + 1, c ? 'R' : 'L');
+      else std::snprintf(out, kNameLen, "Virtual %d Ch%d", VirtualCableOf(s) + 1, c + 1);
+      break;
+    }
+    case SLOT_NETWORK: std::snprintf(out, kNameLen, "%s%d Ch%d", isInput ? "Rx" : "Tx", s.streamId + 1, ch); break;
+    default:  // SLOT_BRIDGE1..4: the channel the slot picks in the Bridge app
+      std::snprintf(out, kNameLen, "Bridge%d Ch%d", static_cast<int>(s.type - SLOT_BRIDGE1) + 1, ch);
+      break;
+  }
+}
+
+// The channel name a DAW gets (getChannelInfo): "- empty -" for an empty slot, the slot's own name,
+// or, when nobody named it, its automatic name. Automatic names are not stored, so they follow the
+// slot's type, source and order.
+inline void DawChannelName(const WHASlot* slots, uint32_t count, uint32_t index, bool isInput,
+                           const char* const* hwDevices, char* out) {
+  const WHASlot& s = slots[index];
+  if (s.type != SLOT_NONE && !IsPlaceholderName(s.name)) TruncateCopy(out, kNameLen, s.name);
+  else AutoSlotName(slots, count, index, isInput, hwDevices, out);
 }
 
 inline void SetSlotName(WHASlot& slot, const char* text) {
