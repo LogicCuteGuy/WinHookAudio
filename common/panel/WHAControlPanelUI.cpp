@@ -157,16 +157,16 @@ bool SetInputName(PanelModel& model, uint32_t index, const char* name) {
 
 namespace {
 
-// A HW slot's source is L or R of a listed device: a channel or stream left over from another type is reset.
+// A HW slot's source is a channel of a listed device: a channel or stream left over from another type is reset.
 void ClampHwSource(const WHASlotTable& t, bool isInput, WHASlot& s) {
   if (s.type != SLOT_HW) return;
-  if (s.srcChannel < 0 || s.srcChannel >= kHwSlotChannels) s.srcChannel = 0;
+  if (s.srcChannel < 0 || s.srcChannel >= kHwMaxChannels) s.srcChannel = 0;
   if (s.streamId < 0 || s.streamId >= kHwDevices || !HwDeviceListed(t, isInput, s.streamId)) s.streamId = 0;
 }
 
 bool IsValidSource(WHASlotType type, int32_t srcChannel, int32_t streamId) {
   switch (type) {
-    case SLOT_HW: return srcChannel >= 0 && srcChannel < kHwSlotChannels && streamId >= 0 && streamId < kHwDevices;
+    case SLOT_HW: return srcChannel >= 0 && srcChannel < kHwMaxChannels && streamId >= 0 && streamId < kHwDevices;
     case SLOT_NETWORK:
       return streamId >= 0 && streamId < static_cast<int32_t>(kNetStreams) && srcChannel >= 0 &&
              srcChannel < static_cast<int32_t>(kMaxPcmChannels);
@@ -341,6 +341,7 @@ int AddHwDevice(PanelModel& model, bool isInput, const char* id) {
 bool RemoveHwDevice(PanelModel& model, bool isInput, int device) {
   if (IsGeneralReadOnly(model) || device < 1 || device >= kHwDevices || !HwDeviceListed(model.table, isInput, device)) return false;
   HwDeviceId(model.table, isInput, device)[0] = '\0';
+  SetHwDeviceMode(model.table, isInput, device, HW_MODE_EXCLUSIVE);  // a device added there later starts fresh
   WHASlot* slots = isInput ? model.table.masterIn : model.table.masterOut;
   const uint32_t count = isInput ? model.table.masterInCount : model.table.masterOutCount;
   for (uint32_t i = 0; i < count && i < kMax; ++i)
@@ -348,6 +349,12 @@ bool RemoveHwDevice(PanelModel& model, bool isInput, int device) {
       slots[i].type = SLOT_NONE;
       slots[i].srcChannel = slots[i].streamId = 0;
     }
+  return true;
+}
+
+bool SetHwMode(PanelModel& model, bool isInput, int device, uint8_t mode) {
+  if (IsGeneralReadOnly(model) || mode >= kHwModeCount || !HwDeviceListed(model.table, isInput, device)) return false;
+  SetHwDeviceMode(model.table, isInput, device, mode);
   return true;
 }
 
@@ -360,8 +367,10 @@ const char* EndpointName(const std::vector<PanelEndpoint>& list, const char* id)
 const char* HwErrorText(int32_t hr) {
   switch (static_cast<HRESULT>(hr)) {
     case AUDCLNT_E_DEVICE_IN_USE: return "in use by another application (exclusive)";
-    case AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED: return "exclusive mode not allowed (Sound settings > device Properties > Advanced)";
-    case AUDCLNT_E_UNSUPPORTED_FORMAT: return "no stereo float32/24-bit/16-bit format at this sample rate";
+    case AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED:
+      return "exclusive mode not allowed (Sound settings > device Properties > Advanced; or Mode Shared or Auto)";
+    case AUDCLNT_E_UNSUPPORTED_FORMAT:
+      return "no stereo float32/24-bit/16-bit format at this sample rate (Mode Shared or Auto: Windows converts)";
     case AUDCLNT_E_INVALID_DEVICE_PERIOD: return "period not supported by the device";
     case AUDCLNT_E_BUFFER_SIZE_ERROR: return "buffer size not supported by the device";
     case AUDCLNT_E_DEVICE_INVALIDATED: return "device removed or disabled";
@@ -404,6 +413,22 @@ std::string PeriodText(int32_t actual, int32_t requested, int32_t rate) {
   return s + ")";
 }
 
+// "exclusive float32", "shared float32", "shared float32 (Auto: exclusive refused)"
+std::string ModeText(int32_t opened, int32_t requested, int32_t format) {
+  std::string s = opened == HW_MODE_SHARED ? "shared " : "exclusive ";
+  s += HwFormatText(format);
+  if (requested == HW_MODE_AUTO) s += opened == HW_MODE_SHARED ? " (Auto: exclusive refused)" : " (Auto)";
+  return s;
+}
+
+// Exclusive: the device period (PeriodText). Shared: the Windows mixer's, the requested one does not apply.
+std::string DevicePeriodText(int32_t opened, int32_t actual, int32_t requested, int32_t rate) {
+  if (opened != HW_MODE_SHARED) return PeriodText(actual, requested, rate);
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "Windows mixer period %d frames (%.2f ms)", actual, FramesMs(actual, rate));
+  return buf;
+}
+
 HwStatusLine HwFailedLine(const char* direction, int32_t hr, const char* consequence) {
   char buf[256];
   const char* why = HwErrorText(hr);
@@ -415,7 +440,8 @@ HwStatusLine HwFailedLine(const char* direction, int32_t hr, const char* consequ
 }  // namespace
 
 std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGeneral& saved, const PanelDevices* devices,
-                                        const WHAHwMore* savedMore) {
+                                        const WHASlotTable* savedLists) {
+  auto chText = [](int32_t channels) { return channels > 0 ? ", " + std::to_string(channels) + " ch" : std::string(); };
   std::vector<HwStatusLine> lines;
   if (!st) {
     lines.push_back({HwStatusLevel::Info, "Not streaming: HW devices open when the DAW starts the driver."});
@@ -425,9 +451,11 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
   char buf[512];
 
   if (st->hwOpen) {
-    std::snprintf(buf, sizeof(buf), "Output: %s - exclusive %s, %s, latency %.1f ms",
-                  DeviceLabel(devices ? &devices->render : nullptr, st->hwRenderId).c_str(), HwFormatText(st->hwFormat),
-                  PeriodText(st->hwPeriod, st->hwRequestedPeriod, rate).c_str(), FramesMs(st->hwLatency, rate));
+    std::snprintf(buf, sizeof(buf), "Output: %s - %s%s, %s, latency %.1f ms",
+                  DeviceLabel(devices ? &devices->render : nullptr, st->hwRenderId).c_str(),
+                  ModeText(st->hwOutMode[0], st->hwOutRequestedMode[0], st->hwFormat).c_str(), chText(st->hwOutChannels[0]).c_str(),
+                  DevicePeriodText(st->hwOutMode[0], st->hwPeriod, st->hwRequestedPeriod, rate).c_str(),
+                  FramesMs(st->hwLatency, rate));
     lines.push_back({HwStatusLevel::Ok, buf});
     if (st->hwChunk > 0) {
       std::snprintf(buf, sizeof(buf), "Output device plays in %d-frame chunks (%.1f ms): the DAW is still called evenly",
@@ -446,9 +474,10 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
   }
 
   if (st->hwInOpen) {
-    std::snprintf(buf, sizeof(buf), "Input: %s - exclusive %s, %s, latency %.1f ms, clock %+.1f ppm%s",
+    std::snprintf(buf, sizeof(buf), "Input: %s - %s%s, %s, latency %.1f ms, clock %+.1f ppm%s",
                   DeviceLabel(devices ? &devices->capture : nullptr, st->hwCaptureId).c_str(),
-                  HwFormatText(st->hwInFormat), PeriodText(st->hwInPeriod, st->hwRequestedPeriod, rate).c_str(),
+                  ModeText(st->hwInMode[0], st->hwInRequestedMode[0], st->hwInFormat).c_str(), chText(st->hwInChannels[0]).c_str(),
+                  DevicePeriodText(st->hwInMode[0], st->hwInPeriod, st->hwRequestedPeriod, rate).c_str(),
                   FramesMs(st->hwInLatency, rate), st->hwInDriftPpmMilli / 1000.0,
                   st->hwInDriftEngaged ? " (resampling)" : "");
     lines.push_back({HwStatusLevel::Ok, buf});
@@ -470,23 +499,26 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
     lines.push_back({HwStatusLevel::Info, "Input: not open (no HW IN slot when the DAW started)."});
   }
 
-  // Devices 2..4: each on its own clock, resampled to the Master Clock.
-  for (int k = 0; k < kStatsHwMore; ++k) {
+  // Devices 2 and up: each on its own clock, resampled to the Master Clock.
+  for (int d = 1; d < kStatsHwDevices; ++d) {
     for (int dir = 0; dir < 2; ++dir) {
       const bool isInput = dir == 1;
-      const WHAHwDeviceStats& h = isInput ? st->hwMoreIn[k] : st->hwMoreOut[k];
+      const WHAHwDeviceStats& h = *HwDeviceStats(*st, isInput, d);
       if (!h.used) continue;
       char what[24];
-      std::snprintf(what, sizeof(what), "%s #%d", isInput ? "Input" : "Output", k + 2);
+      std::snprintf(what, sizeof(what), "%s #%d", isInput ? "Input" : "Output", d + 1);
       const std::vector<PanelEndpoint>* list = devices ? (isInput ? &devices->capture : &devices->render) : nullptr;
       if (h.sameAs >= 0) {
         std::snprintf(buf, sizeof(buf), "%s: the same device as #%d: its slots %s through that one.", what, h.sameAs + 1,
                       isInput ? "record" : "play");
         lines.push_back({HwStatusLevel::Info, buf});
       } else if (h.open) {
-        std::snprintf(buf, sizeof(buf), "%s: %s - exclusive %s, %s, latency %.1f ms, clock %+.1f ppm%s", what,
-                      DeviceLabel(list, h.id).c_str(), HwFormatText(h.format),
-                      PeriodText(h.period, st->hwRequestedPeriod, rate).c_str(), FramesMs(h.latency, rate),
+        const int32_t opened = isInput ? st->hwInMode[d] : st->hwOutMode[d];
+        std::snprintf(buf, sizeof(buf), "%s: %s - %s%s, %s, latency %.1f ms, clock %+.1f ppm%s", what,
+                      DeviceLabel(list, h.id).c_str(),
+                      ModeText(opened, isInput ? st->hwInRequestedMode[d] : st->hwOutRequestedMode[d], h.format).c_str(),
+                      chText(isInput ? st->hwInChannels[d] : st->hwOutChannels[d]).c_str(),
+                      DevicePeriodText(opened, h.period, st->hwRequestedPeriod, rate).c_str(), FramesMs(h.latency, rate),
                       h.driftPpmMilli / 1000.0, h.driftEngaged ? " (resampling)" : "");
         lines.push_back({HwStatusLevel::Ok, buf});
         if (h.underruns || h.gaps || h.trims) {
@@ -516,9 +548,13 @@ std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* st, const WHAGener
                                             : "Master Clock: internal timer (no HW output open)."});
 
   bool moreChanged = false;
-  for (int k = 0; savedMore && k < kStatsHwMore; ++k)
-    moreChanged = moreChanged || std::strncmp(st->hwMoreOut[k].requestedId, savedMore->renderId[k], kEndpointIdLen) != 0 ||
-                  std::strncmp(st->hwMoreIn[k].requestedId, savedMore->captureId[k], kEndpointIdLen) != 0;
+  for (int d = 1; savedLists && d < kStatsHwDevices; ++d)
+    moreChanged = moreChanged ||
+                  std::strncmp(HwDeviceStats(*st, false, d)->requestedId, HwDeviceId(*savedLists, false, d), kEndpointIdLen) != 0 ||
+                  std::strncmp(HwDeviceStats(*st, true, d)->requestedId, HwDeviceId(*savedLists, true, d), kEndpointIdLen) != 0;
+  for (int d = 0; savedLists && d < kStatsHwDevices; ++d)
+    moreChanged = moreChanged || st->hwOutRequestedMode[d] != HwDeviceMode(*savedLists, false, d) ||
+                  st->hwInRequestedMode[d] != HwDeviceMode(*savedLists, true, d);
   if (st->hwRequestValid &&
       (static_cast<uint32_t>(st->hwRequestedPeriod) != saved.hwBuffer ||
        std::strncmp(st->hwRequestedRenderId, saved.hwRenderId, kEndpointIdLen) != 0 ||
@@ -604,8 +640,10 @@ std::string SlotSourceLabel(const WHASlot& slot, bool isInput, const char* const
       ShortDeviceName(hwDevices ? hwDevices[d] : nullptr, device, sizeof(device));
       if (!device[0] && d == 0) std::snprintf(device, sizeof(device), "%s", isInput ? "HW In" : "HW Out");
       else if (!device[0]) std::snprintf(device, sizeof(device), "%s %d", isInput ? "HW In" : "HW Out", d + 1);
-      const char side = slot.srcChannel == 0 ? 'L' : (slot.srcChannel == 1 ? 'R' : '?');
-      std::snprintf(buf, sizeof(buf), "%s \xC2\xB7 %c", device, side);
+      if (slot.srcChannel == 0 || slot.srcChannel == 1)
+        std::snprintf(buf, sizeof(buf), "%s \xC2\xB7 %c", device, slot.srcChannel == 0 ? 'L' : 'R');
+      else
+        std::snprintf(buf, sizeof(buf), "%s \xC2\xB7 Ch%d", device, slot.srcChannel + 1);
       return buf;
     }
     case SLOT_VIRTUAL: {

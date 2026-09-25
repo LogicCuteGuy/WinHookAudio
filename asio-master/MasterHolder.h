@@ -44,9 +44,9 @@ class MasterHolder {
     return true;
   }
 
-  // HW devices by index (WHAHwMore: 0 = GENERAL's, 1..3 more). The Worker opens, at start, every
+  // HW devices by index (0 = GENERAL's, the others more: HwDeviceId). The Worker opens, at start, every
   // device a HW slot uses, and output device 0 whenever there is any HW slot: it paces the Master
-  // Clock. Outputs 1..3 run on their own clocks through an HwOutputFifo each; every input has its
+  // Clock. The other outputs run on their own clocks through an HwOutputFifo each; every input has its
   // own HwInputFifo (KsCapture). A device listed twice (e.g. "Windows default" and the same device by
   // name) is opened once: the later index plays or records through the earlier one (alias).
   // The open, started HW output that paces the Master Clock; nullptr while none (internal timeline).
@@ -65,11 +65,11 @@ class MasterHolder {
   // The device index d plays / records through (d itself, an earlier alias, or -1: not open).
   int hwOutputRoute(int d) const { return d >= 0 && d < kHwDevices ? outRoutePub_[d].load() : -1; }
   int hwInputRoute(int d) const { return d >= 0 && d < kHwDevices ? inRoutePub_[d].load() : -1; }
-  // GENERAL and the more-devices list as the Worker read them to open the HW; false before that.
-  bool hwRequest(WHAGeneral& out, WHAHwMore* more = nullptr) const {
+  // GENERAL and every device list entry as the Worker read them to open the HW; false before that.
+  bool hwRequest(WHAGeneral& out, WHAHwDeviceIds* ids = nullptr) const {
     if (!hwRequestValid_.load(std::memory_order_acquire)) return false;
     out = hwRequest_;
-    if (more) *more = hwRequestMore_;
+    if (ids) *ids = hwRequestIds_;
     return true;
   }
 
@@ -88,6 +88,11 @@ class MasterHolder {
     clockTicks_ = ticks;
     routed_ = ticks ? ticks->load() : 0;  // ticks before this Worker (an earlier start) count as routed
   }
+
+  // The Master Clock has settled (its HW output's warm-up is over, or it runs on the internal timer).
+  // Until then the HW inputs and the more HW outputs wait in silence (KsCapture::hold): the paced
+  // device's start-up rush would starve or overflow them. nullptr = always settled.
+  void setClockSettled(const std::atomic<bool>* settled) { clockSettled_ = settled; }
 
   // For testing: run one tick synchronously (no thread)
   void tickOnce();
@@ -123,13 +128,15 @@ class MasterHolder {
   const std::atomic<uint64_t>* clockTicks_ = nullptr;
   uint64_t ticksSeen_ = 0;
   bool haveTicks_ = false;
+  const std::atomic<bool>* clockSettled_ = nullptr;
+  bool hwHeld_ = false;  // Worker thread: the last tick held the HW inputs and more outputs
   // HW devices (see hwOutput). out_/in_/outFifo_ live as long as this object; the atomics publish
   // what is open to other threads (stats, the Master Clock).
   class KsAudio* out_[kHwDevices] = {};
   class HwOutputFifo* outFifo_[kHwDevices] = {};  // [0] unused: output 0 is the Master Clock's own
   class KsCapture* in_[kHwDevices] = {};
-  int outRoute_[kHwDevices] = {-1, -1, -1, -1};  // Worker thread: device index -> open device, -1 none
-  int inRoute_[kHwDevices] = {-1, -1, -1, -1};
+  int outRoute_[kHwDevices] = {};  // Worker thread: device index -> open device, -1 none (set in the constructor)
+  int inRoute_[kHwDevices] = {};
   std::atomic<class KsAudio*> hwOut_[kHwDevices] = {};
   std::atomic<class KsCapture*> hwIn_[kHwDevices] = {};
   std::atomic<int32_t> hwOutError_[kHwDevices] = {};
@@ -139,10 +146,12 @@ class MasterHolder {
   std::atomic<int> outRoutePub_[kHwDevices] = {};
   std::atomic<int> inRoutePub_[kHwDevices] = {};
   WHAGeneral hwRequest_{};  // written once by the Worker before hwRequestValid_
-  WHAHwMore hwRequestMore_{};
+  WHAHwDeviceIds hwRequestIds_{};
   std::atomic<bool> hwRequestValid_{false};
-  float hwOutBuf_[kHwDevices][2 * 4096] = {};  // planar device-channel scratch per output (Worker thread)
-  float hwInBuf_[kHwDevices][2 * 4096] = {};
+  // Planar device-channel scratch per open device, 2 x 4096 frames (Worker thread; allocated when the
+  // device opens, so unused device places cost nothing).
+  std::vector<float> hwOutBuf_[kHwDevices];
+  std::vector<float> hwInBuf_[kHwDevices];
   std::vector<float> outFrames_;  // interleaved frames for an output FIFO's device write (Worker thread)
   // Development trace (WINHOOKAUDIO_OUT_TRACE=<csv path>): every tick of output device #2, written at
   // stop. Preallocated: no allocation on the Worker while streaming.

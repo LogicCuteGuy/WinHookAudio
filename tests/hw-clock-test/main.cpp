@@ -43,6 +43,13 @@ struct Scenario {
   // > 0: the device keeps its own buffer this deep, pulling `chunk` frames from ours whenever it has
   // room (VMware HD Audio): at start it pulls faster than it plays until that buffer is full.
   int depth = 0;
+  // > 0: the Windows mixer (Shared mode): wakes every mixerPeriod frames of device time (plus up to
+  // 5 ms of wake-up jitter) and takes what is due; every lateEverySec one wake is missed. The mixer
+  // then stays a period behind for lagSec (live: ~250 ms) and catches up with a double take.
+  int mixerPeriod = 0;
+  double lateEverySec = 0;
+  double lagSec = 0;
+  bool tellMixer = false;  // pass mixerPeriod to HwClockPacer::reset (the driver does for Shared)
 };
 
 struct Result {
@@ -56,6 +63,9 @@ struct Result {
   double meanFill = 0; // reported fill at a tick
   int chunk = 0;
   int expectedFill = 0;
+  long chunkChanges = 0;     // after the warm-up: each one moves the setpoint (the Master Clock's phase)
+  double maxGapHandover = 0; // blocks, 0.9..1.5 s: the timeline taking over from the warm-up
+  double phaseWander = 0;    // frames: max - min of (ticks x block - device frames played), after settle
 };
 
 // Spacing and rate are measured after the pacer's 1 s warm-up (it follows the device's fill until then).
@@ -65,7 +75,13 @@ Result Run(const Scenario& sc, double seconds) {
   const double devRate = sc.rate * (1.0 + sc.ppm * 1e-6);
   const double blockSec = sc.block / sc.rate;
   HwClockPacer pacer;
-  pacer.reset(sc.rate, sc.block, sc.capacity);
+  pacer.reset(sc.rate, sc.block, sc.capacity, sc.tellMixer ? sc.mixerPeriod : 0);
+  int64_t mixerTaken = 0;
+  long mixerWakes = 1;
+  double lagUntil = -1.0;
+  double mixerWake = sc.mixerPeriod > 0 ? sc.mixerPeriod / devRate : 0.0, mixerLate = sc.lateEverySec;
+  int lastChunk = -1;
+  double phaseMin = 1e18, phaseMax = -1e18;
   // Started like KsAudio::start: silence prefilled to capacity - 2 blocks.
   int64_t written = sc.capacity - 2 * sc.block;
   double t = 0.0;
@@ -83,7 +99,23 @@ Result Run(const Scenario& sc, double seconds) {
   int64_t pulled = 0;  // depth model: frames the device has taken from our buffer
   while (t < seconds) {
     int64_t reported;
-    if (sc.depth > 0) {
+    if (sc.mixerPeriod > 0) {
+      while (t >= mixerWake) {
+        if (sc.lateEverySec > 0 && mixerWake >= mixerLate) {
+          mixerLate += sc.lateEverySec;  // this wake is missed
+          lagUntil = mixerWake + sc.lagSec;
+        } else {
+          int64_t due = static_cast<int64_t>(mixerWake * devRate / sc.mixerPeriod) * sc.mixerPeriod;
+          if (mixerWake < lagUntil) due -= sc.mixerPeriod;  // still a period behind
+          if (due > written) ++r.underruns;  // the mixer plays silence for what we had not written
+          mixerTaken = due;
+          if (written < mixerTaken) written = mixerTaken;
+        }
+        // Wake-up jitter as live on the dev VM: up to 5 ms late (a missed wake then comes ~25 ms late).
+        mixerWake = static_cast<double>(++mixerWakes * sc.mixerPeriod) / devRate + 0.005 * Uniform();
+      }
+      reported = mixerTaken;
+    } else if (sc.depth > 0) {
       const double played = t * devRate;
       if (played > static_cast<double>(pulled)) {  // its own buffer ran dry: a gap
         ++r.underruns;
@@ -111,17 +143,27 @@ Result Run(const Scenario& sc, double seconds) {
       wait = pacer.untilTick(t);
       tick = wait <= 0;
     }
+    if (t > 1.05) {  // after the warm-up (1 s from the first report)
+      if (lastChunk >= 0 && pacer.chunk() != lastChunk) ++r.chunkChanges;
+      lastChunk = pacer.chunk();
+    }
     if (tick) {
       if (padding + sc.block > sc.capacity) ++r.drops;
       else written += sc.block;  // the Worker's write, right after the tick
       if (lastTick >= 0) {
         const double gap = (t - lastTick) / blockSec;
+        if (t > 0.9 && t < kSettleSec && gap > r.maxGapHandover) r.maxGapHandover = gap;
         if (t > kSettleSec) {
           if (gap < 0.25) ++r.bursts;
           if (gap > r.maxGap) r.maxGap = gap;
         }
       }
       if (t > kSettleSec && settleTick < 0) settleTick = t;
+      if (t > kSettleSec) {  // the Master Clock against the device's own clock: what a HW input reads
+        const double phase = static_cast<double>(r.ticks) * sc.block - t * devRate;
+        if (phase < phaseMin) phaseMin = phase;
+        if (phase > phaseMax) phaseMax = phase;
+      }
       if (settleTick >= 0) {
         ++settleTicks;
         fillSum += padding;
@@ -142,6 +184,7 @@ Result Run(const Scenario& sc, double seconds) {
     }
   }
   r.tickRate = settleTicks > 1 ? (settleTicks - 1) * sc.block / (lastTick - settleTick) : 0;
+  r.phaseWander = phaseMax > phaseMin ? phaseMax - phaseMin : 0;
   r.meanFill = fillCount ? fillSum / fillCount : 0;
   r.chunk = pacer.chunk();
   r.expectedFill = pacer.expectedFill();
@@ -209,6 +252,44 @@ int main() {
     std::printf("  (our buffer seen empty %ld times)\n", r.emptyLooks);
     check("own-buffer device: no gap, our buffer never empty after start", r.underruns == 0 && r.emptyLooks == 0);
     check("own-buffer device: evenly spaced after warm-up (< 2% back-to-back)", r.bursts < r.ticks / 50);
+  }
+  {
+    // WASAPI Shared (ADR 0014): the mixer takes 480 frames per 10 ms wake, 960 after a missed one.
+    // Learned from the reports, the chunk flips between 512 and 1024 as a double take enters and
+    // leaves its window, and each flip moved the Master Clock's phase by 512 frames against the device
+    // (live: HW inputs resampled false drift or starved). Known from the start (two mixer periods),
+    // it never moves.
+    Scenario sc{"Windows mixer (Shared): 480 per wake, a missed wake every 2.3 s, device +300 ppm, 48k, HW 256", 48000, 256, 2880,
+                1, 300, 0, false};
+    sc.mixerPeriod = 480;
+    sc.lateEverySec = 2.3;
+    sc.lagSec = 0.25;
+    Scenario learned = sc;
+    learned.name = "  same device, chunk learned from the reports";
+    const Result l = Run(learned, kSeconds);
+    Report(learned, l);
+    std::printf("  (chunk changes after warm-up: %ld, longest gap at the hand-over %.1f blocks, phase wander %.0f frames)\n",
+                l.chunkChanges, l.maxGapHandover, l.phaseWander);
+    check("learned: the chunk moves after warm-up (the Master Clock jumps this fixes)", l.chunkChanges >= 2);
+    sc.tellMixer = true;
+    const Result r = Run(sc, kSeconds);
+    Report(sc, r);
+    std::printf("  (chunk changes after warm-up: %ld, longest gap at the hand-over %.1f blocks, phase wander %.0f frames)\n",
+                r.chunkChanges, r.maxGapHandover, r.phaseWander);
+    // A HW input reads the Master Clock against its own device: an exclusive one takes a wander of
+    // over ~120 frames (its drift dead band) as drift.
+    check("mixer: the clock's phase against the device wanders < 200 frames after settle", r.phaseWander < 200);
+    check("mixer: a fraction of the wander with the chunk learned (the clock before)", r.phaseWander * 4 < l.phaseWander);
+    check("mixer: no underrun, no dropped block", r.underruns == 0 && r.drops == 0);
+    check("mixer: chunk known from the start never moves (no Master Clock jump)", r.chunkChanges == 0 && r.chunk == 1024);
+    check("mixer: no pause when the timeline takes over from the warm-up (gap < 3 blocks)", r.maxGapHandover < 3.0);
+    check("mixer: ticks at the device's rate (within 100 ppm)", std::abs(r.tickRate / (sc.rate * (1 + sc.ppm * 1e-6)) - 1) < 100e-6);
+    // A missed wake leaves the mixer a period behind for a while: a timeline that follows it slows the
+    // clock, then hurries after the double take (live: an exclusive HW input read the swing as drift).
+    check("mixer: a late wake neither pauses nor hurries the clock (gaps < 1.5 blocks, none back-to-back)",
+          r.maxGap < 1.5 && r.bursts == 0);
+    check("mixer: mean fill at a tick = the latency reported (within a block)", std::abs(r.meanFill - r.expectedFill) < sc.block);
+    check("mixer: no more latency than learning the chunk (within a block)", r.meanFill < l.meanFill + sc.block);
   }
   std::printf("{\"schema_version\":1,\"operation\":\"hw_clock_test\",\"pass\":%s}\n", gPass ? "true" : "false");
   return gPass ? 0 : 1;

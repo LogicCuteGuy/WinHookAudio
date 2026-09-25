@@ -24,6 +24,22 @@
 // fills its own buffer at ~130% of real time), which no timeline at the device's rate can follow.
 // Until then ticks follow the device's fill (the first clock's rule); the timeline then starts afresh
 // at the next position report, so the start-up rush is not in its rate or phase.
+// Windows mixer (a Shared device, ADR 0014): it takes one mixer period per wake and two after a late
+// one. Learned, the chunk flipped between one and two periods as a double take entered and left its
+// window, and each flip moved the setpoint, so the Master Clock's phase jumped against the device by
+// half a thousand frames (HW inputs read it as drift, or starved). With the mixer period given, the
+// chunk is two periods from the start and the fill runs setpoint..setpoint + one period.
+// The mixer's wakes jitter by milliseconds, and now and then it misses one and stays a period behind
+// for a quarter second before a double take catches up. A timeline at 1 Hz followed those lags,
+// slowing the clock and then hurrying after the catch-up: its phase wandered by ~700 frames against the
+// device (an exclusive HW input, dead band ~120 frames, read that as drift). So after the warm-up the
+// timeline runs at 0.1 Hz there (reports come every period): ~150 frames. (Weighting late reports less,
+// as the lags are late only, looked better offline but biased the rate by ~1000 ppm live.) The mixer
+// has no start-up rush (one prebuffer take, then real time), so the timeline is not restarted after the
+// warm-up: it keeps the phase it locked at 1 Hz and only its rate starts again at nominal (the 1 Hz rate
+// estimate is ~1000 ppm off with the wake jitter; restarted, a look's phase error), which a 0.1 Hz loop
+// would take seconds to work off while the HW inputs, just started, read it as drift. A real device's
+// few hundred ppm it then learns with under a millisecond of phase error.
 // No I/O: the clock thread feeds it WASAPI padding, tests a simulated device.
 
 #include <cstdint>
@@ -32,8 +48,9 @@ namespace wha {
 
 class HwClockPacer {
  public:
-  // rate: nominal frames/s; block: frames per tick; capacity: device buffer, frames.
-  void reset(double rate, int block, int capacity) {
+  // rate: nominal frames/s; block: frames per tick; capacity: device buffer, frames. mixerPeriod: the
+  // Windows mixer's period when the device is Shared (0: an exclusive device, its chunk learned).
+  void reset(double rate, int block, int capacity, int mixerPeriod = 0) {
     rate_ = rate;
     block_ = block;
     capacity_ = capacity;
@@ -46,7 +63,8 @@ class HwClockPacer {
     padding_ = 0;
     lastSec_ = newestSec_ = windowStart_ = 0.0;
     windowMax_ = previousMax_ = 0;
-    chunk_ = 0;
+    mixerPeriod_ = mixerPeriod > 0 ? mixerPeriod : 0;
+    chunk_ = roundChunk(2 * mixerPeriod_);
     hurries_ = 0;
   }
 
@@ -66,6 +84,10 @@ class HwClockPacer {
     if (consumed <= lastConsumed_) return;
     const int64_t step = consumed - lastConsumed_;
     lastConsumed_ = consumed;
+    if (mixerPeriod_ > 0 && anchored_ && !warm_ && nowSec >= warmUntil_) {  // no restart, see above
+      warm_ = true;
+      framePeriod_ = 1.0 / rate_;
+    }
     if (!anchored_ || (!warm_ && nowSec >= warmUntil_)) {
       // The timeline starts at a position report, not at our first look: a device takes its first
       // chunk at once when started (it prebuffers), and a timeline begun earlier starts that much out
@@ -91,7 +113,7 @@ class HwClockPacer {
   double untilTick(double nowSec) {
     const int32_t room = capacity_ - padding_;
     if (room < block_) return (block_ - room) * framePeriod_ > 0.0002 ? (block_ - room) * framePeriod_ : 0.0002;
-    if (!warm_) return (padding_ - (capacity_ - 2 * block_)) * framePeriod_;  // warm-up: follow the fill
+    if (!warm_) return (padding_ - warmFill()) * framePeriod_;  // warm-up: follow the fill
     // Below the range the smooth timeline keeps it in (setpoint..setpoint + chunk): the device took
     // more than its rate (it prebuffers at start, or we stalled). Catch up now, as the first clock did.
     if (padding_ < block_ / 2 || padding_ < setpoint() - block_) {
@@ -106,8 +128,12 @@ class HwClockPacer {
     const int32_t s = capacity_ - block_ - (chunk_ > block_ ? chunk_ : block_);
     return s > block_ ? s : block_;
   }
-  // Mean device fill when a tick is due: the reported fill runs from the setpoint to setpoint + chunk.
-  int32_t expectedFill() const { return setpoint() + chunk_ / 2; }
+  // Mean device fill when a tick is due: the reported fill runs from the setpoint to setpoint + chunk
+  // (the Windows mixer: + one period, its usual take).
+  int32_t expectedFill() const { return setpoint() + (mixerPeriod_ > 0 ? mixerPeriod_ : chunk_) / 2; }
+  // Fill the warm-up ticks at: the first clock's threshold, or through the Windows mixer the mean fill
+  // the timeline will hold, so the Master Clock does not pause when the timeline takes over.
+  int32_t warmFill() const { return mixerPeriod_ > 0 ? expectedFill() : capacity_ - 2 * block_; }
   int32_t chunk() const { return chunk_; }
   bool warm() const { return warm_; }  // warm-up over: ticks follow the smooth timeline
   uint64_t hurries() const { return hurries_; }
@@ -118,7 +144,7 @@ class HwClockPacer {
   // consumedNewest_ + step, framePeriod_ = device seconds per frame.
   void track(int64_t step, double nowSec) {
     const double interval = static_cast<double>(step) * framePeriod_;
-    const double w = 2.0 * 3.14159265358979323846 * kDllHz * interval;
+    const double w = 2.0 * 3.14159265358979323846 * (mixerPeriod_ > 0 && warm_ ? kMixerDllHz : kDllHz) * interval;
     const double predicted = newestSec_ + interval;
     const double e = nowSec - predicted;
     newestSec_ = predicted + 1.41421356237 * w * e;
@@ -143,11 +169,13 @@ class HwClockPacer {
     }
     if (excess > windowMax_) windowMax_ = excess;
     const int32_t c = windowMax_ > previousMax_ ? windowMax_ : previousMax_;
-    // Round up to a block so the setpoint (and the reported latency) does not move on noise.
-    chunk_ = c < block_ / 2 ? 0 : ((c + block_ - 1) / block_) * block_;
+    chunk_ = roundChunk(c > 2 * mixerPeriod_ ? c : 2 * mixerPeriod_);
   }
+  // Round up to a block so the setpoint (and the reported latency) does not move on noise.
+  int32_t roundChunk(int32_t c) const { return c < block_ / 2 ? 0 : ((c + block_ - 1) / block_) * block_; }
 
   static constexpr double kDllHz = 1.0;
+  static constexpr double kMixerDllHz = 0.1;
   static constexpr double kWarmupSec = 1.0;
   double rate_ = 48000.0;
   int32_t block_ = 128;
@@ -167,6 +195,7 @@ class HwClockPacer {
   int32_t windowMax_ = 0;
   int32_t previousMax_ = 0;
   int32_t chunk_ = 0;
+  int32_t mixerPeriod_ = 0;
   uint64_t hurries_ = 0;
 };
 

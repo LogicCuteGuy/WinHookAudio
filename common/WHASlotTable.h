@@ -87,12 +87,35 @@ struct WHANetworkStream {
 };
 
 // HW devices per direction: device 0 is GENERAL hwRenderId / hwCaptureId (the output one is the
-// Master Clock), devices 1..3 are here ("" = not in the list). A HW slot's streamId is its device.
-// Appended after netRx, so every earlier field keeps its offset.
-constexpr int32_t kHwDevices = 4;
+// Master Clock), devices 1..3 are WHAHwMore, the rest WHAHwExtra ("" = not in the list). A HW slot's
+// streamId is its device. Both are appended (hwMore after netRx, hwExtra after cables), so every
+// earlier field keeps its offset. Read them through HwDeviceId, never by array index.
+// kHwDevices is as large as the 80 KB Slot Table mapping comfortably holds (128 bytes per device
+// place): more devices than a PC has, so the PC's CPU and bus are the real limit.
+constexpr int32_t kHwDevices = 128;
+constexpr int32_t kHwMoreDevices = 3;  // devices 1..3 (the first append)
 struct WHAHwMore {
-  char renderId[kHwDevices - 1][kEndpointIdLen] = {};
-  char captureId[kHwDevices - 1][kEndpointIdLen] = {};
+  char renderId[kHwMoreDevices][kEndpointIdLen] = {};
+  char captureId[kHwMoreDevices][kEndpointIdLen] = {};
+};
+constexpr int32_t kHwExtraDevices = kHwDevices - 1 - kHwMoreDevices;  // devices 4 and up
+struct WHAHwExtra {
+  char renderId[kHwExtraDevices][kEndpointIdLen] = {};
+  char captureId[kHwExtraDevices][kEndpointIdLen] = {};
+};
+
+// How the Worker opens a HW device, per device and direction (appended after hwExtra; 0 in older
+// tables = Exclusive, the behaviour before modes). Exclusive: WASAPI Exclusive, straight to the driver,
+// lowest latency, no other app can use the device meanwhile. Shared: through the Windows mixer, so
+// other apps keep playing / recording; more latency, the device format is the mixer's (Windows
+// converts the rate). Auto: Exclusive, else Shared (the device refuses exclusive mode: not allowed in
+// its Windows settings, or no exclusive format at the Master Clock's rate). A device another app holds
+// exclusively opens in neither.
+enum WHAHwMode : uint8_t { HW_MODE_EXCLUSIVE = 0, HW_MODE_SHARED = 1, HW_MODE_AUTO = 2 };
+constexpr uint8_t kHwModeCount = 3;
+struct WHAHwModes {
+  uint8_t render[kHwDevices] = {};
+  uint8_t capture[kHwDevices] = {};
 };
 
 // Per Virtual Cable: its channels (2, 4, 6, 8) and sample format (WHASampleKind: 0 = 32-bit float,
@@ -116,24 +139,66 @@ struct WHASlotTable {
   WHANetworkStream netRx[WHA_NET_STREAMS] = {};
   WHAHwMore hwMore = {};
   WHACableSetting cables[kVirtualSlotCables] = {};
+  WHAHwExtra hwExtra = {};
+  WHAHwModes hwModes = {};
+};
+
+// Every HW device's endpoint ID and mode, by device index: a copy of the Slot Table's lists (the
+// Worker's "requested" snapshot).
+struct WHAHwDeviceIds {
+  char renderId[kHwDevices][kEndpointIdLen] = {};
+  char captureId[kHwDevices][kEndpointIdLen] = {};
+  WHAHwModes modes = {};
 };
 #pragma pack(pop)
+
+inline void TruncateCopy(char* dst, std::size_t dstLen, const char* src);
 
 // Endpoint ID of HW device `device` of one direction (see WHAHwMore); nullptr out of range.
 inline const char* HwDeviceId(const WHASlotTable& t, bool isInput, int device) {
   if (device == 0) return isInput ? t.general.hwCaptureId : t.general.hwRenderId;
   if (device < 0 || device >= kHwDevices) return nullptr;
-  return isInput ? t.hwMore.captureId[device - 1] : t.hwMore.renderId[device - 1];
+  if (device <= kHwMoreDevices) return isInput ? t.hwMore.captureId[device - 1] : t.hwMore.renderId[device - 1];
+  const int e = device - 1 - kHwMoreDevices;
+  return isInput ? t.hwExtra.captureId[e] : t.hwExtra.renderId[e];
 }
 inline char* HwDeviceId(WHASlotTable& t, bool isInput, int device) {
   return const_cast<char*>(HwDeviceId(static_cast<const WHASlotTable&>(t), isInput, device));
 }
-// Device 0 is always in the list ("" = the Windows default); 1..3 when they have an ID.
+inline const char* HwDeviceId(const WHAHwDeviceIds& ids, bool isInput, int device) {
+  if (device < 0 || device >= kHwDevices) return nullptr;
+  return isInput ? ids.captureId[device] : ids.renderId[device];
+}
+// Mode of HW device `device` of one direction (WHAHwMode); out of range or unknown = Exclusive.
+inline WHAHwMode HwDeviceMode(const WHAHwModes& m, bool isInput, int device) {
+  if (device < 0 || device >= kHwDevices) return HW_MODE_EXCLUSIVE;
+  const uint8_t v = isInput ? m.capture[device] : m.render[device];
+  return v < kHwModeCount ? static_cast<WHAHwMode>(v) : HW_MODE_EXCLUSIVE;
+}
+inline WHAHwMode HwDeviceMode(const WHASlotTable& t, bool isInput, int device) { return HwDeviceMode(t.hwModes, isInput, device); }
+inline WHAHwMode HwDeviceMode(const WHAHwDeviceIds& ids, bool isInput, int device) { return HwDeviceMode(ids.modes, isInput, device); }
+inline void SetHwDeviceMode(WHASlotTable& t, bool isInput, int device, uint8_t mode) {
+  if (device < 0 || device >= kHwDevices) return;
+  (isInput ? t.hwModes.capture : t.hwModes.render)[device] = mode;
+}
+// Device 0 is always in the list ("" = the Windows default); the others when they have an ID.
 inline bool HwDeviceListed(const WHASlotTable& t, bool isInput, int device) {
   const char* id = HwDeviceId(t, isInput, device);
   return id && (device == 0 || id[0]);
 }
-// A HW slot's device: its streamId; one out of range (older files) is device 0.
+inline void CopyHwDeviceIds(const WHASlotTable& t, WHAHwDeviceIds& out) {
+  for (int d = 0; d < kHwDevices; ++d) {
+    TruncateCopy(out.renderId[d], kEndpointIdLen, HwDeviceId(t, false, d));
+    TruncateCopy(out.captureId[d], kEndpointIdLen, HwDeviceId(t, true, d));
+  }
+  out.modes = t.hwModes;
+}
+inline void ClearHwMoreDevices(WHASlotTable& t) {  // every device but 0 out of the lists (with its mode)
+  t.hwMore = WHAHwMore{};
+  t.hwExtra = WHAHwExtra{};
+  for (int d = 1; d < kHwDevices; ++d) t.hwModes.render[d] = t.hwModes.capture[d] = HW_MODE_EXCLUSIVE;
+}
+// A HW slot's device: its streamId; one out of range is device 0.
 inline int HwDeviceOf(const WHASlot& s) { return s.streamId > 0 && s.streamId < kHwDevices ? s.streamId : 0; }
 
 // ---- Offline validation (no I/O, no threads) ----
@@ -212,6 +277,7 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
     if (std::strncmp(HwDeviceId(a, false, d), HwDeviceId(b, false, d), kEndpointIdLen) != 0 ||
         std::strncmp(HwDeviceId(a, true, d), HwDeviceId(b, true, d), kEndpointIdLen) != 0)
       return true;
+  if (std::memcmp(&a.hwModes, &b.hwModes, sizeof(WHAHwModes)) != 0) return true;  // the Worker opens devices in their mode
   // A HW slot moved to another device may need that device opened (and changes its channel name).
   // A Bridge or Virtual slot's channel is in its automatic name ("Bridge1 Ch3", "Virtual 2 R").
   auto slotDiffers = [](const WHASlot& x, const WHASlot& y) {
@@ -226,8 +292,10 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
   return false;
 }
 
-// HW slots take one channel of a stereo device (KsEndpoint kKsDeviceChannels): srcChannel 0 = L, 1 = R.
-constexpr int32_t kHwSlotChannels = 2;
+// HW slots take one channel of their device: srcChannel 0 = L (Ch 1), 1 = R (Ch 2), then Ch 3 ... The
+// Worker opens each device with all its channels (its Windows device format, WHAEndpointChannels.h)
+// or, if it refuses that in exclusive mode, stereo; a channel past what the device opened is silent.
+constexpr int32_t kHwMaxChannels = 64;  // MADI-class interfaces
 
 // VIRTUAL slots take one channel of a Virtual Cable: srcChannel = cable * 8 + channel (0 = L, 1 = R,
 // then C, LFE, ... up to the cable's channel count), cables 1..8. A channel past the cable's count is

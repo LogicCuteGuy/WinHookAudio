@@ -197,8 +197,8 @@ int main() {
     // hwDevice: device 0's name; hwMore: devices 1..3 (nullptr: unknown).
     auto dawName = [](const PanelModel& m, uint32_t i, bool in, const char* hwDevice = nullptr,
                       const char* const* hwMore = nullptr) {
-      const char* devices[kHwDevices] = {hwDevice, hwMore ? hwMore[0] : nullptr, hwMore ? hwMore[1] : nullptr,
-                                         hwMore ? hwMore[2] : nullptr};
+      const char* devices[kHwDevices] = {hwDevice};
+      for (int d = 1; hwMore && d <= 3; ++d) devices[d] = hwMore[d - 1];
       char n[kNameLen];
       if (in) DawChannelName(m.table.masterIn, m.table.masterInCount, i, true, devices, n);
       else DawChannelName(m.table.masterOut, m.table.masterOutCount, i, false, devices, n);
@@ -216,12 +216,14 @@ int main() {
     check("assigned HW IN, unnamed -> 'HW In L'", dawName(nm, 1, true) == "HW In L");
     check("the stored name stays unset (automatic)", IsPlaceholderName(nm.table.masterIn[1].name));
     check("SetInputSource HW R", SetInputSource(nm, 1, 1, 0) && dawName(nm, 1, true) == "HW In R");
-    check("SetInputSource HW channel 3 rejected (stereo device)", !SetInputSource(nm, 1, 2, 0) && nm.table.masterIn[1].srcChannel == 1);
+    check("SetInputSource HW channel 3 (multi-channel device) -> 'HW In Ch3'", SetInputSource(nm, 1, 2, 0) && dawName(nm, 1, true) == "HW In Ch3");
+    check("SetInputSource HW channel 65 rejected", !SetInputSource(nm, 1, kHwMaxChannels, 0) && nm.table.masterIn[1].srcChannel == 2);
+    SetInputSource(nm, 1, 1, 0);
     SetOutputType(nm, 1, SLOT_HW);
     check("assigned HW OUT -> 'HW Out L'", dawName(nm, 1, false) == "HW Out L");
-    nm.table.masterIn[2].srcChannel = 5;  // left over from another type
+    nm.table.masterIn[2].srcChannel = 100;  // left over from another type, past any HW channel
     SetInputType(nm, 2, SLOT_HW);
-    check("SetInputType HW resets a non-L/R source to L", nm.table.masterIn[2].srcChannel == 0 && dawName(nm, 2, true) == "HW In L");
+    check("SetInputType HW resets an out-of-range source to L", nm.table.masterIn[2].srcChannel == 0 && dawName(nm, 2, true) == "HW In L");
     SetInputType(nm, 2, SLOT_VIRTUAL);
     check("VIRTUAL cable 4 R (source 3*8+1) -> 'Virtual 4 R'", SetInputSource(nm, 2, 25, 0) && dawName(nm, 2, true) == "Virtual 4 R");
     check("VIRTUAL cable 8 Ch8 (source 63) -> 'Virtual 8 Ch8'", SetInputSource(nm, 2, 63, 0) && dawName(nm, 2, true) == "Virtual 8 Ch8");
@@ -298,7 +300,7 @@ int main() {
     check("AssignHw: USB interface R, added as device #2", AssignHw(nm, true, 2, usb, 1) && nm.table.masterIn[2].type == SLOT_HW &&
                                                                nm.table.masterIn[2].srcChannel == 1 && nm.table.masterIn[2].streamId == 1 &&
                                                                nm.table.general.hwCaptureId[0] == 0 &&
-                                                               std::strcmp(nm.table.hwMore.captureId[0], usb) == 0);
+                                                               std::strcmp(HwDeviceId(nm.table, true, 1), usb) == 0);
     const char* names[kHwDevices];
     HwDeviceNames(&devs, nm.table, true, names);
     check("HwDeviceNames: #1 the default, #2 the USB interface", names[0] && std::string(names[0]) == "Microphone (Realtek Audio)" &&
@@ -315,24 +317,131 @@ int main() {
     check("an unlisted device index is rejected as a source", !SetInputSource(nm, 1, 0, 3) && !AssignSource(nm, true, 1, SLOT_HW, 0, 3));
     {
       auto full = std::make_unique<PanelModel>(nm);
-      const char* ids[] = {"{x2}", "{x3}"};
-      check("four input devices at most", AddHwDevice(*full, true, ids[0]) == 2 && AddHwDevice(*full, true, ids[1]) == 3 &&
-                                              AddHwDevice(*full, true, "{x4}") < 0);
+      const int last = kHwDevices - 1;  // the last device place
+      const std::string lastId = "{x" + std::to_string(last) + "}", overId = "{x" + std::to_string(kHwDevices) + "}";
+      bool added = true;  // devices #3 .. #kHwDevices ({x2}..): every index up to the last one
+      for (int d = 2; d < kHwDevices; ++d) {
+        const std::string id = "{x" + std::to_string(d) + "}";
+        added = added && AddHwDevice(*full, true, id.c_str()) == d;
+      }
+      check("128 input devices fit (more than a PC has); the list ends there",
+            kHwDevices == 128 && added && AddHwDevice(*full, true, overId.c_str()) < 0);
+      check("the last device is stored after the Virtual Cables (appended)",
+            std::strcmp(full->table.hwExtra.captureId[kHwExtraDevices - 1], lastId.c_str()) == 0 &&
+                std::strcmp(full->table.hwMore.captureId[2], "{x3}") == 0);
+      check("a slot can use the last device", AssignSource(*full, true, 2, SLOT_HW, 1, last) && full->table.masterIn[2].streamId == last);
       check("...then a new device cannot be assigned while #1 is in use",
-            !CanAssignHw(*full, true, 2, "{x4}") && !AssignHw(*full, true, 2, "{x4}", 0) && full->table.masterIn[2].streamId == 1);
-      check("RemoveHwDevice empties its slots", RemoveHwDevice(*full, true, 1) && full->table.masterIn[2].type == SLOT_NONE &&
-                                                    full->table.hwMore.captureId[0][0] == 0 && !RemoveHwDevice(*full, true, 0));
+            !CanAssignHw(*full, true, 2, overId.c_str()) && !AssignHw(*full, true, 2, overId.c_str(), 0) &&
+                full->table.masterIn[2].streamId == last);
       check("the list round-trips through slots.json", [&] {
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const bool ok = DeserializeSlots(SerializeSlots(full->table), *back, &err);
+        if (!ok) std::printf("  JSON error: %s\n", err.c_str());
+        return ok && std::strcmp(HwDeviceId(*back, true, 2), "{x2}") == 0 && std::strcmp(HwDeviceId(*back, true, last), lastId.c_str()) == 0 &&
+               std::strcmp(HwDeviceId(*back, true, 1), usb) == 0 && back->masterIn[2].streamId == last;
+      }());
+      check("the full list round-trips through settings.yml", [&] {
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const bool ok = DeserializeSettings(SerializeSettings(full->table), *back, &err);
+        if (!ok) std::printf("  yaml error: %s\n", err.c_str());
+        return ok && std::strcmp(HwDeviceId(*back, true, last), lastId.c_str()) == 0 && std::strcmp(HwDeviceId(*back, true, 1), usb) == 0;
+      }());
+      check("an old slots.json with 3 more devices still loads", [&] {
+        std::string json = SerializeSlots(nm.table);
+        const size_t at = json.find("\"hwCaptureMore\":[");
+        const size_t end = json.find(']', at);
+        json.replace(at, end - at + 1, "\"hwCaptureMore\":[\"{o2}\",\"\",\"{o4}\"]");
         WHASlotTable back{};
         std::string err;
-        const bool ok = DeserializeSlots(SerializeSlots(full->table), back, &err);
+        const bool ok = DeserializeSlots(json, back, &err);
         if (!ok) std::printf("  JSON error: %s\n", err.c_str());
-        return ok && std::strcmp(back.hwMore.captureId[1], "{x2}") == 0 && std::strcmp(back.hwMore.captureId[2], "{x3}") == 0 &&
-               back.hwMore.captureId[0][0] == 0 && back.masterIn[1].streamId == 0;
+        return ok && std::strcmp(HwDeviceId(back, true, 1), "{o2}") == 0 && !HwDeviceListed(back, true, 2) &&
+               std::strcmp(HwDeviceId(back, true, 3), "{o4}") == 0 && !HwDeviceListed(back, true, 4);
       }());
+      check("RemoveHwDevice empties its slots", RemoveHwDevice(*full, true, last) && full->table.masterIn[2].type == SLOT_NONE &&
+                                                    !HwDeviceListed(full->table, true, last) && !RemoveHwDevice(*full, true, 0));
       check("a device list change is DAW-visible (reset)", DawVisibleChanged(nm.table, full->table));
+
+      // Mode per device: Exclusive (default, also for older tables), Shared, Auto.
+      check("HW mode: devices start Exclusive", HwDeviceMode(full->table, true, 1) == HW_MODE_EXCLUSIVE &&
+                                                    HwDeviceMode(full->table, false, 0) == HW_MODE_EXCLUSIVE);
+      auto moded = std::make_unique<PanelModel>(*full);
+      check("SetHwMode: listed devices", SetHwMode(*moded, true, 1, HW_MODE_SHARED) && SetHwMode(*moded, false, 0, HW_MODE_AUTO) &&
+                                             SetHwMode(*moded, true, 5, HW_MODE_AUTO) &&
+                                             HwDeviceMode(moded->table, true, 1) == HW_MODE_SHARED &&
+                                             HwDeviceMode(moded->table, false, 0) == HW_MODE_AUTO);
+      check("...not an unlisted device or an unknown mode", !SetHwMode(*moded, true, last, HW_MODE_SHARED) &&
+                                                                !SetHwMode(*moded, true, 1, kHwModeCount));
+      check("a mode change is DAW-visible (reset)", DawVisibleChanged(full->table, moded->table));
+      check("modes round-trip through slots.json", [&] {
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const bool ok = DeserializeSlots(SerializeSlots(moded->table), *back, &err);
+        if (!ok) std::printf("  JSON error: %s\n", err.c_str());
+        return ok && std::memcmp(&back->hwModes, &moded->table.hwModes, sizeof(WHAHwModes)) == 0;
+      }());
+      const std::string yaml = SerializeSettings(moded->table);
+      check("modes round-trip through settings.yml, as words", [&] {
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const bool ok = DeserializeSettings(yaml, *back, &err);
+        if (!ok) std::printf("  yaml error: %s\n", err.c_str());
+        return ok && std::memcmp(&back->hwModes, &moded->table.hwModes, sizeof(WHAHwModes)) == 0 &&
+               yaml.find("outputModes: [auto]") != std::string::npos &&
+               yaml.find("inputModes: [exclusive, shared, exclusive, exclusive, exclusive, auto, exclusive") != std::string::npos;
+      }());
+      check("an older settings.yml without modes loads every device Exclusive", [&] {
+        std::string old;
+        for (size_t at = 0; at < yaml.size();) {
+          const size_t end = yaml.find('\n', at);
+          const std::string line = yaml.substr(at, end == std::string::npos ? std::string::npos : end - at + 1);
+          if (line.find("Modes: [") == std::string::npos) old += line;
+          at = end == std::string::npos ? yaml.size() : end + 1;
+        }
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const WHAHwModes exclusive{};
+        return old.find("Modes: [") == std::string::npos && DeserializeSettings(old, *back, &err) &&
+               std::strcmp(HwDeviceId(*back, true, 1), usb) == 0 &&
+               std::memcmp(&back->hwModes, &exclusive, sizeof(WHAHwModes)) == 0;
+      }());
+      check("settings.yml: an unknown mode word is an error", [&] {
+        std::string bad = yaml;
+        const size_t at = bad.find("inputModes: [exclusive, shared");
+        bad.replace(at + std::strlen("inputModes: [exclusive, "), 6, "loud");
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        const bool ok = DeserializeSettings(bad, *back, &err);
+        std::printf("  expected error: %s\n", err.c_str());
+        return !ok && err.find("exclusive, shared, auto") != std::string::npos;
+      }());
+      check("slots.json: mode 3 is rejected", [&] {
+        std::string json = SerializeSlots(moded->table);
+        const size_t at = json.find("\"hwCaptureModes\":[0,1");
+        if (at == std::string::npos) return false;
+        json[at + std::strlen("\"hwCaptureModes\":[0,")] = '3';
+        auto back = std::make_unique<WHASlotTable>();
+        std::string err;
+        return !DeserializeSlots(json, *back, &err);
+      }());
+      check("RemoveHwDevice resets its mode", RemoveHwDevice(*moded, true, 5) && HwDeviceMode(moded->table, true, 5) == HW_MODE_EXCLUSIVE);
     }
-    check("AssignHw side 2 rejected", !AssignHw(nm, true, 2, usb, 2));
+    check("AssignHw: any channel of a multi-channel device (Ch 10)", AssignHw(nm, true, 2, usb, 9) &&
+                                                                           nm.table.masterIn[2].srcChannel == 9 && nm.table.masterIn[2].streamId == 1);
+    check("...its Source label and DAW name say Ch10", SlotSourceLabel(nm.table.masterIn[2], true, names) == "Line In \xC2\xB7 Ch10" &&
+                                                           dawName(nm, 2, true, names[0], names + 1) == "Line In Ch10");
+    check("AssignHw channel 65 rejected (64 at most)", !AssignHw(nm, true, 2, usb, kHwMaxChannels) && kHwMaxChannels == 64 &&
+                                                          nm.table.masterIn[2].srcChannel == 9);
+    check("a HW slot on Ch 10 round-trips through routes.yml", [&] {
+      auto back = std::make_unique<WHASlotTable>(nm.table);
+      std::string err;
+      const bool ok = DeserializeRoutes(SerializeRoutes(nm.table), *back, &err);
+      if (!ok) std::printf("  yaml error: %s\n", err.c_str());
+      return ok && back->masterIn[2].type == SLOT_HW && back->masterIn[2].srcChannel == 9;
+    }());
+    AssignHw(nm, true, 2, usb, 1);  // back to R for the checks below
     check("AssignHw from a Bridge popup rejected (GENERAL is read-only there)", [&] {
       auto bridgeHeap = std::make_unique<PanelModel>(nm);
       bridgeHeap->isMaster = false;
@@ -504,6 +613,43 @@ int main() {
                                                    has(lines, HwStatusLevel::Warning, "10.0 ms skipped"));
     check("HW status: Worker late warns", has(lines, HwStatusLevel::Warning, "Worker late 2 times"));
 
+    // Modes: what each device opened as, and what it was asked for.
+    check("HW status: Exclusive says so", has(HwStatusLines(&st, saved, &devs), HwStatusLevel::Ok, "Output: Speakers - exclusive 24-bit"));
+    WHAMasterStats sharedSt = st;
+    sharedSt.hwOutMode[0] = sharedSt.hwOutRequestedMode[0] = HW_MODE_SHARED;
+    sharedSt.hwPeriod = 480;
+    sharedSt.hwFormat = HW_FORMAT_FLOAT32;
+    sharedSt.hwInMode[0] = HW_MODE_SHARED;
+    sharedSt.hwInRequestedMode[0] = HW_MODE_AUTO;
+    sharedSt.hwInFormat = HW_FORMAT_FLOAT32;
+    lines = HwStatusLines(&sharedSt, saved, &devs);
+    dump(lines);
+    check("HW status: Shared output, with the Windows mixer's period (not the requested one)",
+          has(lines, HwStatusLevel::Ok, "Output: Speakers - shared float32") &&
+              has(lines, HwStatusLevel::Ok, "Windows mixer period 480 frames (10.00 ms)") && !has(lines, HwStatusLevel::Ok, "device minimum"));
+    check("HW status: Auto that fell back to Shared says so",
+          has(lines, HwStatusLevel::Ok, "Input: Microphone - shared float32 (Auto: exclusive refused)"));
+    WHAMasterStats autoExclusive = st;
+    autoExclusive.hwOutRequestedMode[0] = HW_MODE_AUTO;
+    check("HW status: Auto that got Exclusive", has(HwStatusLines(&autoExclusive, saved, &devs), HwStatusLevel::Ok, "exclusive 24-bit (Auto)"));
+    {
+      auto savedTable = std::make_unique<WHASlotTable>();
+      savedTable->general = saved;
+      check("HW status: same modes saved: nothing pending",
+            !has(HwStatusLines(&st, saved, &devs, savedTable.get()), HwStatusLevel::Warning, "DAW resets"));
+      SetHwDeviceMode(*savedTable, true, 0, HW_MODE_SHARED);
+      check("HW status: saved mode not applied yet", has(HwStatusLines(&st, saved, &devs, savedTable.get()), HwStatusLevel::Warning, "DAW resets"));
+    }
+    WHAMasterStats refused = busy;
+    refused.hwLastError = static_cast<int32_t>(0x8889000E);  // AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED
+    check("HW status: exclusive not allowed suggests Shared or Auto",
+          has(HwStatusLines(&refused, saved, &devs), HwStatusLevel::Error, "Mode Shared or Auto"));
+    refused.hwLastError = static_cast<int32_t>(0x88890008);  // AUDCLNT_E_UNSUPPORTED_FORMAT
+    check("HW status: no exclusive format suggests Shared or Auto",
+          has(HwStatusLines(&refused, saved, &devs), HwStatusLevel::Error, "Mode Shared or Auto"));
+    check("HW status: held by another app does not (Shared cannot open it either)",
+          !has(HwStatusLines(&busy, saved, &devs), HwStatusLevel::Error, "Mode Shared"));
+
     // More devices: each its own line (clock drift, latency), failures, a device listed twice.
     const char* cable = "{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000009}";
     devs.render.push_back({cable, "CABLE Input"});
@@ -525,18 +671,28 @@ int main() {
     i2.used = 1;
     i2.sameAs = -1;
     i2.lastError = static_cast<int32_t>(0x8889000A);
-    WHAHwMore savedMore{};
-    TruncateCopy(savedMore.renderId[0], kEndpointIdLen, cable);
-    lines = HwStatusLines(&more, saved, &devs, &savedMore);
+    WHAHwDeviceStats& o20 = *HwDeviceStats(more, false, 19);  // device #20: in the appended hwExtraOut
+    TruncateCopy(o20.requestedId, kStatsEndpointIdLen, "{x20}");
+    o20.used = 1;
+    o20.sameAs = -1;
+    o20.lastError = static_cast<int32_t>(0x8889000A);
+    more.hwOutChannels[1] = 16;  // a 16-channel interface opened with all its channels
+    auto savedLists = std::make_unique<WHASlotTable>();
+    TruncateCopy(HwDeviceId(*savedLists, false, 1), kEndpointIdLen, cable);
+    TruncateCopy(HwDeviceId(*savedLists, false, 19), kEndpointIdLen, "{x20}");
+    lines = HwStatusLines(&more, saved, &devs, savedLists.get());
     dump(lines);
     check("HW status: output #2 with its clock and latency", has(lines, HwStatusLevel::Ok, "Output #2: CABLE Input - exclusive float32") &&
                                                                has(lines, HwStatusLevel::Ok, "latency 20.0 ms, clock +42.5 ppm (resampling)"));
+    check("HW status: the channels a device opened with", has(lines, HwStatusLevel::Ok, "exclusive float32, 16 ch,"));
     check("HW status: output #3 is output #1 listed twice", has(lines, HwStatusLevel::Info, "Output #3: the same device as #1"));
     check("HW status: input #2 failed", has(lines, HwStatusLevel::Error, "Input #2: FAILED - in use"));
+    check("HW status: output #20 has its own line", has(lines, HwStatusLevel::Error, "Output #20: FAILED - in use"));
     check("HW status: more devices as saved: nothing pending", !has(lines, HwStatusLevel::Warning, "DAW resets"));
-    WHAHwMore changedMore = savedMore;
-    TruncateCopy(changedMore.captureId[2], kEndpointIdLen, mic);
-    check("HW status: a device added since start is pending", has(HwStatusLines(&more, saved, &devs, &changedMore), HwStatusLevel::Warning, "DAW resets"));
+    auto changedLists = std::make_unique<WHASlotTable>(*savedLists);
+    TruncateCopy(HwDeviceId(*changedLists, true, 25), kEndpointIdLen, mic);
+    check("HW status: a device #26 added since start is pending",
+          has(HwStatusLines(&more, saved, &devs, changedLists.get()), HwStatusLevel::Warning, "DAW resets"));
     more.hwMoreOut[0].underruns = 2;
     more.hwMoreOut[0].gaps = 1;
     check("HW status: output #2 dropouts warn", has(HwStatusLines(&more, saved, &devs), HwStatusLevel::Warning, "device ran dry 2 times, 1 refills"));
@@ -605,7 +761,8 @@ int main() {
     base->netTx[1].codec = WHA_VORBIS;
     base->netTx[1].quality = 0.7f;
     base->netTx[1].channels = 6;
-    TruncateCopy(base->hwMore.captureId[0], kEndpointIdLen, "{0.0.1.00000000}.{abc}");
+    TruncateCopy(HwDeviceId(*base, true, 1), kEndpointIdLen, "{0.0.1.00000000}.{abc}");
+    TruncateCopy(HwDeviceId(*base, false, 29), kEndpointIdLen, "{0.0.0.00000000}.{dev30}");  // appended hwExtra
     base->general.hwBuffer = 0;
     base->general.bridgeBuffer[3] = 512;
     std::string err;

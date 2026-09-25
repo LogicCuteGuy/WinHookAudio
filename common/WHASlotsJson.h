@@ -52,10 +52,13 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   if (std::strlen(table.general.virtualName) >= 32) return fail("general virtualName too long");
   if (strnlen(table.general.hwRenderId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwRenderId too long");
   if (strnlen(table.general.hwCaptureId, kEndpointIdLen) >= kEndpointIdLen) return fail("general hwCaptureId too long");
-  for (int d = 0; d + 1 < kHwDevices; ++d)
-    if (strnlen(table.hwMore.renderId[d], kEndpointIdLen) >= kEndpointIdLen ||
-        strnlen(table.hwMore.captureId[d], kEndpointIdLen) >= kEndpointIdLen)
+  for (int d = 1; d < kHwDevices; ++d)
+    if (strnlen(HwDeviceId(table, false, d), kEndpointIdLen) >= kEndpointIdLen ||
+        strnlen(HwDeviceId(table, true, d), kEndpointIdLen) >= kEndpointIdLen)
       return fail("general more HW device id too long");
+  for (int d = 0; d < kHwDevices; ++d)
+    if (table.hwModes.render[d] >= kHwModeCount || table.hwModes.capture[d] >= kHwModeCount)
+      return fail("general HW device mode must be 0..2");
   for (const WHACableSetting& c : table.cables)
     if (!IsValidCableSetting(c)) return fail("general cables: channels 2/4/6/8, format 0..4");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
@@ -492,12 +495,27 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += "\"virtualName\":" + detail::EscapeJsonString(t.general.virtualName) + ",";
   out += "\"hwRenderId\":" + detail::EscapeJsonString(t.general.hwRenderId) + ",";
   out += "\"hwCaptureId\":" + detail::EscapeJsonString(t.general.hwCaptureId) + ",";
-  // HW devices 2..4 of each direction (WHAHwMore; "" = none).
+  // HW devices 2 and up of each direction ("" = none), up to the last listed one.
   for (int dir = 0; dir < 2; ++dir) {
     out += dir == 0 ? "\"hwRenderMore\":[" : ",\"hwCaptureMore\":[";
-    for (int d = 0; d + 1 < kHwDevices; ++d) {
+    int count = 1;
+    for (int d = 1; d < kHwDevices; ++d)
+      if (HwDeviceListed(t, dir == 1, d)) count = d + 1;
+    for (int d = 1; d < count; ++d) {
+      if (d > 1) out += ",";
+      out += detail::EscapeJsonString(HwDeviceId(t, dir == 1, d));
+    }
+    out += "]";
+  }
+  // Every listed HW device's mode (WHAHwMode), device 1 first; absent in older files = Exclusive.
+  for (int dir = 0; dir < 2; ++dir) {
+    out += dir == 0 ? ",\"hwRenderModes\":[" : ",\"hwCaptureModes\":[";
+    int count = 1;
+    for (int d = 1; d < kHwDevices; ++d)
+      if (HwDeviceListed(t, dir == 1, d)) count = d + 1;
+    for (int d = 0; d < count; ++d) {
       if (d) out += ",";
-      out += detail::EscapeJsonString(dir == 0 ? t.hwMore.renderId[d] : t.hwMore.captureId[d]);
+      out += std::to_string(static_cast<int>(dir == 0 ? t.hwModes.render[d] : t.hwModes.capture[d]));
     }
     out += "]";
   }
@@ -706,16 +724,32 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
           if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
           TruncateCopy(gkey == "hwRenderId" ? out.general.hwRenderId : out.general.hwCaptureId, kEndpointIdLen, v.c_str());
         } else if (gkey == "hwRenderMore" || gkey == "hwCaptureMore") {  // optional: absent = one device each way
+          // Devices 2, 3, ... in order; any length up to kHwDevices - 1 (older files hold 3).
           if (!detail::Expect(s, p, '[')) return fail("HW device list [");
-          for (int d = 0; d + 1 < kHwDevices; ++d) {
+          detail::SkipWs(s, p);
+          for (int d = 1; p < s.size() && s[p] != ']'; ++d) {
+            if (d > 1 && !detail::Expect(s, p, ',')) return fail("HW device list ,");
+            if (d >= kHwDevices) return fail("HW device list too long");
             std::string v;
             if (!detail::ParseString(s, p, v)) return fail("HW device list id");
             if (v.size() >= kEndpointIdLen) return fail("endpoint id too long");
-            TruncateCopy(gkey == "hwRenderMore" ? out.hwMore.renderId[d] : out.hwMore.captureId[d], kEndpointIdLen, v.c_str());
+            TruncateCopy(HwDeviceId(out, gkey == "hwCaptureMore", d), kEndpointIdLen, v.c_str());
             detail::SkipWs(s, p);
-            if (d + 2 < kHwDevices && !detail::Expect(s, p, ',')) return fail("HW device list ,");
           }
           if (!detail::Expect(s, p, ']')) return fail("HW device list ]");
+        } else if (gkey == "hwRenderModes" || gkey == "hwCaptureModes") {  // optional: absent = every device Exclusive
+          uint8_t* place = gkey == "hwRenderModes" ? out.hwModes.render : out.hwModes.capture;
+          if (!detail::Expect(s, p, '[')) return fail("HW mode list [");
+          detail::SkipWs(s, p);
+          for (int d = 0; p < s.size() && s[p] != ']'; ++d) {
+            if (d > 0 && !detail::Expect(s, p, ',')) return fail("HW mode list ,");
+            if (d >= kHwDevices) return fail("HW mode list too long");
+            uint32_t v = 0;
+            if (!detail::ParseUInt(s, p, v) || v >= kHwModeCount) return fail("HW mode must be 0..2");
+            place[d] = static_cast<uint8_t>(v);
+            detail::SkipWs(s, p);
+          }
+          if (!detail::Expect(s, p, ']')) return fail("HW mode list ]");
         } else if (gkey == "cables") {  // optional: absent = every cable stereo float
           if (!detail::Expect(s, p, '[')) return fail("cables [");
           for (int c = 0; c < kVirtualSlotCables; ++c) {

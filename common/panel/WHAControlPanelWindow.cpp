@@ -15,6 +15,7 @@
 #include <iterator>
 
 #include "WHAControlPanelView.h"
+#include "WHAEndpointChannels.h"
 #include "WHASharedMemory.h"
 #include "WHASlotsFile.h"
 #include "WHASlotsJson.h"
@@ -69,6 +70,8 @@ PanelDevices EnumerateEndpoints() {
         if (SUCCEEDED(d->GetId(&id)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &props)) &&
             !IsOwnCable(props) && SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR) {
           PanelEndpoint ep{Utf8(id), Utf8(v.pwszVal)};
+          const int channels = EndpointChannels(props);
+          if (channels > 0) ep.channels = channels < kHwMaxChannels ? channels : kHwMaxChannels;
           if (ep.id.size() < kEndpointIdLen) (flow == eRender ? out.render : out.capture).push_back(ep);
         }
         PropVariantClear(&v);
@@ -248,7 +251,9 @@ bool ControlPanelWindow::Open(const ControlPanelHost& host) {
   frames_ = 0;
   usedWarp_ = false;
   lastError_.clear();
-  thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, &threadId_);
+  // Its own stack size, not the DAW's default: the edit copy, the baseline, the Save's "before" table
+  // and the Master stats (~65 KB each with every HW device place) live on it.
+  thread_ = CreateThread(nullptr, 4u << 20, ThreadProc, this, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId_);
   return thread_ != nullptr;
 }
 
@@ -428,7 +433,7 @@ void ControlPanelWindow::Run() {
       hwStatusAt = GetTickCount64();
       WHAMasterStats stats{};
       const bool streaming = host_.readStats(stats);
-      hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices, &host_.table->hwMore);
+      hwStatus = HwStatusLines(streaming ? &stats : nullptr, host_.table->general, &devices, host_.table);
       state.hwStatus = &hwStatus;
     }
     if (!host_.isMaster && GetTickCount64() - masterOpenAt >= 500) {  // Master_Tick exists while a Master is open

@@ -25,7 +25,8 @@ namespace {
 
 constexpr size_t kSlotFrames = 4096;  // Master audio SHM stride per slot
 static_assert(kStatsEndpointIdLen == kEndpointIdLen, "WHAMasterStats endpoint IDs hold a Slot Table ID");
-static_assert(kStatsHwMore == kHwDevices - 1, "WHAMasterStats has one entry per more HW device");
+static_assert(kStatsHwDevices == kHwDevices && kStatsHwMore == kHwMoreDevices,
+              "WHAMasterStats has one entry per more HW device");
 static_assert(static_cast<int>(KsSampleFormat::Float32) == HW_FORMAT_FLOAT32 &&
                   static_cast<int>(KsSampleFormat::Pcm24In32) == HW_FORMAT_PCM24IN32 &&
                   static_cast<int>(KsSampleFormat::Pcm16) == HW_FORMAT_PCM16,
@@ -192,10 +193,12 @@ ASIOError WinHookMasterASIO::start() {
   if (!initialized_) return ASE_NotPresent;
   if (!buffersCreated_) return ASE_InvalidMode;  // SDK: createBuffers before start
   if (running_) return ASE_OK;
+  hwClockSettled_ = false;
   if (!holder_) {
     auto* holder = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
     holder->setTableChangedHandler([this] { onTableChanged(); });
     holder->setTickCounter(&clockTicks_);
+    holder->setClockSettled(&hwClockSettled_);
     {
       std::lock_guard<std::mutex> lock(holderMutex_);
       holder_ = holder;
@@ -238,8 +241,8 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
   std::lock_guard<std::mutex> lock(holderMutex_);
   if (!holder_) return false;
   WHAGeneral request{};
-  WHAHwMore requestMore{};
-  if (holder_->hwRequest(request, &requestMore)) {
+  WHAHwDeviceIds requestIds{};
+  if (holder_->hwRequest(request, &requestIds)) {
     out->hwRequestValid = 1;
     out->hwRequestedPeriod = static_cast<int32_t>(request.hwBuffer);
     TruncateCopy(out->hwRequestedRenderId, kStatsEndpointIdLen, request.hwRenderId);
@@ -285,9 +288,22 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
     out->hwInGrowths = f.growths();
     out->hwInSkipped = f.skipped();
   }
+  for (int d = 0; d < kHwDevices; ++d) {
+    out->hwOutMode[d] = out->hwInMode[d] = -1;
+    if (KsAudio* hw = holder_->hwOutput(d)) {
+      out->hwOutChannels[d] = hw->channels();
+      out->hwOutMode[d] = hw->isShared() ? HW_MODE_SHARED : HW_MODE_EXCLUSIVE;
+    }
+    if (KsCapture* in = holder_->hwCapture(d)) {
+      out->hwInChannels[d] = in->channels();
+      out->hwInMode[d] = in->isShared() ? HW_MODE_SHARED : HW_MODE_EXCLUSIVE;
+    }
+    out->hwOutRequestedMode[d] = HwDeviceMode(requestIds, false, d);
+    out->hwInRequestedMode[d] = HwDeviceMode(requestIds, true, d);
+  }
   for (int d = 1; d < kHwDevices; ++d) {
-    WHAHwDeviceStats& o = out->hwMoreOut[d - 1];
-    TruncateCopy(o.requestedId, kStatsEndpointIdLen, requestMore.renderId[d - 1]);
+    WHAHwDeviceStats& o = *HwDeviceStats(*out, false, d);
+    TruncateCopy(o.requestedId, kStatsEndpointIdLen, requestIds.renderId[d]);
     o.used = holder_->hwOutputUsed(d) ? 1 : 0;
     o.lastError = holder_->hwOpenError(d);
     o.format = HW_FORMAT_NONE;
@@ -310,8 +326,8 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
       o.gaps = fifo->gaps();
       o.trims = fifo->trims();
     }
-    WHAHwDeviceStats& i = out->hwMoreIn[d - 1];
-    TruncateCopy(i.requestedId, kStatsEndpointIdLen, requestMore.captureId[d - 1]);
+    WHAHwDeviceStats& i = *HwDeviceStats(*out, true, d);
+    TruncateCopy(i.requestedId, kStatsEndpointIdLen, requestIds.captureId[d]);
     i.used = holder_->hwInputUsed(d) ? 1 : 0;
     i.lastError = holder_->hwCaptureError(d);
     i.format = HW_FORMAT_NONE;
@@ -398,7 +414,8 @@ ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatenc
     output = HwOutputLatency(*hw, hwOutReportFill_.load());
   } else if (hwOut) {
     KsAudio probe;
-    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwRenderId))
+    if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_, g.hwRenderId,
+                   HwDeviceMode(*slotTable_, false, 0)))
       output = HwOutputLatency(probe);
   }
   if (KsCapture* hw = reportedCapture()) {
@@ -406,7 +423,7 @@ ASIOError WinHookMasterASIO::getLatencies(long* inputLatency, long* outputLatenc
   } else if (hwIn) {
     KsCapture probe;
     if (probe.open(static_cast<int32_t>(sampleRate_), static_cast<int32_t>(g.hwBuffer), bufferSize_,
-                   HwDeviceId(*slotTable_, true, firstIn)))
+                   HwDeviceId(*slotTable_, true, firstIn), HwDeviceMode(*slotTable_, true, firstIn)))
       input = HwInputLatency(probe, bufferSize_);
   }
   if (inputLatency) *inputLatency = input;
@@ -559,7 +576,7 @@ void WinHookMasterASIO::runClock() {
     KsAudio* hw = holder_ ? holder_->hwMaster() : nullptr;
     long fill = -1;
     if (hw && hw != pacedHw_) {
-      pacer_.reset(sampleRate_, static_cast<int>(bufferSize_), hw->capacity());
+      pacer_.reset(sampleRate_, static_cast<int>(bufferSize_), hw->capacity(), hw->isShared() ? hw->periodFrames() : 0);
       pacedHw_ = hw;
     }
     while (hw && !clockStop_.load()) {
@@ -594,6 +611,7 @@ void WinHookMasterASIO::runClock() {
       } else if (hwOutReportFill_.load() < 0) {
         hwOutReportFill_ = reported;
       }
+      hwClockSettled_ = pacer_.warm();  // the HW inputs and more outputs start once it is (MasterHolder)
       clockTick();
       QueryPerformanceCounter(&now);
       due = static_cast<double>(now.QuadPart) + periodQpc;  // internal timeline resumes from here if the HW goes
@@ -607,6 +625,7 @@ void WinHookMasterASIO::runClock() {
     }
     sleepQpc(due - static_cast<double>(now.QuadPart));
     clockSource_ = CLOCK_INTERNAL;
+    hwClockSettled_ = true;
     clockTick();
     due += periodQpc;
   }

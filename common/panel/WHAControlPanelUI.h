@@ -139,6 +139,7 @@ bool IsGeneralReadOnly(const PanelModel& model);  // true if !isMaster
 struct PanelEndpoint {
   std::string id;    // IMMDevice ID (UTF-8)
   std::string name;  // friendly name (UTF-8)
+  int channels = 2;  // its Windows device format's channels (WHAEndpointChannels.h; 2 when unknown)
 };
 struct PanelDevices {
   std::vector<PanelEndpoint> render;
@@ -155,18 +156,21 @@ const char* HwDeviceName(const PanelDevices* devices, const WHAGeneral& general,
 // Friendly names of all HW devices of one direction, by device index (nullptr: not listed / unknown).
 void HwDeviceNames(const PanelDevices* devices, const WHASlotTable& table, bool isInput, const char* out[kHwDevices]);
 
-// GENERAL HW device list, per direction (WHAHwMore): device 0 (output 0 is the Master Clock) plus up
-// to three more, each on its own clock. Master only; each change asks the DAW to reset on Save.
+// GENERAL HW device list, per direction: device 0 (output 0 is the Master Clock) plus more (up to
+// kHwDevices in all: more than a PC has), each on its own clock. Master only; each change asks the DAW to reset on Save. The Worker opens
+// only the devices a HW slot uses.
 // The listed device with this ID (-1: none). Device 0 matches "" (Windows default).
 int FindHwDevice(const WHASlotTable& table, bool isInput, const char* id);
 // HW slots of one direction that use device d.
 int HwDeviceSlotCount(const WHASlotTable& table, bool isInput, int device);
 // Set device d's ID: "" only for device 0; an ID another device of that direction has is rejected.
 bool SetHwDevice(PanelModel& model, bool isInput, int device, const char* id);
-// Add a device (the first free index 1..3); returns its index, -1 if full, listed already or "".
+// Add a device (the first free index from 1); returns its index, -1 if full, listed already or "".
 int AddHwDevice(PanelModel& model, bool isInput, const char* id);
-// Remove device 1..3 from the list; its HW slots become empty.
+// Remove device 1 or later from the list; its HW slots become empty.
 bool RemoveHwDevice(PanelModel& model, bool isInput, int device);
+// How a listed device opens (WHAHwMode: Exclusive, Shared, Auto). DAW-visible: applies after the reset.
+bool SetHwMode(PanelModel& model, bool isInput, int device, uint8_t mode);
 
 // Source menu (INPUTS/OUTPUTS "Source" column): one pick sets type and source together.
 // AssignHw picks a device by ID: a listed one; else it replaces device 0 when no other HW slot uses
@@ -206,9 +210,9 @@ struct HwStatusLine {
   HwStatusLevel level;
   std::string text;
 };
-// savedMore: the Slot Table's more-devices list now (nullptr: not compared).
+// savedLists: the Slot Table now, for its devices 2 and up (nullptr: not compared).
 std::vector<HwStatusLine> HwStatusLines(const WHAMasterStats* stats, const WHAGeneral& saved, const PanelDevices* devices,
-                                        const WHAHwMore* savedMore = nullptr);
+                                        const WHASlotTable* savedLists = nullptr);
 // Why a HW open failed, in words ("" for an unknown HRESULT).
 const char* HwErrorText(int32_t hr);
 

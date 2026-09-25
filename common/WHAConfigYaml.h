@@ -51,6 +51,20 @@ inline bool ParseCableFormat(std::string_view w, uint8_t& out) {
   return false;
 }
 
+// WHAHwMode.
+inline const char* HwModeWord(uint32_t mode) {
+  static const char* const kWords[kHwModeCount] = {"exclusive", "shared", "auto"};
+  return mode < kHwModeCount ? kWords[mode] : "exclusive";
+}
+inline bool ParseHwMode(std::string_view w, uint8_t& out) {
+  for (uint32_t m = 0; m < kHwModeCount; ++m)
+    if (w == HwModeWord(m)) {
+      out = static_cast<uint8_t>(m);
+      return true;
+    }
+  return false;
+}
+
 inline const char* CodecWord(WHACodec c) {
   switch (c) {
     case WHA_PCM_I16: return "pcm-i16";
@@ -76,7 +90,7 @@ inline std::string SerializeRoutes(const WHASlotTable& t) {
       "#   type:       none | hw | virtual | network | bridge1 | bridge2 | bridge3 | bridge4\n"
       "#   srcChannel: hw 0 = L, 1 = R; virtual (cable - 1) * 8 + channel (0 = L, 1 = R, 2 = C ...);\n"
       "#               network / bridge: channel (0 = first)\n"
-      "#   streamId:   hw device (0..3), network stream (0..7)\n"
+      "#   streamId:   hw device (0 = first in hwDevices), network stream (0..7)\n"
       "#   name:       \"- empty -\" = automatic name\n";
   out += "version: " + std::to_string(t.version) + "\n";
   for (int dir = 0; dir < 2; ++dir) {
@@ -122,13 +136,23 @@ inline std::string SerializeSettings(const WHASlotTable& t, bool standalone = tr
   out += "  networkVorbis: " + u(g.networkVorbisBuffer) + "\n";
   out += "  jitterPcm: " + u(g.jitterPcm) + "\n";
   out += "  jitterVorbis: " + u(g.jitterVorbis) + "\n";
-  out += "hwDevices:              # Windows endpoint IDs, device 1..4; \"\" = device 1: Windows default, 2..4: none\n";
+  out += "hwDevices:              # Windows endpoint IDs, device 1, 2, ...; \"\" = device 1: Windows default, others: none\n";
+  out += "                        # modes, same order: exclusive (lowest latency) | shared (Windows mixer) | auto\n";
   for (int dir = 0; dir < 2; ++dir) {
+    int count = 1;  // up to the last listed device: positions are device numbers
+    for (int d = 1; d < kHwDevices; ++d)
+      if (HwDeviceListed(t, dir == 1, d)) count = d + 1;
     out += dir == 0 ? "  outputs: [" : "  inputs: [";
-    for (int d = 0; d < kHwDevices; ++d) {
+    for (int d = 0; d < count; ++d) {
       if (d) out += ", ";
       const char* id = HwDeviceId(t, dir == 1, d);
       out += YamlQuote(std::string_view(id, strnlen(id, kEndpointIdLen)));
+    }
+    out += "]\n";
+    out += dir == 0 ? "  outputModes: [" : "  inputModes: [";
+    for (int d = 0; d < count; ++d) {
+      if (d) out += ", ";
+      out += HwModeWord(HwDeviceMode(t, dir == 1, d));
     }
     out += "]\n";
   }
@@ -314,7 +338,8 @@ inline bool ReadSettings(const YamlNode& root, WHASlotTable& t, std::string* err
   TakeVersion(root, t, error, ok);
   if (!ok) return false;
   t.general = WHAGeneral{};
-  t.hwMore = WHAHwMore{};
+  ClearHwMoreDevices(t);
+  t.hwModes = WHAHwModes{};
   for (WHACableSetting& c : t.cables) c = WHACableSetting{};
   for (uint32_t i = 0; i < kNetStreams; ++i) t.netTx[i] = t.netRx[i] = WHANetworkStream{};
   WHAGeneral& g = t.general;
@@ -344,17 +369,27 @@ inline bool ReadSettings(const YamlNode& root, WHASlotTable& t, std::string* err
     }
   }
   if (const YamlNode* hw = root.Find("hwDevices")) {
-    if (!CheckMap(*hw, "hwDevices", {"outputs", "inputs"}, error)) return false;
+    if (!CheckMap(*hw, "hwDevices", {"outputs", "inputs", "outputModes", "inputModes"}, error)) return false;
     for (int dir = 0; dir < 2; ++dir) {
       const char* key = dir == 0 ? "outputs" : "inputs";
-      const YamlNode* list = hw->Find(key);
-      if (!list) continue;
-      const std::string where = std::string("hwDevices: ") + key;
-      if (!CheckList(*list, where, 0, static_cast<size_t>(kHwDevices), error)) return false;
-      for (size_t d = 0; d < list->items.size(); ++d)
-        if (!ReadText(&list->items[d], where + " " + std::to_string(d + 1), HwDeviceId(t, dir == 1, static_cast<int>(d)),
-                      kEndpointIdLen, error))
-          return false;
+      if (const YamlNode* list = hw->Find(key)) {
+        const std::string where = std::string("hwDevices: ") + key;
+        if (!CheckList(*list, where, 0, static_cast<size_t>(kHwDevices), error)) return false;
+        for (size_t d = 0; d < list->items.size(); ++d)
+          if (!ReadText(&list->items[d], where + " " + std::to_string(d + 1), HwDeviceId(t, dir == 1, static_cast<int>(d)),
+                        kEndpointIdLen, error))
+            return false;
+      }
+      const char* modesKey = dir == 0 ? "outputModes" : "inputModes";  // optional: absent = exclusive
+      if (const YamlNode* modes = hw->Find(modesKey)) {
+        const std::string where = std::string("hwDevices: ") + modesKey;
+        if (!CheckList(*modes, where, 0, static_cast<size_t>(kHwDevices), error)) return false;
+        uint8_t* place = dir == 0 ? t.hwModes.render : t.hwModes.capture;
+        for (size_t d = 0; d < modes->items.size(); ++d)
+          if (!ReadWord(&modes->items[d], where + " " + std::to_string(d + 1), "exclusive, shared, auto", ParseHwMode,
+                        place[d], error))
+            return false;
+      }
     }
   }
   if (const YamlNode* vc = root.Find("virtualCables")) {

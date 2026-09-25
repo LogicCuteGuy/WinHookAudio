@@ -13,7 +13,7 @@ enum WHAClockSource : int32_t {
   CLOCK_HARDWARE = 1,  // paced by the HW output's buffer drain
 };
 
-// Exclusive sample format a HW device accepted (KsSampleFormat order).
+// Sample format a HW device accepted (KsSampleFormat order; Shared devices are always float).
 enum WHAHwFormat : int32_t {
   HW_FORMAT_NONE = -1,
   HW_FORMAT_FLOAT32 = 0,
@@ -22,10 +22,12 @@ enum WHAHwFormat : int32_t {
 };
 
 constexpr int kStatsEndpointIdLen = 64;  // = kEndpointIdLen (WHASlotTable.h)
-constexpr int kStatsHwMore = 3;          // = kHwDevices - 1 (WHASlotTable.h)
-constexpr int kStatsCables = 8;          // = kVirtualSlotCables (WHASlotTable.h)
+constexpr int kStatsHwDevices = 128;    // = kHwDevices (WHASlotTable.h)
+constexpr int kStatsHwMore = 3;         // = kHwMoreDevices: devices 1..3 (hwMoreOut / hwMoreIn)
+constexpr int kStatsHwExtra = kStatsHwDevices - 1 - kStatsHwMore;  // devices 4 and up (hwExtraOut / hwExtraIn)
+constexpr int kStatsCables = 8;         // = kVirtualSlotCables (WHASlotTable.h)
 
-// One more HW device (index 1..3 of its direction).
+// One more HW device (index 1 and up of its direction; read it with HwDeviceStats).
 struct WHAHwDeviceStats {
   char requestedId[kStatsEndpointIdLen];  // the list's ID when the Worker opened the HW ("" = not listed)
   char id[kStatsEndpointIdLen];           // endpoint open ("" while none)
@@ -110,14 +112,37 @@ struct WHAMasterStats {
   // HW Master Clock pacing (HwClockPacer): ticks evenly spaced at the device's rate.
   int32_t hwChunk;            // frames the device's position reports jump at once (0 = smooth)
   uint64_t hwHurries;         // ticks taken at once because the device was nearly empty
-  // HW devices 2..4 of each direction (WHAHwMore): each on its own clock, resampled to the Master Clock.
+  // HW devices 1..3 of each direction (WHAHwMore): each on its own clock, resampled to the Master Clock.
   WHAHwDeviceStats hwMoreOut[kStatsHwMore];
   WHAHwDeviceStats hwMoreIn[kStatsHwMore];
   // Virtual Cable driver: cables it has (0 = not installed or not open: cables loop inside the Worker).
   int32_t cableDriverCables;
   int32_t cableDriverError;  // Win32 error of the failed open, 0 if open (2 = not installed)
   WHACableStats cables[kStatsCables];
+  // HW devices 4 and up (WHAHwExtra), appended.
+  WHAHwDeviceStats hwExtraOut[kStatsHwExtra];
+  WHAHwDeviceStats hwExtraIn[kStatsHwExtra];
+  // Channels each open HW device was opened with, device 0 included (all it has, or 2; 0 = not open).
+  int32_t hwOutChannels[kStatsHwDevices];
+  int32_t hwInChannels[kStatsHwDevices];
+  // How each HW device is open, device 0 included (WHAHwMode as opened: 0 = Exclusive, 1 = Shared;
+  // Auto shows which one it got; -1 = not open), and the mode it was asked for (the list's, at open).
+  int32_t hwOutMode[kStatsHwDevices];
+  int32_t hwInMode[kStatsHwDevices];
+  int32_t hwOutRequestedMode[kStatsHwDevices];
+  int32_t hwInRequestedMode[kStatsHwDevices];
 };
+
+// More HW device `device` (1 .. kStatsHwDevices - 1) of one direction; nullptr out of range.
+inline WHAHwDeviceStats* HwDeviceStats(WHAMasterStats& s, bool isInput, int device) {
+  if (device < 1 || device >= kStatsHwDevices) return nullptr;
+  if (device <= kStatsHwMore) return isInput ? &s.hwMoreIn[device - 1] : &s.hwMoreOut[device - 1];
+  const int e = device - 1 - kStatsHwMore;
+  return isInput ? &s.hwExtraIn[e] : &s.hwExtraOut[e];
+}
+inline const WHAHwDeviceStats* HwDeviceStats(const WHAMasterStats& s, bool isInput, int device) {
+  return HwDeviceStats(const_cast<WHAMasterStats&>(s), isInput, device);
+}
 
 // Returns 0 on success, -1 when no Master instance is streaming in this process.
 using WHAGetMasterStatsFn = int(__stdcall*)(WHAMasterStats*);

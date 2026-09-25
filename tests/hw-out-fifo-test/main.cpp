@@ -344,6 +344,34 @@ int main() {
     check("backlog held within 64 frames of target", std::abs(r.meanFillLate - r.target) <= 64);
   }
 
+  {
+    // The device already plays silence (the Worker held it while the Master Clock settled) and is low
+    // when the FIFO starts: blocks alone keep the backlog under half the target, which is refilled and
+    // counted as a gap; silence primed up to the target joins seamlessly.
+    std::printf("start on a device already playing, fill 200 of %d\n", kCapacity);
+    auto gapsAfterStart = [](bool prime) {
+      HwOutputFifo fifo;
+      fifo.reset(kRate, 2, kBlock, kCapacity);
+      int64_t written = 5000;
+      int32_t padding = 200;
+      if (prime) fifo.primeSilence(padding);
+      std::vector<float> block(2 * kBlock, 0.0f), frames(2 * kCapacity);
+      for (int tick = 0; tick < 200; ++tick) {  // ~0.5 s
+        padding = padding > kBlock ? padding - kBlock : 0;  // the device plays a block per tick
+        fifo.push(block.data(), kBlock, 2);
+        const int n = fifo.plan(tick * kBlock / kRate, written, padding);
+        if (n > 0) {
+          fifo.pop(frames.data(), n);
+          written += n;
+          padding += n;
+        }
+      }
+      return fifo.gaps();
+    };
+    check("without priming: a gap", gapsAfterStart(false) > 0);
+    check("primed with silence: no gap", gapsAfterStart(true) == 0);
+  }
+
   std::printf("{\"schema_version\":1,\"operation\":\"hw_out_fifo_test\",\"pass\":%s}\n", gPass ? "true" : "false");
   return gPass ? 0 : 1;
 }

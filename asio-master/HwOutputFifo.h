@@ -182,6 +182,13 @@ class HwOutputFifo {
     blocks_.fetch_add(1);
   }
 
+  // After reset(), a device already playing (silence) at `padding`: queue silence up to the target, so
+  // the first blocks join it seamlessly instead of the backlog looking low (a refill, counted as a gap).
+  void primeSilence(int32_t padding) {
+    const int32_t t = target_.load();
+    silenceDue_ = padding >= 0 && t > padding ? static_cast<size_t>(t - padding) : 0;
+  }
+
   // The Master Clock ticked `frames` without a push (the Worker missed ticks; those blocks are lost):
   // silence in their place keeps the backlog on target instead of looking like drift.
   void skip(int frames) {

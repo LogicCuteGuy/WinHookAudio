@@ -21,7 +21,7 @@ MasterHolder::MasterHolder(WHASlotTable* table, float* masterAudio, WHABridgeSha
   for (int i = 0; i < 4; ++i) bridges_[i] = bridges[i];
   for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) bridgeTicks_[i][j] = bridgeTicks[i][j];
   workerDone_ = CreateEventA(nullptr, FALSE, TRUE, nullptr);  // signaled: the first tick has nothing to wait for
-  for (int d = 0; d < kHwDevices; ++d) outRoutePub_[d] = inRoutePub_[d] = -1;
+  for (int d = 0; d < kHwDevices; ++d) outRoute_[d] = inRoute_[d] = outRoutePub_[d] = inRoutePub_[d] = -1;
 }
 MasterHolder::~MasterHolder() {
   stop();
@@ -134,30 +134,30 @@ void MasterHolder::openHw() {
     if (table_->masterIn[i].type == SLOT_HW) usedIn[HwDeviceOf(table_->masterIn[i])] = anyHw = true;
   usedOut[0] = anyHw;  // opened and started, output 0 is the Master Clock (WinHookMasterASIO::runClock)
   hwRequest_ = table_->general;  // one snapshot: what is opened is what the panel shows as requested
-  hwRequestMore_ = table_->hwMore;
+  CopyHwDeviceIds(*table_, hwRequestIds_);
   hwRequestValid_.store(true, std::memory_order_release);
-  auto* request = new WHASlotTable();  // ~50 KB: not on the Worker's stack
-  request->general = hwRequest_;
-  request->hwMore = hwRequestMore_;
   const WHAGeneral& g = hwRequest_;
+  auto listed = [this](bool isInput, int d) { return d == 0 || HwDeviceId(hwRequestIds_, isInput, d)[0] != '\0'; };
 
   std::string resolved[kHwDevices];
   for (int d = 0; d < kHwDevices; ++d) {  // outputs
-    const char* id = HwDeviceId(*request, false, d);
-    if (!usedOut[d] || !HwDeviceListed(*request, false, d)) continue;
+    const char* id = HwDeviceId(hwRequestIds_, false, d);
+    if (!usedOut[d] || !listed(false, d)) continue;
     outUsed_[d] = true;
     resolved[d] = KsResolveEndpointId(eRender, id);
     for (int j = 0; j < d && outRoute_[d] < 0; ++j)
       if (!resolved[d].empty() && resolved[j] == resolved[d] && outRoute_[j] >= 0) outRoute_[d] = outRoute_[j];
     if (outRoute_[d] >= 0) continue;  // listed twice: plays through the earlier one
     if (!out_[d]) out_[d] = new KsAudio();
-    if (out_[d]->open(g.sampleRate, g.hwBuffer, g.asioBuffer, id) && out_[d]->start()) {
+    if (out_[d]->open(g.sampleRate, g.hwBuffer, g.asioBuffer, id, HwDeviceMode(hwRequestIds_, false, d)) && out_[d]->start()) {
+      const int channels = out_[d]->channels();
       if (d > 0) {
         if (!outFifo_[d]) outFifo_[d] = new HwOutputFifo();
-        outFifo_[d]->reset(g.sampleRate, kKsDeviceChannels, static_cast<int>(g.asioBuffer), out_[d]->capacity());
-        if (outFrames_.size() < static_cast<size_t>(out_[d]->capacity()) * kKsDeviceChannels)
-          outFrames_.assign(static_cast<size_t>(out_[d]->capacity()) * kKsDeviceChannels, 0.0f);
+        outFifo_[d]->reset(g.sampleRate, channels, static_cast<int>(g.asioBuffer), out_[d]->capacity());
+        if (outFrames_.size() < static_cast<size_t>(out_[d]->capacity()) * channels)
+          outFrames_.assign(static_cast<size_t>(out_[d]->capacity()) * channels, 0.0f);
       }
+      hwOutBuf_[d].assign(static_cast<size_t>(channels) * 4096, 0.0f);
       outRoute_[d] = d;
       hwOut_[d] = out_[d];
     } else {
@@ -165,23 +165,23 @@ void MasterHolder::openHw() {
     }
   }
   for (int d = 0; d < kHwDevices; ++d) {  // inputs
-    const char* id = HwDeviceId(*request, true, d);
+    const char* id = HwDeviceId(hwRequestIds_, true, d);
     resolved[d].clear();
-    if (!usedIn[d] || !HwDeviceListed(*request, true, d)) continue;
+    if (!usedIn[d] || !listed(true, d)) continue;
     inUsed_[d] = true;
     resolved[d] = KsResolveEndpointId(eCapture, id);
     for (int j = 0; j < d && inRoute_[d] < 0; ++j)
       if (!resolved[d].empty() && resolved[j] == resolved[d] && inRoute_[j] >= 0) inRoute_[d] = inRoute_[j];
     if (inRoute_[d] >= 0) continue;  // listed twice: records through the earlier one
     if (!in_[d]) in_[d] = new KsCapture();
-    if (in_[d]->open(g.sampleRate, g.hwBuffer, g.asioBuffer, id) && in_[d]->start()) {
+    if (in_[d]->open(g.sampleRate, g.hwBuffer, g.asioBuffer, id, HwDeviceMode(hwRequestIds_, true, d)) && in_[d]->start()) {
+      hwInBuf_[d].assign(static_cast<size_t>(in_[d]->channels()) * 4096, 0.0f);
       inRoute_[d] = d;
       hwIn_[d] = in_[d];
     } else {
       hwInError_[d] = FAILED(in_[d]->lastError()) ? static_cast<int32_t>(in_[d]->lastError()) : E_FAIL;
     }
   }
-  delete request;
   outTrace_.clear();
   if (GetEnvironmentVariableA("WINHOOKAUDIO_OUT_TRACE", outTracePath_, sizeof(outTracePath_)) > 0) outTrace_.reserve(1000000);
   for (int d = 0; d < kHwDevices; ++d) {
@@ -472,29 +472,53 @@ void MasterHolder::doTick() {
   }
   int hwFrames = static_cast<int>(table_->general.asioBuffer);
   if (hwFrames > 4096) hwFrames = 4096;
-  // KS write: every HW OUT slot summed into its device's channel (srcChannel 0 = L, 1 = R). Output 0
-  // is the Master Clock's device, written directly; the others through their FIFO (own clocks).
+  // Master Clock settling (setClockSettled): the HW inputs and more outputs wait in silence, then start
+  // afresh once it has.
+  const bool settled = !clockSettled_ || clockSettled_->load();
+  if (settled && hwHeld_) {
+    for (int d = 0; d < kHwDevices; ++d) {
+      if (inRoute_[d] == d) in_[d]->restart();
+      if (d > 0 && outRoute_[d] == d) {
+        outFifo_[d]->reset(hwRequest_.sampleRate, out_[d]->channels(), static_cast<int>(hwRequest_.asioBuffer), out_[d]->capacity());
+        outFifo_[d]->primeSilence(static_cast<int32_t>(out_[d]->padding()));
+      }
+    }
+  }
+  hwHeld_ = !settled;
+  // KS write: every HW OUT slot summed into its device's channel (srcChannel 0 = L, 1 = R, 2 = Ch 3
+  // ...; one past what the device opened is dropped). Output 0 is the Master Clock's device, written
+  // directly; the others through their FIFO (own clocks).
   bool anyOut = false;
   for (int d = 0; d < kHwDevices; ++d) {
     if (outRoute_[d] != d) continue;
-    std::memset(hwOutBuf_[d], 0, sizeof(float) * kKsDeviceChannels * static_cast<size_t>(hwFrames));
+    std::memset(hwOutBuf_[d].data(), 0, sizeof(float) * out_[d]->channels() * static_cast<size_t>(hwFrames));
     anyOut = true;
   }
   if (anyOut) {
     for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
       const auto& slot = table_->masterOut[oi];
-      if (slot.type != SLOT_HW || slot.srcChannel < 0 || slot.srcChannel >= kKsDeviceChannels) continue;
+      if (slot.type != SLOT_HW || slot.srcChannel < 0) continue;
       const int p = outRoute_[HwDeviceOf(slot)];
-      if (p < 0) continue;
+      if (p < 0 || slot.srcChannel >= out_[p]->channels()) continue;
       const float* outBuf = masterAudio_ + oi * 4096;
-      float* dst = hwOutBuf_[p] + static_cast<size_t>(slot.srcChannel) * hwFrames;
+      float* dst = hwOutBuf_[p].data() + static_cast<size_t>(slot.srcChannel) * hwFrames;
       for (int f = 0; f < hwFrames; ++f) dst[f] += outBuf[f];
     }
   }
-  if (outRoute_[0] == 0) out_[0]->write(hwOutBuf_[0], hwFrames, kKsDeviceChannels);
+  if (outRoute_[0] == 0) out_[0]->write(hwOutBuf_[0].data(), hwFrames, out_[0]->channels());
   for (int d = 1; d < kHwDevices; ++d) {
     if (outRoute_[d] != d) continue;
-    outFifo_[d]->push(hwOutBuf_[d], hwFrames, kKsDeviceChannels);
+    const int channels = out_[d]->channels();
+    if (!settled) {  // silence at the device's target fill until the Master Clock settles
+      const long padding = out_[d]->padding();
+      const long n = padding < 0 ? 0 : out_[d]->targetFill() - padding;
+      if (n > 0) {
+        std::memset(outFrames_.data(), 0, sizeof(float) * static_cast<size_t>(n) * channels);
+        out_[d]->writeInterleaved(outFrames_.data(), static_cast<int>(n), channels);
+      }
+      continue;
+    }
+    outFifo_[d]->push(hwOutBuf_[d].data(), hwFrames, channels);
     int64_t written = 0;
     const long padding = out_[d]->padding(&written);
     if (padding < 0) continue;  // device gone
@@ -507,14 +531,15 @@ void MasterHolder::doTick() {
       outTrace_.push_back({nowSec, written, static_cast<int32_t>(padding), n, outFifo_[d]->fill(), outFifo_[d]->ratio()});
     if (n <= 0) continue;
     outFifo_[d]->pop(outFrames_.data(), n);
-    out_[d]->writeInterleaved(outFrames_.data(), n, kKsDeviceChannels);
+    out_[d]->writeInterleaved(outFrames_.data(), n, channels);
   }
   // KS read: each open HW input once, then each HW IN slot from its device's channel; the DAW gets it
   // next tick. A slot whose device is not open is silent.
   bool anyIn = false;
   for (int d = 0; d < kHwDevices; ++d) {
     if (inRoute_[d] != d) continue;
-    in_[d]->read(hwInBuf_[d], hwFrames, kKsDeviceChannels);
+    if (settled) in_[d]->read(hwInBuf_[d].data(), hwFrames, in_[d]->channels());
+    else in_[d]->hold(hwInBuf_[d].data(), hwFrames, in_[d]->channels());
     anyIn = true;
   }
   if (!anyIn) return;
@@ -523,8 +548,8 @@ void MasterHolder::doTick() {
     if (slot.type != SLOT_HW) continue;
     float* inBuf = masterAudio_ + 512 * 4096 + ii * 4096;
     const int p = inRoute_[HwDeviceOf(slot)];
-    if (p >= 0 && slot.srcChannel >= 0 && slot.srcChannel < kKsDeviceChannels)
-      std::memcpy(inBuf, hwInBuf_[p] + static_cast<size_t>(slot.srcChannel) * hwFrames, sizeof(float) * hwFrames);
+    if (p >= 0 && slot.srcChannel >= 0 && slot.srcChannel < in_[p]->channels())
+      std::memcpy(inBuf, hwInBuf_[p].data() + static_cast<size_t>(slot.srcChannel) * hwFrames, sizeof(float) * hwFrames);
     else
       std::memset(inBuf, 0, sizeof(float) * hwFrames);
   }

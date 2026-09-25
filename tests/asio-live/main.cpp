@@ -9,11 +9,13 @@
 // Output 1 carries a quiet 1 kHz tone; whether it is audible is still for a human to confirm.
 //
 // usage: asio-live [--driver "WinHookAudio Master"] [--seconds 3] [--silent] [--hw-buffer frames]
-//                  [--render "name"] [--capture "name"] [--loop] [--panel]
+//                  [--render "name"] [--capture "name"] [--mode exclusive|shared|auto] [--loop] [--panel]
 //   --hw-buffer: HW period (GENERAL "Hardware (KS Exclusive)"); below the device minimum, or 0, gets
 //     the minimum (0 in a fresh table is the default, 64).
 //   --render / --capture: HW endpoints by friendly-name substring (default: Windows defaults).
-//     These three are set before the driver fills in its defaults, so only when no other process
+//   --mode: how HW device #1 of each direction opens (WHAHwMode). Shared: a second client can still
+//     open the render endpoint, which is then what is checked.
+//     These four are set before the driver fills in its defaults, so only when no other process
 //     holds the Slot Table.
 //   --loop: output 1 carries deterministic noise; expects it back on input 1 through a physical or
 //     virtual loopback (e.g. --render "CABLE Input" --capture "CABLE Output"), and checks the
@@ -234,6 +236,7 @@ int main(int argc, char** argv) {
   long hwBuffer = -1;
   const char* renderName = nullptr;
   const char* captureName = nullptr;
+  int mode = -1;
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--driver") && i + 1 < argc) driver = Widen(argv[++i]);
     else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
@@ -244,6 +247,11 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--loop")) gLoop = true;
     else if (!std::strcmp(argv[i], "--loop-out") && i + 1 < argc) gLoopOut = std::atol(argv[++i]) - 1;
     else if (!std::strcmp(argv[i], "--panel")) panel = true;
+    else if (!std::strcmp(argv[i], "--mode") && i + 1 < argc) {
+      const std::string m = argv[++i];
+      mode = m == "exclusive" ? HW_MODE_EXCLUSIVE : m == "shared" ? HW_MODE_SHARED : m == "auto" ? HW_MODE_AUTO : -2;
+      if (mode == -2) return std::printf("--mode: exclusive, shared or auto\n"), 2;
+    }
   }
 
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // DAWs create ASIO drivers on an STA thread
@@ -251,16 +259,21 @@ int main(int argc, char** argv) {
   // Create the Slot Table before the driver does: it keeps our hwBuffer and fills in the rest
   // (its defaults apply while version == 0). Held open until exit.
   HANDLE tableMap = nullptr;
-  if (hwBuffer >= 0 || renderName || captureName) {
+  if (hwBuffer >= 0 || renderName || captureName || mode >= 0) {
     tableMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(shm::kSlotTableSize),
                                   shm::kSlotTableName + 7);
     const bool fresh = tableMap && GetLastError() != ERROR_ALREADY_EXISTS;
     auto* table = tableMap ? static_cast<WHASlotTable*>(MapViewOfFile(tableMap, FILE_MAP_ALL_ACCESS, 0, 0, shm::kSlotTableSize)) : nullptr;
-    check("Slot Table not held by another process (--hw-buffer/--render/--capture)", fresh && table);
+    check("Slot Table not held by another process (--hw-buffer/--render/--capture/--mode)", fresh && table);
     if (!fresh || !table) return 1;
     if (hwBuffer >= 0) {
       table->general.hwBuffer = static_cast<uint32_t>(hwBuffer);
       std::printf("HW buffer (period) requested: %ld frames\n", hwBuffer);
+    }
+    if (mode >= 0) {
+      SetHwDeviceMode(*table, false, 0, static_cast<uint8_t>(mode));
+      SetHwDeviceMode(*table, true, 0, static_cast<uint8_t>(mode));
+      std::printf("HW mode requested: %s\n", mode == 0 ? "exclusive" : mode == 1 ? "shared" : "auto");
     }
     const struct { EDataFlow flow; const char* name; char* id; } picks[] = {
         {eRender, renderName, table->general.hwRenderId}, {eCapture, captureName, table->general.hwCaptureId}};
@@ -346,15 +359,70 @@ int main(int argc, char** argv) {
   std::printf("Streaming %.1f s%s...\n", seconds,
               !gTone ? " (silence)" : gLoop ? " (noise, -20 dBFS, output 1 -> expected on input 1)" : " (1 kHz tone, -20 dBFS, output 1)");
   check("start", gAsio->start() == ASE_OK);
+  // Stream for `sec` seconds, printing when a HW dropout counter moves (time since start), so start-up
+  // dropouts can be told from later ones.
+  LARGE_INTEGER qpcFreq, qpcStart;
+  QueryPerformanceFrequency(&qpcFreq);
+  QueryPerformanceCounter(&qpcStart);
+  WHAMasterStats seen{};
+  auto watch = [&](double sec) {
+    for (double left = sec; left > 0; left -= 0.05) {
+      Sleep(static_cast<DWORD>((left < 0.05 ? left : 0.05) * 1000));
+      WHAMasterStats now{};
+      if (!getStats || getStats(&now) != 0) continue;
+      LARGE_INTEGER q;
+      QueryPerformanceCounter(&q);
+      const double t = static_cast<double>(q.QuadPart - qpcStart.QuadPart) / static_cast<double>(qpcFreq.QuadPart);
+      if (now.hwInStarved != seen.hwInStarved || now.hwInTrims != seen.hwInTrims || now.hwUnderruns != seen.hwUnderruns ||
+          now.hwInSkipped != seen.hwInSkipped || now.workerOverruns != seen.workerOverruns || now.hwDrops != seen.hwDrops)
+        std::printf("  t=%.2f s: input starved %llu trims %llu skipped %llu (target %d, fill %d); output underruns %llu drops %llu;"
+                    " worker late %llu; clock ticks %llu\n", t,
+                    static_cast<unsigned long long>(now.hwInStarved), static_cast<unsigned long long>(now.hwInTrims),
+                    static_cast<unsigned long long>(now.hwInSkipped), now.hwInTarget, now.hwInFill,
+                    static_cast<unsigned long long>(now.hwUnderruns), static_cast<unsigned long long>(now.hwDrops),
+                    static_cast<unsigned long long>(now.workerOverruns), static_cast<unsigned long long>(now.ticks));
+      for (int d = 1; d < kStatsHwDevices; ++d) {
+        const WHAHwDeviceStats& a = *HwDeviceStats(seen, false, d);
+        const WHAHwDeviceStats& b = *HwDeviceStats(now, false, d);
+        if (b.trims != a.trims || b.underruns != a.underruns || b.gaps != a.gaps)
+          std::printf("  t=%.2f s: output #%d trims %llu underruns %llu gaps %llu (backlog %d, target %d)\n", t, d + 1,
+                      static_cast<unsigned long long>(b.trims), static_cast<unsigned long long>(b.underruns),
+                      static_cast<unsigned long long>(b.gaps), b.fill, b.target);
+      }
+      seen = now;
+    }
+  };
   if (panel) check("controlPanel opens while streaming", gAsio->controlPanel() == ASE_OK);
-  Sleep(static_cast<DWORD>(seconds * 500));
+  watch(seconds * 0.5);
+  WHAMasterStats mid{};
+  const bool haveMid = getStats && getStats(&mid) == 0;
+  if (haveMid && gRenderId.empty() && mid.hwRenderId[0]) gRenderId = mid.hwRenderId;  // the device the table chose, not the default
   const HRESULT during = ProbeRender();
   std::printf("HW render endpoint while streaming: 0x%08lX%s\n", static_cast<unsigned long>(during),
               during == AUDCLNT_E_DEVICE_IN_USE ? " (AUDCLNT_E_DEVICE_IN_USE)" : "");
-  check("HW output holds its render endpoint exclusively", during == AUDCLNT_E_DEVICE_IN_USE);
-  Sleep(static_cast<DWORD>(seconds * 500));
+  watch(seconds * 0.5);
   WHAMasterStats st{};
   const bool haveStats = getStats && getStats(&st) == 0;  // before stop: counters live with the instance
+  if (haveStats && st.hwOutMode[0] == HW_MODE_SHARED)
+    check("HW output in Shared mode leaves its render endpoint to other apps", during == S_OK);
+  else
+    check("HW output holds its render endpoint exclusively", during == AUDCLNT_E_DEVICE_IN_USE);
+  if (haveStats && haveMid) {  // start-up settles in the first half; a dropout in the second half is a real one
+    uint64_t more = 0;
+    for (int d = 1; d < kStatsHwDevices; ++d)
+      for (int dir = 0; dir < 2; ++dir) {
+        const WHAHwDeviceStats& a = *HwDeviceStats(mid, dir == 1, d);
+        const WHAHwDeviceStats& b = *HwDeviceStats(st, dir == 1, d);
+        more += (b.underruns - a.underruns) + (b.gaps - a.gaps) + (b.trims - a.trims);
+      }
+    std::printf("Second half: output underruns %llu drops %llu; input starved %llu trims %llu glitches %llu; more devices %llu\n",
+                static_cast<unsigned long long>(st.hwUnderruns - mid.hwUnderruns), static_cast<unsigned long long>(st.hwDrops - mid.hwDrops),
+                static_cast<unsigned long long>(st.hwInStarved - mid.hwInStarved), static_cast<unsigned long long>(st.hwInTrims - mid.hwInTrims),
+                static_cast<unsigned long long>(st.hwInGlitches - mid.hwInGlitches), static_cast<unsigned long long>(more));
+    check("HW: no dropout in the second half (after start-up)",
+          st.hwUnderruns == mid.hwUnderruns && st.hwDrops == mid.hwDrops && st.hwInStarved == mid.hwInStarved &&
+              st.hwInTrims == mid.hwInTrims && st.hwInGlitches == mid.hwInGlitches && more == 0);
+  }
   long inStreaming = 0, outStreaming = 0;
   gAsio->getLatencies(&inStreaming, &outStreaming);
   std::printf("Latencies while streaming: in %ld / out %ld frames\n", inStreaming, outStreaming);
@@ -401,6 +469,10 @@ int main(int argc, char** argv) {
     if (st.hwInOpen)
       check("Stats: input period/format/latency", st.hwInPeriod > 0 && st.hwInFormat != HW_FORMAT_NONE &&
                                                       st.hwInLatency == inStreaming && st.hwCaptureId[0] != 0);
+    std::printf("HW output #1 channels %d mode %d (asked %d), HW input #1 channels %d mode %d (asked %d)\n", st.hwOutChannels[0],
+                st.hwOutMode[0], st.hwOutRequestedMode[0], st.hwInChannels[0], st.hwInMode[0], st.hwInRequestedMode[0]);
+    std::printf("HW output #1: period %d frames, capacity %d, fill %d..%d, stream latency %d\n", st.hwPeriod, st.hwCapacity,
+                st.hwMinFill, st.hwMaxFill, st.hwStreamLatency);
     check("Master Clock paced by the HW output", st.clockSource == CLOCK_HARDWARE);
     check("HW output: no underrun, no dropped block", st.hwOpen && st.hwUnderruns == 0 && st.hwDrops == 0);
     // Measured: fill queued ahead of each new block + the device's stream latency.
@@ -412,14 +484,14 @@ int main(int argc, char** argv) {
     check("Reported output latency before start = while streaming (or the DAW was told it changed)",
           outLatency == outStreaming || gLatencyChanges.load() > 0);
     check("Reported output latency within one block of measured", std::abs(outStreaming - measuredOut) <= gBlock);
-    for (int k = 0; k < kStatsHwMore; ++k) {
+    for (int d = 1; d < kStatsHwDevices; ++d) {
       for (int dir = 0; dir < 2; ++dir) {
-        const WHAHwDeviceStats& h = dir ? st.hwMoreIn[k] : st.hwMoreOut[k];
+        const WHAHwDeviceStats& h = *HwDeviceStats(st, dir == 1, d);
         if (!h.used) continue;
-        std::printf("HW %s #%d: open=%d sameAs=%d lastError=0x%08lX %s period %d format %d latency %d (%.1f ms) fill %d target %d"
-                    " chunk %d drift %+.1f ppm (%s) blocks %llu underruns %llu gaps %llu trims %llu growths %llu\n",
-                    dir ? "input" : "output", k + 2, h.open, h.sameAs, static_cast<unsigned long>(h.lastError), h.id, h.period,
-                    h.format, h.latency, 1000.0 * h.latency / gRate, h.fill, h.target, h.chunk, h.driftPpmMilli / 1000.0,
+        std::printf("HW %s #%d: open=%d mode %d sameAs=%d lastError=0x%08lX %s period %d format %d channels %d latency %d (%.1f ms)"
+                    " fill %d target %d chunk %d drift %+.1f ppm (%s) blocks %llu underruns %llu gaps %llu trims %llu growths %llu\n",
+                    dir ? "input" : "output", d + 1, h.open, dir ? st.hwInMode[d] : st.hwOutMode[d], h.sameAs, static_cast<unsigned long>(h.lastError), h.id, h.period,
+                    h.format, dir ? st.hwInChannels[d] : st.hwOutChannels[d], h.latency, 1000.0 * h.latency / gRate, h.fill, h.target, h.chunk, h.driftPpmMilli / 1000.0,
                     h.driftEngaged ? "resampling" : "bit-exact", static_cast<unsigned long long>(h.blocks),
                     static_cast<unsigned long long>(h.underruns), static_cast<unsigned long long>(h.gaps),
                     static_cast<unsigned long long>(h.trims), static_cast<unsigned long long>(h.growths));
@@ -499,7 +571,9 @@ int main(int argc, char** argv) {
         if (c > bestC) { bestC = c; bestD = d; }
       }
       if (bestD < 0) std::printf(" -"); else std::printf(" %ld", bestD);
-      if (w >= static_cast<long>(gSettle) * gBlock) {  // after the settle, every window must agree
+      // After the settle every window must agree. HW inputs start once the Master Clock's warm-up
+      // (1 s) is over (MasterHolder::setClockSettled), so the loop settles at 1.5 s.
+      if (w >= (std::max)(static_cast<long>(gSettle) * gBlock, static_cast<long>(1.5 * gRate))) {
         if (firstDelay == -2) firstDelay = bestD;
         steady = steady && bestD >= 0 && std::abs(bestD - firstDelay) <= tolerance;
       }

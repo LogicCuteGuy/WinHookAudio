@@ -15,7 +15,7 @@ sound cards, Windows apps, other DAWs, LAN  ->  WinHookAudio Master (ASIO)  ->  
 | Part | What it does |
 |---|---|
 | **WinHookAudio Master** (ASIO driver) | 512 inputs + 512 outputs for the Master DAW. Each slot is fed by a sound card, a Virtual Cable, a Bridge or the network. |
-| **HW devices** | Up to 4 output and 4 input sound cards (WASAPI), each kept in time with the Master Clock. |
+| **HW devices** | Every sound card Windows has, as outputs and inputs, with all their channels (a 16-channel interface gives 16), in WASAPI Exclusive mode (no Windows mixer, lowest latency) or, per device, Shared (other apps keep their sound) or Auto. A device opens only when a slot uses it; each is kept in time with the Master Clock. |
 | **Virtual Cables** (`WinHookAudio.sys`) | 8 cables that appear in Windows as sound devices (up to 8 channels each). Windows apps play into them or record from them. |
 | **WinHookAudio Bridge 1-4** (ASIO drivers) | Let other DAWs or ASIO apps send and receive a set of channels; up to 4 apps share one Bridge. |
 | **Network streams** (WHAA) | Send and receive audio on the LAN over UDP 6980-6981, as PCM or Vorbis. |

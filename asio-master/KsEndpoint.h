@@ -1,7 +1,7 @@
 #pragma once
 
-// KsEndpoint — shared exclusive-mode open and sample conversion for the HW output (KsAudio) and
-// HW input (KsCapture). Vocabulary: Slot, Master Clock.
+// KsEndpoint â€” WASAPI open (Exclusive / Shared / Auto, WHAHwMode) and sample conversion for the HW
+// output (KsAudio) and HW input (KsCapture). Vocabulary: Slot, Master Clock.
 
 #include <cstdint>
 #include <string>
@@ -9,16 +9,18 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 
+#include "WHASlotTable.h"
+
 namespace wha {
 
 enum class KsSampleFormat { Float32, Pcm24In32, Pcm16 };  // negotiated per device, first accepted wins
 
-constexpr int kKsDeviceChannels = 2;
-
 struct KsOpenResult {
-  IAudioClient* client = nullptr;  // initialized exclusive, not started; caller releases
+  IAudioClient* client = nullptr;  // initialized, not started; caller releases
   KsSampleFormat format = KsSampleFormat::Float32;
-  int32_t periodFrames = 0;
+  int32_t channels = 2;             // the device's channel count, or 2 when it refused that (stereo)
+  bool shared = false;              // opened through the Windows mixer (Shared, or Auto's fallback)
+  int32_t periodFrames = 0;         // device period (Shared: the mixer's)
   int32_t capacityFrames = 0;       // device buffer
   int32_t streamLatencyFrames = 0;  // IAudioClient::GetStreamLatency
   std::string endpointId;           // IMMDevice ID actually opened (UTF-8), also for the default device
@@ -26,11 +28,14 @@ struct KsOpenResult {
   const char* step = "";
 };
 
-// Open the endpoint exclusively, timer-driven. endpointId: IMMDevice ID, empty/null = the Windows
-// default device of that flow. periodFrames: 0 or below the device minimum = the minimum. The
-// buffer is whole periods, at least 4 of them and at least 4 blockFrames.
-bool KsOpenExclusive(EDataFlow flow, const char* endpointId, int32_t sampleRate, int32_t periodFrames,
-                     int32_t blockFrames, KsOpenResult& out);
+// Open the endpoint in `mode` (WHAHwMode), timer-driven. endpointId: IMMDevice ID, empty/null = the
+// Windows default device of that flow. The buffer is whole periods and at least 4 blockFrames.
+// Exclusive: periodFrames 0 or below the device minimum = the minimum; at least 4 periods; channels:
+// all the device has (its Windows device format, up to kHwMaxChannels), else stereo. Shared: the
+// Windows mixer's period (periodFrames does not apply), at least 6 periods, the mixer's channels,
+// float; Windows converts the rate if the mixer runs at another. Auto: Exclusive, else Shared.
+bool KsOpen(EDataFlow flow, const char* endpointId, uint8_t mode, int32_t sampleRate, int32_t periodFrames,
+            int32_t blockFrames, KsOpenResult& out);
 
 // The endpoint an ID opens: the ID itself, or for empty/null the Windows default device of that flow
 // ("" if there is none). Two HW devices of the Slot Table that resolve alike are one device.

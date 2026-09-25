@@ -32,11 +32,11 @@ bool KsAudio::fail(const char* step, HRESULT hr) {
   return false;
 }
 
-bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames, const char* endpointId) {
+bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames, const char* endpointId, uint8_t mode) {
   close();
   sampleRate_ = sampleRate;
   bufferFrames_ = bufferFrames;
-  exclusive_ = false;
+  shared_ = false;
   lastError_ = S_OK;
   lastStep_ = "";
   capacityFrames_ = 0;
@@ -51,10 +51,11 @@ bool KsAudio::open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames
 
   comInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
   KsOpenResult r;
-  if (!KsOpenExclusive(eRender, endpointId, sampleRate, bufferFrames, blockFrames, r)) return fail(r.step, r.error);
+  if (!KsOpen(eRender, endpointId, mode, sampleRate, bufferFrames, blockFrames, r)) return fail(r.step, r.error);
   audioClient_ = r.client;
   format_ = r.format;
-  exclusive_ = true;
+  channels_ = r.channels;
+  shared_ = r.shared;
   bufferFrames_ = r.periodFrames;
   capacityFrames_ = r.capacityFrames;
   streamLatencyFrames_ = r.streamLatencyFrames;
@@ -78,7 +79,7 @@ void KsAudio::close() {
   if (audioClock_) { audioClock_->Release(); audioClock_ = nullptr; }
   if (audioClient_) { audioClient_->Stop(); audioClient_->Release(); audioClient_ = nullptr; }
   opened_ = false;
-  exclusive_ = false;
+  shared_ = false;
   if (comInitialized_) { CoUninitialize(); comInitialized_ = false; }
 }
 
@@ -123,9 +124,9 @@ bool KsAudio::writeFrames(const float* data, int frames, int channels, bool inte
   HRESULT hr = renderClient_->GetBuffer(frames, &buffer);
   if (FAILED(hr)) return false;
   for (int f = 0; f < frames; ++f) {
-    for (int ch = 0; ch < kKsDeviceChannels; ++ch) {
+    for (int ch = 0; ch < channels_; ++ch) {
       const float v = ch >= channels ? 0.0f : interleaved ? data[f * channels + ch] : data[ch * frames + f];
-      KsToDevice(format_, v, buffer, f * kKsDeviceChannels + ch);
+      KsToDevice(format_, v, buffer, f * channels_ + ch);
     }
   }
   hr = renderClient_->ReleaseBuffer(frames, 0);

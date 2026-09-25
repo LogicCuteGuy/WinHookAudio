@@ -125,7 +125,8 @@ class WinHookMasterASIO : public IASIO {
   // HW Master Clock pacing (clock thread), see HwClockPacer.
   HwClockPacer pacer_;
   const class KsAudio* pacedHw_ = nullptr;      // the device pacer_ was reset for
-  std::atomic<int32_t> hwOutReportFill_{-1};    // device fill the output latency is reported from (-1: targetFill)
+  std::atomic<int32_t> hwOutReportFill_{-1};
+  std::atomic<bool> hwClockSettled_{false};     // the HW Master Clock's warm-up is over (MasterHolder::setClockSettled)    // device fill the output latency is reported from (-1: targetFill)
   std::atomic<bool> hwOutLatencyChanged_{false};  // the DAW must re-query getLatencies
   std::atomic<int32_t> hwChunk_{0};
   std::atomic<uint64_t> hwHurries_{0};

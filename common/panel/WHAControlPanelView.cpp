@@ -75,31 +75,43 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
   if (ImGui::Selectable("- empty -", s.type == SLOT_NONE)) AssignSource(edit, isInput, idx, SLOT_NONE, 0, 0);
 
   if (ImGui::BeginMenu("Hardware", !IsGeneralReadOnly(edit))) {
-    ImGui::TextDisabled("Each device has 2 channels (L/R). Up to 4 %s devices; GENERAL lists them.", isInput ? "input" : "output");
+    ImGui::TextDisabled("Each device offers all its channels (its format in Windows Sound settings).");
     if (!isInput) ImGui::TextDisabled("Output #1 is the clock: the others are resampled to it.");
     const std::vector<PanelEndpoint>* list = devices ? (isInput ? &devices->capture : &devices->render) : nullptr;
-    auto deviceMenu = [&](const char* id, std::string label) {
+    auto channelsOf = [&](const char* id) {  // 2 when the device is not connected or not known
+      if (list)
+        for (const PanelEndpoint& e : *list)
+          if (e.id == id) return e.channels;
+      return 2;
+    };
+    auto deviceMenu = [&](const char* id, std::string label, int channels) {
       ImGui::PushID(id[0] ? id : "default");
       const int listed = FindHwDevice(edit.table, isInput, id);
+      if (channels != 2) label += "  (" + std::to_string(channels) + " ch)";
       if (listed >= 0) label += "  (#" + std::to_string(listed + 1) + ")";
       const bool isCurrent = s.type == SLOT_HW && listed == HwDeviceOf(s);
       if (ImGui::BeginMenu(label.c_str(), CanAssignHw(edit, isInput, idx, id))) {
-        for (int side = 0; side < kHwSlotChannels; ++side)
-          if (ImGui::MenuItem(side == 0 ? "L (left)" : "R (right)", nullptr, isCurrent && s.srcChannel == side))
-            AssignHw(edit, isInput, idx, id, side);
+        for (int ch = 0; ch < channels; ++ch) {
+          char item[24];
+          if (channels == 2) std::snprintf(item, sizeof(item), "%s", ch == 0 ? "L (left)" : "R (right)");
+          else if (ch < 2) std::snprintf(item, sizeof(item), "Ch %d  %s", ch + 1, ch == 0 ? "(L)" : "(R)");
+          else std::snprintf(item, sizeof(item), "Ch %d", ch + 1);
+          if (ImGui::MenuItem(item, nullptr, isCurrent && s.srcChannel == ch)) AssignHw(edit, isInput, idx, id, ch);
+        }
         ImGui::EndMenu();
       }
       ImGui::PopID();
     };
-    const char* defName =
-        list ? EndpointName(*list, (isInput ? devices->defaultCaptureId : devices->defaultRenderId).c_str()) : nullptr;
-    deviceMenu("", defName ? std::string("Windows default (") + defName + ")" : std::string("Windows default"));
+    const std::string defId = devices ? (isInput ? devices->defaultCaptureId : devices->defaultRenderId) : std::string();
+    const char* defName = list ? EndpointName(*list, defId.c_str()) : nullptr;
+    deviceMenu("", defName ? std::string("Windows default (") + defName + ")" : std::string("Windows default"),
+               list ? channelsOf(defId.c_str()) : 2);
     if (list)
-      for (const PanelEndpoint& e : *list) deviceMenu(e.id.c_str(), e.name);
+      for (const PanelEndpoint& e : *list) deviceMenu(e.id.c_str(), e.name, e.channels);
     for (int d = 0; d < kHwDevices; ++d) {  // a listed device not connected: keep it visible
       const char* id = HwDeviceId(edit.table, isInput, d);
       if (HwDeviceListed(edit.table, isInput, d) && id[0] && (!list || !EndpointName(*list, id)))
-        deviceMenu(id, std::string("not connected: ") + id);
+        deviceMenu(id, std::string("not connected: ") + id, 2);
     }
     ImGui::EndMenu();
   }
@@ -550,6 +562,20 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
       if (ComboEndpoint("##device", HwDeviceId(edit.table, isInput, d), list, chosen, d == 0))
         SetHwDevice(edit, isInput, d, chosen.c_str());
       ImGui::SameLine();
+      static const char* const kModeNames[kHwModeCount] = {"Exclusive", "Shared", "Auto"};
+      const WHAHwMode mode = HwDeviceMode(edit.table, isInput, d);
+      ImGui::SetNextItemWidth(100);
+      if (ImGui::BeginCombo("##mode", kModeNames[mode])) {
+        for (uint8_t m = 0; m < kHwModeCount; ++m)
+          if (ImGui::Selectable(kModeNames[m], m == mode)) SetHwMode(edit, isInput, d, m);
+        ImGui::EndCombo();
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Exclusive: lowest latency; no other app can use the device while the DAW streams.\n"
+                          "Shared: through the Windows mixer; other apps keep their sound; more latency (see Actual).\n"
+                          "Auto: Exclusive, or Shared when the device refuses exclusive mode (not allowed in\n"
+                          "its Windows settings, or no exclusive format at this sample rate).");
+      ImGui::SameLine();
       if (d > 0 && ImGui::SmallButton("x")) removeDevice = d;
       if (d > 0) ImGui::SameLine();
       const int used = HwDeviceSlotCount(edit.table, isInput, d);
@@ -577,7 +603,7 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
     ImGui::EndDisabled();
     ImGui::PopID();
   }
-  ImGui::TextDisabled("Each device: 2 channels. Output #1 paces the DAW; other devices are resampled to it.");
+  ImGui::TextDisabled("Each device: all its channels. Output #1 paces the DAW; other devices are resampled to it.");
   if (ImGui::SmallButton("Refresh devices")) result.refreshDevices = true;
   ImGui::SameLine();
   ImGui::TextUnformatted("Windows:");
@@ -588,7 +614,8 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
   ImGui::SameLine();
   if (ImGui::SmallButton("Sound settings")) result.openWindowsSound = kSoundSettingsApp;
   ImGui::SameLine();
-  ImGui::TextDisabled("Exclusive: other apps cannot use them while the DAW streams. Changing asks the DAW to reset on Save.");
+  ImGui::TextDisabled("Mode: Exclusive = lowest latency, the device is the DAW's alone; Shared = other apps keep sound. "
+                      "Changing asks the DAW to reset on Save.");
   if (state.hwStatus) {
     ImGui::TextUnformatted("Actual:");
     for (const HwStatusLine& line : *state.hwStatus) {

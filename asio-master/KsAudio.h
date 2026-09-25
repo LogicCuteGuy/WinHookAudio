@@ -1,6 +1,6 @@
 #pragma once
 
-// KsAudio — WASAPI Exclusive to Real HW for 10.
+// KsAudio — WASAPI (Exclusive or Shared, WHAHwMode) to Real HW for 10.
 // Vocabulary: Master Clock, Slot.
 
 #include <atomic>
@@ -15,7 +15,7 @@ namespace wha {
 
 class KsAudio {
  public:
-  using SampleFormat = KsSampleFormat;  // exclusive format negotiated by open()
+  using SampleFormat = KsSampleFormat;  // format negotiated by open()
 
   KsAudio();
   ~KsAudio();
@@ -24,8 +24,11 @@ class KsAudio {
   // open() does not CoUninitialize while IAudioClient is held.
   // bufferFrames = device period (0: device minimum); blockFrames = frames per write(), so the
   // device buffer holds at least 4 blocks. endpointId: IMMDevice ID, empty = Windows default render.
-  bool open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames = 0, const char* endpointId = nullptr);
-  bool isExclusive() const { return exclusive_; }
+  // mode: WHAHwMode (KsOpen).
+  bool open(int32_t sampleRate, int32_t bufferFrames, int32_t blockFrames = 0, const char* endpointId = nullptr,
+            uint8_t mode = HW_MODE_EXCLUSIVE);
+  bool isExclusive() const { return opened_ && !shared_; }
+  bool isShared() const { return opened_ && shared_; }  // through the Windows mixer
   void close();
   bool start();
   void stop();
@@ -34,6 +37,8 @@ class KsAudio {
   double latencyMs() const;
   bool opened() const { return opened_; }
   SampleFormat format() const { return format_; }
+  // After open(): the device's channels opened (all it has, or 2), device channel c = source channel c.
+  int channels() const { return channels_; }
   // After open(): the device period actually used (frames) and the endpoint ID opened.
   int32_t periodFrames() const { return bufferFrames_; }
   const std::string& endpointId() const { return endpointId_; }
@@ -77,9 +82,10 @@ class KsAudio {
   int32_t blockFrames_ = 0;
   int32_t streamLatencyFrames_ = 0;
   bool opened_ = false;
-  bool exclusive_ = false;
+  bool shared_ = false;
   bool comInitialized_ = false;
   SampleFormat format_ = SampleFormat::Float32;
+  int channels_ = 2;
   std::string endpointId_;
   HRESULT lastError_ = S_OK;
   const char* lastStep_ = "";
