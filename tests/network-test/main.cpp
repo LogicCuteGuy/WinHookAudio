@@ -138,8 +138,8 @@ RunResult RunLoopback(WHACodec codec, double seconds, uint32_t jitterMs, double 
   std::vector<float> outA(2 * kStride), inA(kStride), outB(kStride), inB(2 * kStride);
   const uint64_t ticks = static_cast<uint64_t>(seconds * kRate / kBlock);
   std::vector<float> got0, got1;
-  got0.reserve(ticks * kBlock);
-  got1.reserve(ticks * kBlock);
+  got0.reserve(static_cast<size_t>(ticks * kBlock));
+  got1.reserve(static_cast<size_t>(ticks * kBlock));
   LARGE_INTEGER freq, t0, now;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&t0);

@@ -26,7 +26,8 @@ int main() {
   const GUID* clsids[] = {&wha::CLSID_WinHookMaster, &wha::CLSID_WinHookBridge1, &wha::CLSID_WinHookBridge2,
                           &wha::CLSID_WinHookBridge3, &wha::CLSID_WinHookBridge4};
   const std::string issForGuids = readFile("installer/WinHookAudio.iss");
-  bool regMatch = true, issAsio = true, issCom = true, notPlaceholder = true;
+  bool regMatch = true, issAsio = true, issCom = true, notPlaceholder = true, iss32 = true, issArm64 = true;
+  bool master = true;  // the first CLSID is the Master's
   for (const GUID* g : clsids) {
     const std::wstring w = wha::GuidString(*g);  // {XXXXXXXX-...}
     std::string braced;
@@ -36,11 +37,21 @@ int main() {
     issAsio = issAsio && issForGuids.find("ValueName: \"CLSID\"; ValueData: \"{{" + bare + "}\"") != std::string::npos;
     issCom = issCom && issForGuids.find("SOFTWARE\\Classes\\CLSID\\{{" + bare + "}\\InprocServer32\"; ValueType: string; ValueName: \"\"; ValueData: \"{app}\\") != std::string::npos;
     notPlaceholder = notPlaceholder && bare.rfind("12345678-1234", 0) != 0;
+    // 32-bit DAWs: the same CLSID in the 32-bit view, to the 32-bit DLL; Windows on ARM: the 64-bit
+    // view to the ARM64X forwarder (ADR 0016).
+    const std::string dll = std::string("{app}\\WinHookAudio") + (master ? "Master" : "Bridge");
+    const std::string com = "SOFTWARE\\Classes\\CLSID\\{{" + bare + "}\\InprocServer32\"; ValueType: string; ValueName: \"\"; ValueData: \"";
+    iss32 = iss32 && issForGuids.find("Root: HKLM32; Subkey: \"" + com + dll + "ASIO32.dll\"") != std::string::npos &&
+            issForGuids.find("Root: HKLM32; Subkey: \"SOFTWARE\\ASIO\\") != std::string::npos;
+    issArm64 = issArm64 && issForGuids.find("Root: HKLM; Subkey: \"" + com + dll + "ASIOARM64X.dll\"; Check: IsArm64") != std::string::npos;
+    master = false;
   }
   check("CLSIDs are real GUIDs, not placeholders", notPlaceholder);
   check("reg CLSIDs = driver CLSIDs (5)", regMatch);
   check("iss SOFTWARE\\ASIO CLSIDs = driver CLSIDs, {{ escaped", issAsio);
   check("iss registers COM InprocServer32 for all 5 CLSIDs", issCom);
+  check("iss registers the 32-bit DLLs in the 32-bit view for all 5 CLSIDs", iss32);
+  check("iss points all 5 CLSIDs at the ARM64X forwarders on Windows on ARM", issArm64);
 
   const std::string issContent = issForGuids;
   check("iss has [Setup]", issContent.find("[Setup]") != std::string::npos);

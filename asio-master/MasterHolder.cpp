@@ -8,7 +8,7 @@
 #include "virtual/WHARingBuffer.h"
 #include <winioctl.h>
 #include "virtual/WHACableProtocol.h"
-#include <intrin.h>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -373,8 +373,7 @@ void MasterHolder::doTick() {
       }
     }
     for (uint64_t stale = bridgeFed_[bi][slot] & ~fed; stale; stale &= stale - 1) {
-      unsigned long ch = 0;
-      _BitScanForward64(&ch, stale);
+      const int ch = std::countr_zero(stale);
       std::memset(to[ch], 0, kBridgeFrames * sizeof(float));
     }
     bridgeFed_[bi][slot] = fed;

@@ -5,6 +5,9 @@
 # and SignPath does not sign software that turns off a security measure. It offers the Virtual
 # Cable only when installer/driver-signed/ holds a Microsoft-signed package. The test-signed
 # setup is built locally (README "Build from source").
+# Architectures (docs/adr/0016): the arm64 job builds and tests the ARM64 DLLs and ARM64X forwarders on
+# Windows on ARM (and checks each forwarder from an ARM64 and an x64 process); the build job builds and
+# tests x64 and 32-bit, and puts all three in one setup.
 # Optional SignPath code signing: set the repository variables SIGNPATH_ORGANIZATION_ID,
 # SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG and the secret SIGNPATH_API_TOKEN
 # (docs/signing.md). Without them the build is the same, just not signed.
@@ -21,7 +24,56 @@ permissions:
   contents: read
 
 jobs:
+  arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch third-party libraries
+        shell: pwsh
+        run: scripts/Fetch-ThirdParty.ps1
+
+      - name: Configure (ARM64)
+        run: cmake -S . -B build-arm64 -A ARM64
+
+      - name: Build (ARM64)
+        run: cmake --build build-arm64 --config Release -- -m
+
+      - name: Offline tests (ARM64)
+        run: ctest --test-dir build-arm64 -C Release -E network --output-on-failure
+
+      - name: Build x64 DLLs for the forwarders
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release --target winhookaudio-master winhookaudio-bridge winhookaudio-arm64x-test -- -m
+
+      - name: ARM64X forwarders, from an ARM64 and an x64 process
+        shell: pwsh
+        run: |
+          $d = 'build-arm64/Release'
+          Copy-Item build/Release/WinHookAudioMasterASIO64.dll, build/Release/WinHookAudioBridgeASIO64.dll $d
+          New-Item -ItemType Directory -Force build/x64-test | Out-Null
+          Copy-Item build/Release/winhookaudio-arm64x-test.exe build/x64-test/
+          foreach ($n in 'Master', 'Bridge') {
+            $fwd = (Resolve-Path "$d/WinHookAudio${n}ASIOARM64X.dll").Path
+            & "$d/winhookaudio-arm64x-test.exe" $fwd "WinHookAudio${n}ASIOARM64.dll"
+            if ($LASTEXITCODE) { exit 1 }
+            & build/x64-test/winhookaudio-arm64x-test.exe $fwd "WinHookAudio${n}ASIO64.dll"
+            if ($LASTEXITCODE) { exit 1 }
+          }
+
+      - name: Upload ARM64 binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-binaries
+          path: |
+            build-arm64/Release/WinHookAudioMasterASIOARM64.dll
+            build-arm64/Release/WinHookAudioBridgeASIOARM64.dll
+            build-arm64/Release/WinHookAudioMasterASIOARM64X.dll
+            build-arm64/Release/WinHookAudioBridgeASIOARM64X.dll
+
   build:
+    needs: arm64
     runs-on: windows-2025
     env:
       SIGNPATH: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
@@ -51,6 +103,21 @@ jobs:
         # network-offline sends UDP on the LAN for ~50 s: left to local runs.
         run: ctest --test-dir build -C Release -E network --output-on-failure
 
+      - name: Configure (32-bit)
+        run: cmake -S . -B build-x86 -A Win32
+
+      - name: Build (32-bit)
+        run: cmake --build build-x86 --config Release -- -m
+
+      - name: Offline tests (32-bit)
+        run: ctest --test-dir build-x86 -C Release -E network --output-on-failure
+
+      - name: ARM64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-binaries
+          path: build-arm64/Release
+
       - name: Upload unsigned binaries for SignPath
         if: env.SIGNPATH == 'true'
         id: unsigned-binaries
@@ -61,6 +128,9 @@ jobs:
             build/Release/WinHookAudioMasterASIO64.dll
             build/Release/WinHookAudioBridgeASIO64.dll
             build/Release/winhookaudio-devsetup.exe
+            build-x86/Release/WinHookAudioMasterASIO32.dll
+            build-x86/Release/WinHookAudioBridgeASIO32.dll
+            build-arm64/Release/WinHookAudio*ASIOARM64*.dll
 
       - name: Sign binaries (SignPath)
         if: env.SIGNPATH == 'true'
@@ -78,7 +148,11 @@ jobs:
       - name: Use signed binaries
         if: env.SIGNPATH == 'true'
         shell: pwsh
-        run: Copy-Item build/signed-binaries/* build/Release/ -Force
+        run: |
+          Get-ChildItem build/signed-binaries -File -Recurse | ForEach-Object {
+            $to = if ($_.Name -like '*ASIO32.dll') { 'build-x86/Release' } elseif ($_.Name -like '*ARM64*') { 'build-arm64/Release' } else { 'build/Release' }
+            Copy-Item $_.FullName $to -Force
+          }
 
       - name: Installer
         # build/no-test-driver does not exist: leaves the test-signed driver choice out.

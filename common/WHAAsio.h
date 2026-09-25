@@ -178,7 +178,7 @@ struct IASIO : public IUnknown {
 #endif  // WHA_HAVE_ASIO_SDK
 
 static_assert(sizeof(ASIOChannelInfo) == 52, "ASIOChannelInfo layout (SDK pack 4)");
-static_assert(sizeof(ASIOBufferInfo) == 24, "ASIOBufferInfo layout (SDK pack 4)");
+static_assert(sizeof(ASIOBufferInfo) == 8 + 2 * sizeof(void*), "ASIOBufferInfo layout (SDK pack 4): 24 bytes 64-bit, 16 32-bit");
 static_assert(sizeof(ASIOClockSource) == 48, "ASIOClockSource layout (SDK pack 4)");
 static_assert(sizeof(ASIOSamples) == 8 && sizeof(ASIOTimeStamp) == 8, "ASIO 64-bit hi/lo structs");
 

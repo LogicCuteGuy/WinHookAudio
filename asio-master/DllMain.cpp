@@ -39,7 +39,7 @@ extern "C" HRESULT __stdcall DllCanUnloadNow() { return S_FALSE; }
 static const AsioRegistration kRegistrations[] = {
     {&CLSID_WinHookMaster, L"WinHookAudio Master", L"WinHookAudio Master"},
 };
-// regsvr32 (elevated) WinHookAudioMasterASIO64.dll
+// regsvr32 (elevated) WinHookAudioMasterASIO64.dll (32-bit: ...ASIO32.dll, from 32-bit regsvr32)
 extern "C" HRESULT __stdcall DllRegisterServer() { return RegisterAsioDrivers(g_hModule, kRegistrations, 1); }
 extern "C" HRESULT __stdcall DllUnregisterServer() { return UnregisterAsioDrivers(kRegistrations, 1); }
 // Counters of the Master streaming in this process (WHAMasterStats.h); -1 when none is.

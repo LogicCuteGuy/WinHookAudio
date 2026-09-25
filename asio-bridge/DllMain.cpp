@@ -36,6 +36,6 @@ static const AsioRegistration kRegistrations[] = {
     {&CLSID_WinHookBridge3, L"WinHookAudio Bridge 3", L"WinHookAudio Bridge 3"},
     {&CLSID_WinHookBridge4, L"WinHookAudio Bridge 4", L"WinHookAudio Bridge 4"},
 };
-// regsvr32 (elevated) WinHookAudioBridgeASIO64.dll
+// regsvr32 (elevated) WinHookAudioBridgeASIO64.dll (32-bit: ...ASIO32.dll, from 32-bit regsvr32)
 extern "C" HRESULT __stdcall DllRegisterServer(){ return RegisterAsioDrivers(g_hModule, kRegistrations, 4); }
 extern "C" HRESULT __stdcall DllUnregisterServer(){ return UnregisterAsioDrivers(kRegistrations, 4); }

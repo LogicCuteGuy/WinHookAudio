@@ -1,9 +1,25 @@
 cmake_minimum_required(VERSION 3.24)
 project(WinHookAudio VERSION 0.1.1 LANGUAGES CXX)
 
-if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "WinHookAudio currently requires Windows, MSVC, and x64.")
+if(NOT WIN32 OR NOT MSVC)
+    message(FATAL_ERROR "WinHookAudio requires Windows and MSVC.")
 endif()
+
+# One architecture per build tree (cmake -A x64 | Win32 | ARM64). The ASIO DLLs carry it in their
+# name: ...ASIO64.dll (x64 DAWs), ...ASIO32.dll (32-bit DAWs), ...ASIOARM64.dll (ARM64 DAWs).
+# WHA_ARCH_X64 / WHA_ARCH_X86 / WHA_ARCH_ARM64 reach the code and the .rc files.
+string(TOUPPER "${CMAKE_CXX_COMPILER_ARCHITECTURE_ID}" WHA_ARCH)
+if(WHA_ARCH STREQUAL "X64")
+    set(WHA_DLL_SUFFIX "64")
+elseif(WHA_ARCH STREQUAL "X86")
+    set(WHA_DLL_SUFFIX "32")
+elseif(WHA_ARCH STREQUAL "ARM64")
+    set(WHA_DLL_SUFFIX "ARM64")
+else()
+    message(FATAL_ERROR "WinHookAudio builds for x64, x86 or ARM64, not '${CMAKE_CXX_COMPILER_ARCHITECTURE_ID}'.")
+endif()
+add_compile_definitions(WHA_ARCH_${WHA_ARCH}=1)
+message(STATUS "WinHookAudio: ${WHA_ARCH}, ASIO DLLs ...ASIO${WHA_DLL_SUFFIX}.dll")
 
 add_library(wha_common INTERFACE)
 target_include_directories(wha_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
@@ -105,23 +121,23 @@ target_include_directories(winhookaudio-devsetup PRIVATE common)
 target_link_libraries(winhookaudio-devsetup PRIVATE setupapi newdev advapi32)
 
 # 08 Master minimal — offline DLLs (no SDK required, stub IASIO)
-add_library(winhookaudio-master SHARED asio-master/WinHookAudioMasterASIO64.def asio-master/WinHookAudioMaster.rc asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/CableEndpointSync.cpp asio-master/KsAudio.cpp asio-master/KsCapture.cpp asio-master/KsEndpoint.cpp asio-master/DllMain.cpp ${WHA_NETWORK_SOURCES})
+add_library(winhookaudio-master SHARED asio-master/WinHookAudioMaster.def asio-master/WinHookAudioMaster.rc asio-master/WinHookMasterASIO.cpp asio-master/MasterHolder.cpp asio-master/CableEndpointSync.cpp asio-master/KsAudio.cpp asio-master/KsCapture.cpp asio-master/KsEndpoint.cpp asio-master/DllMain.cpp ${WHA_NETWORK_SOURCES})
 target_compile_features(winhookaudio-master PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-master PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-master PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-master PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-master PRIVATE common)
 target_link_libraries(winhookaudio-master PRIVATE ole32 uuid avrt wha_asio wha_common ws2_32 wha_codecs)
-set_target_properties(winhookaudio-master PROPERTIES OUTPUT_NAME "WinHookAudioMasterASIO64")
+set_target_properties(winhookaudio-master PROPERTIES OUTPUT_NAME "WinHookAudioMasterASIO${WHA_DLL_SUFFIX}")
 
-add_library(winhookaudio-bridge SHARED asio-bridge/WinHookAudioBridgeASIO64.def asio-bridge/WinHookAudioBridge.rc asio-bridge/WinHookBridgeASIO.cpp asio-bridge/DllMain.cpp)
+add_library(winhookaudio-bridge SHARED asio-bridge/WinHookAudioBridge.def asio-bridge/WinHookAudioBridge.rc asio-bridge/WinHookBridgeASIO.cpp asio-bridge/DllMain.cpp)
 target_compile_features(winhookaudio-bridge PRIVATE cxx_std_20)
 set_property(TARGET winhookaudio-bridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_definitions(winhookaudio-bridge PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(winhookaudio-bridge PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_include_directories(winhookaudio-bridge PRIVATE common)
 target_link_libraries(winhookaudio-bridge PRIVATE ole32 uuid avrt wha_asio wha_common)
-set_target_properties(winhookaudio-bridge PROPERTIES OUTPUT_NAME "WinHookAudioBridgeASIO64")
+set_target_properties(winhookaudio-bridge PROPERTIES OUTPUT_NAME "WinHookAudioBridgeASIO${WHA_DLL_SUFFIX}")
 
 if(TARGET wha_imgui)
     foreach(t winhookaudio-master winhookaudio-bridge)
@@ -129,6 +145,40 @@ if(TARGET wha_imgui)
         target_include_directories(${t} PRIVATE common/panel)
         target_compile_definitions(${t} PRIVATE WHA_HAVE_IMGUI=1)
         target_link_libraries(${t} PRIVATE wha_imgui)
+    endforeach()
+endif()
+
+# ARM64 (ADR 0016): one ARM64X forwarder per ASIO DLL. On Windows on ARM, ARM64 and x64 apps read the
+# same registry view, so one InprocServer32 path must serve both: WinHookAudio<Name>ASIOARM64X.dll has
+# no code, only exports forwarding ARM64 callers to ...ASIOARM64.dll and x64 callers (emulated) to
+# ...ASIO64.dll (from an x64 build, installed next to it). Needs the ARM64 and ARM64EC build tools.
+if(WHA_ARCH STREQUAL "ARM64")
+    set(WHA_FWD_DIR ${CMAKE_CURRENT_BINARY_DIR}/arm64x)
+    file(MAKE_DIRECTORY ${WHA_FWD_DIR})
+    add_custom_command(OUTPUT ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj
+        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /Fo${WHA_FWD_DIR}/empty_arm64.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
+        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /arm64EC /Fo${WHA_FWD_DIR}/empty_arm64ec.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
+        DEPENDS asio-arm64x/empty.c VERBATIM)
+    foreach(name Master Bridge)
+        set(exports DllGetClassObject DllCanUnloadNow DllRegisterServer DllUnregisterServer)
+        if(name STREQUAL "Master")
+            list(APPEND exports WHAGetMasterStats)
+        endif()
+        set(native "EXPORTS\n")
+        set(emulated "EXPORTS\n")
+        foreach(e IN LISTS exports)
+            string(APPEND native "    ${e}=WinHookAudio${name}ASIOARM64.${e}\n")
+            string(APPEND emulated "    ${e}=WinHookAudio${name}ASIO64.${e}\n")
+        endforeach()
+        file(WRITE ${WHA_FWD_DIR}/${name}-arm64.def "${native}")
+        file(WRITE ${WHA_FWD_DIR}/${name}-x64.def "${emulated}")
+        set(fwd ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/WinHookAudio${name}ASIOARM64X.dll)
+        add_custom_command(OUTPUT ${fwd}
+            COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /defArm64Native:${WHA_FWD_DIR}/${name}-arm64.def
+                    /def:${WHA_FWD_DIR}/${name}-x64.def /out:${fwd} ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj
+            DEPENDS ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj VERBATIM)
+        string(TOLOWER ${name} lower)
+        add_custom_target(winhookaudio-${lower}-arm64x ALL DEPENDS ${fwd})
     endforeach()
 endif()
 
@@ -157,6 +207,11 @@ if(BUILD_TESTING)
     add_test(NAME host-sample-offline COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/Host-Sample.ps1" -HostSample "$<TARGET_FILE:winhookaudio-host-sample>")
     set_tests_properties(host-sample-offline PROPERTIES TIMEOUT 30)
+    # Not a ctest: CI runs it on Windows on ARM against the forwarder from an ARM64 and an x64 process.
+    add_executable(winhookaudio-arm64x-test tests/arm64x-test/main.cpp)
+    set_property(TARGET winhookaudio-arm64x-test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_definitions(winhookaudio-arm64x-test PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(winhookaudio-arm64x-test PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
     add_executable(winhookaudio-asio-dll-host tests/asio-dll-host/main.cpp)
     target_compile_features(winhookaudio-asio-dll-host PRIVATE cxx_std_20)
     set_property(TARGET winhookaudio-asio-dll-host PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -314,5 +369,6 @@ if(BUILD_TESTING)
 endif()
 
 set(CPACK_GENERATOR ZIP)
-set(CPACK_PACKAGE_FILE_NAME "WinHookAudio-Probe-${PROJECT_VERSION}-windows-x64")
+string(TOLOWER "${WHA_ARCH}" WHA_ARCH_LOWER)
+set(CPACK_PACKAGE_FILE_NAME "WinHookAudio-Probe-${PROJECT_VERSION}-windows-${WHA_ARCH_LOWER}")
 include(CPack)

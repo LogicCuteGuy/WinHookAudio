@@ -3,6 +3,9 @@
 ;   cable\signed  Microsoft-signed driver package (normal Windows), only when installer\driver-signed\ has one
 ;   cable\test    test-signed package from driver\build.cmd: trusts the test certificate, turns on Test Mode
 ; Firewall: UDP 6980-6981 (WHAA network stream).
+; Architectures (ADR 0016): x64 DLLs always; 32-bit DLLs (build-x86) for 32-bit DAWs, in the 32-bit
+; registry view; on Windows on ARM the ARM64 DLLs (build-arm64) and ARM64X forwarders, which the
+; 64-bit view points at so ARM64 and x64 DAWs each get their own. The Virtual Cable driver is x64 only.
 
 #ifndef AppVersion
   #define AppVersion "0.1.1"
@@ -10,6 +13,14 @@
 #ifndef BuildDir
   #define BuildDir AddBackslash(SourcePath) + "..\build\Release"
 #endif
+#ifndef BuildDirX86
+  #define BuildDirX86 AddBackslash(SourcePath) + "..\build-x86\Release"
+#endif
+#ifndef BuildDirArm64
+  #define BuildDirArm64 AddBackslash(SourcePath) + "..\build-arm64\Release"
+#endif
+#define HaveX86 FileExists(BuildDirX86 + "\WinHookAudioMasterASIO32.dll")
+#define HaveArm64 FileExists(BuildDirArm64 + "\WinHookAudioMasterASIOARM64X.dll")
 #ifndef TestDriverDir
   #define TestDriverDir AddBackslash(SourcePath) + "..\build\driver"
 #endif
@@ -75,19 +86,29 @@ Name: "cable\test"; Description: "Not signed: test-signed driver, turns on Windo
 [Files]
 Source: "{#BuildDir}\WinHookAudioMasterASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#BuildDir}\WinHookAudioBridgeASIO64.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+#if HaveX86
+Source: "{#BuildDirX86}\WinHookAudioMasterASIO32.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDirX86}\WinHookAudioBridgeASIO32.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+#endif
+#if HaveArm64
+Source: "{#BuildDirArm64}\WinHookAudioMasterASIOARM64.dll"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDirArm64}\WinHookAudioBridgeASIOARM64.dll"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDirArm64}\WinHookAudioMasterASIOARM64X.dll"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#BuildDirArm64}\WinHookAudioBridgeASIOARM64X.dll"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion restartreplace uninsrestartdelete
+#endif
 Source: "{#BuildDir}\winhookaudio-devsetup.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"
 Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"
 #if HaveSignedDriver
-Source: "{#SignedDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
-Source: "{#SignedDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
-Source: "{#SignedDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\signed; Flags: ignoreversion
+Source: "{#SignedDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\signed; Check: not IsArm64; Flags: ignoreversion
+Source: "{#SignedDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\signed; Check: not IsArm64; Flags: ignoreversion
+Source: "{#SignedDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\signed; Check: not IsArm64; Flags: ignoreversion
 #endif
 #if HaveTestDriver
-Source: "{#TestDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
-Source: "{#TestDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
-Source: "{#TestDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
-Source: "{#TestDriverDir}\WinHookAudioTest.cer"; DestDir: "{app}\driver"; Components: cable\test; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudio.sys"; DestDir: "{app}\driver"; Components: cable\test; Check: not IsArm64; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudio.inf"; DestDir: "{app}\driver"; Components: cable\test; Check: not IsArm64; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudio.cat"; DestDir: "{app}\driver"; Components: cable\test; Check: not IsArm64; Flags: ignoreversion
+Source: "{#TestDriverDir}\WinHookAudioTest.cer"; DestDir: "{app}\driver"; Components: cable\test; Check: not IsArm64; Flags: ignoreversion
 #endif
 
 [Registry]
@@ -104,20 +125,74 @@ Root: HKLM; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 4"; ValueType: string; Va
 
 ; COM classes: the DAW loads each CLSID through InprocServer32 (same keys as DllRegisterServer)
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Master"; Flags: uninsdeletekey
+#if HaveArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioMasterASIO64.dll"; Check: not IsArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioMasterASIOARM64X.dll"; Check: IsArm64
+#else
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioMasterASIO64.dll"
+#endif
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 1"; Flags: uninsdeletekey
+#if HaveArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"; Check: not IsArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIOARM64X.dll"; Check: IsArm64
+#else
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"
+#endif
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 2"; Flags: uninsdeletekey
+#if HaveArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"; Check: not IsArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIOARM64X.dll"; Check: IsArm64
+#else
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"
+#endif
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 3"; Flags: uninsdeletekey
+#if HaveArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"; Check: not IsArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIOARM64X.dll"; Check: IsArm64
+#else
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"
+#endif
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 4"; Flags: uninsdeletekey
+#if HaveArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"; Check: not IsArm64
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIOARM64X.dll"; Check: IsArm64
+#else
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO64.dll"
+#endif
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+
+; 32-bit DAWs read the 32-bit registry view (WOW6432Node): same drivers and CLSIDs, the 32-bit DLLs
+#if HaveX86
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Master"; ValueType: string; ValueName: "CLSID"; ValueData: "{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Master"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Master"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Master"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioMasterASIO32.dll"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 1"; ValueType: string; ValueName: "CLSID"; ValueData: "{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 1"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Bridge 1"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 1"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO32.dll"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 2"; ValueType: string; ValueName: "CLSID"; ValueData: "{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 2"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Bridge 2"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 2"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO32.dll"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{939344AC-BE3F-44EB-A1C3-90691D8F1C9E}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 3"; ValueType: string; ValueName: "CLSID"; ValueData: "{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 3"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Bridge 3"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 3"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO32.dll"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{3CDDA02A-0A66-45C9-B612-1FD2169EB8E8}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 4"; ValueType: string; ValueName: "CLSID"; ValueData: "{{B864323A-AB79-4551-B6E9-F70B61E37134}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\WinHookAudio Bridge 4"; ValueType: string; ValueName: "Description"; ValueData: "WinHookAudio Bridge 4"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}"; ValueType: string; ValueName: ""; ValueData: "WinHookAudio Bridge 4"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\WinHookAudioBridgeASIO32.dll"
+Root: HKLM32; Subkey: "SOFTWARE\Classes\CLSID\{{B864323A-AB79-4551-B6E9-F70B61E37134}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+#endif
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""WinHookAudio"" dir=in action=allow protocol=UDP localport=6980-6981"; Flags: runhidden; StatusMsg: "Configuring firewall..."
@@ -221,9 +296,21 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
 #if HaveSignedDriver || HaveTestDriver
-  if (CurStep = ssPostInstall) and WizardIsComponentSelected('cable') then
+  if (CurStep = ssPostInstall) and WizardIsComponentSelected('cable') and not IsArm64 then
     InstallVirtualCable;
 #endif
+end;
+
+// Windows on ARM: the Virtual Cable driver is x64 only for now, so its choices are off (ADR 0016).
+procedure CurPageChanged(CurPageID: Integer);
+var
+  I: Integer;
+begin
+  if (CurPageID = wpSelectComponents) and IsArm64 then
+    for I := 1 to WizardForm.ComponentsList.Items.Count - 1 do begin  // 0 is the ASIO drivers
+      WizardForm.ComponentsList.Checked[I] := False;
+      WizardForm.ComponentsList.ItemEnabled[I] := False;
+    end;
 end;
 
 function NeedRestart: Boolean;

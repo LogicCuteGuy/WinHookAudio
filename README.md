@@ -19,6 +19,7 @@ sound cards, Windows apps, other DAWs, LAN  ->  WinHookAudio Master (ASIO)  ->  
 | **Virtual Cables** (`WinHookAudio.sys`) | 8 cables that appear in Windows as sound devices (up to 8 channels each). Windows apps play into them or record from them. |
 | **WinHookAudio Bridge 1-4** (ASIO drivers) | Let other DAWs or ASIO apps send and receive a set of channels; up to 4 apps share one Bridge. |
 | **Network streams** (WHAA) | Send and receive audio on the LAN over UDP 6980-6981, as PCM or Vorbis. |
+| **DAWs it works in** | 64-bit and 32-bit DAWs on Windows 10/11 x64, and ARM64 and x64 DAWs on Windows 11 on ARM. One DAW uses the Master at a time; any number use the Bridges. The Virtual Cable driver is x64 only for now. |
 | **Control Panel** | Opens from the DAW's ASIO settings: pick what feeds each slot, the Master Clock, devices, cables and streams. Saved to `%ProgramData%\WinHookAudio\routes.yml` + `settings.yml`, with Export / Import. |
 
 **Status:** early. It is tested on the developer's PC only (Windows 10 x64 with Bitwig Studio). Expect bugs; please report them in [Issues](https://github.com/LogicCuteGuy/WinHookAudio/issues).
@@ -68,8 +69,9 @@ More detail: [docs/installing.md](docs/installing.md).
 
 ## Build from source
 
-Needs Windows 10/11 x64, Visual Studio 2022 or newer with C++ (MSVC x64), CMake 3.24+, and for
-the Virtual Cable driver the [Windows Driver Kit](https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk).
+Needs Windows 10/11 x64, Visual Studio 2022 or newer with C++ (MSVC x64 and x86; for ARM64 also the
+ARM64 and ARM64EC build tools), CMake 3.24+, and for the Virtual Cable driver the
+[Windows Driver Kit](https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk).
 The installer needs [Inno Setup 6.3+](https://jrsoftware.org/isdl.php).
 
 ```powershell
@@ -77,11 +79,16 @@ scripts\Fetch-ThirdParty.ps1                      # ImGui, libogg, libvorbis, r8
 cmake -S . -B build -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release -E network      # offline tests
+cmake -S . -B build-x86 -A Win32                  # optional: 32-bit DLLs for 32-bit DAWs (build the same way)
+cmake -S . -B build-arm64 -A ARM64                # optional: ARM64 DLLs + ARM64X forwarders (Windows on ARM)
 driver\build.cmd                                  # WinHookAudio.sys, test-signed, into build\driver\
 installer\build-installer.ps1 -Version 0.1.1      # build\installer\WinHookAudio-Setup-0.1.1.exe
 ```
 
-GitHub Actions ([build.yml](.github/workflows/build.yml)) builds and tests every push, and a
+The installer takes the 32-bit and ARM64 DLLs when those build folders have them.
+
+GitHub Actions ([build.yml](.github/workflows/build.yml)) builds and tests every push (x64 and 32-bit
+on Windows x64, ARM64 on Windows on ARM), and a
 `v*` tag publishes the setup to GitHub Releases. That setup has no test-signed driver: it offers
 the Virtual Cable only with a Microsoft-signed driver. The test-signed setup is built locally with
 the steps above. Code signing is in [docs/signing.md](docs/signing.md).

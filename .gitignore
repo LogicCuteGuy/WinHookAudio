@@ -1,4 +1,6 @@
 /build/
+/build-x86/
+/build-arm64/
 # ASIO SDK payload (Steinberg license) — keep README, ignore SDK files
 /third_party/asio/*
 !/third_party/asio/README.md
