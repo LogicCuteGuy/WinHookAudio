@@ -151,33 +151,29 @@ endif()
 # ARM64 (ADR 0016): one ARM64X forwarder per ASIO DLL. On Windows on ARM, ARM64 and x64 apps read the
 # same registry view, so one InprocServer32 path must serve both: WinHookAudio<Name>ASIOARM64X.dll has
 # no code, only exports forwarding ARM64 callers to ...ASIOARM64.dll and x64 callers (emulated) to
-# ...ASIO64.dll (from an x64 build, installed next to it). Needs the ARM64 and ARM64EC build tools.
+# ...ASIO64.dll (from an x64 build, installed next to it): asio-arm64x/forwarder.c built as ARM64 and
+# as ARM64EC with the target's name. Needs the ARM64 and ARM64EC build tools. One target builds both
+# forwarders (MSBuild ran a rule shared by two targets twice, in parallel).
 if(WHA_ARCH STREQUAL "ARM64")
     set(WHA_FWD_DIR ${CMAKE_CURRENT_BINARY_DIR}/arm64x)
+    set(WHA_FWD_SRC ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/forwarder.c)
     file(MAKE_DIRECTORY ${WHA_FWD_DIR})
-    add_custom_command(OUTPUT ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj
-        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /Fo${WHA_FWD_DIR}/empty_arm64.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
-        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /arm64EC /Fo${WHA_FWD_DIR}/empty_arm64ec.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
-        DEPENDS asio-arm64x/empty.c VERBATIM)
-    set(WHA_FWD_DLLS "")  # one target builds both: the objects' rule must run once (MSBuild ran it per target, in parallel)
+    set(WHA_FWD_DLLS "")
     foreach(name Master Bridge)
-        set(exports DllGetClassObject DllCanUnloadNow DllRegisterServer DllUnregisterServer)
+        set(defs /DWHA_FWD_TARGET=WinHookAudio${name}ASIOARM64)
+        set(ecdefs /DWHA_FWD_TARGET=WinHookAudio${name}ASIO64)
         if(name STREQUAL "Master")
-            list(APPEND exports WHAGetMasterStats)
+            list(APPEND defs /DWHA_FWD_MASTER)
+            list(APPEND ecdefs /DWHA_FWD_MASTER)
         endif()
-        set(native "EXPORTS\n")
-        set(emulated "EXPORTS\n")
-        foreach(e IN LISTS exports)
-            string(APPEND native "    ${e}=WinHookAudio${name}ASIOARM64.${e}\n")
-            string(APPEND emulated "    ${e}=WinHookAudio${name}ASIO64.${e}\n")
-        endforeach()
-        file(WRITE ${WHA_FWD_DIR}/${name}-arm64.def "${native}")
-        file(WRITE ${WHA_FWD_DIR}/${name}-x64.def "${emulated}")
+        set(native ${WHA_FWD_DIR}/${name}_arm64.obj)
+        set(ec ${WHA_FWD_DIR}/${name}_arm64ec.obj)
         set(fwd ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/WinHookAudio${name}ASIOARM64X.dll)
         add_custom_command(OUTPUT ${fwd}
-            COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /defArm64Native:${WHA_FWD_DIR}/${name}-arm64.def
-                    /def:${WHA_FWD_DIR}/${name}-x64.def /out:${fwd} ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj
-            DEPENDS ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj VERBATIM)
+            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl ${defs} /Fo${native} ${WHA_FWD_SRC}
+            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /arm64EC ${ecdefs} /Fo${ec} ${WHA_FWD_SRC}
+            COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /out:${fwd} ${native} ${ec}
+            DEPENDS ${WHA_FWD_SRC} VERBATIM)
         list(APPEND WHA_FWD_DLLS ${fwd})
     endforeach()
     add_custom_target(winhookaudio-arm64x ALL DEPENDS ${WHA_FWD_DLLS})
