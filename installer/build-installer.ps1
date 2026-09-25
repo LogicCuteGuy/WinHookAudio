@@ -8,7 +8,7 @@
 #   - installer\driver-signed\    -> Microsoft-signed package WinHookAudio.sys/.inf/.cat (option "Signed")
 # A package that is missing is left out of the Components page. Changes nothing on this PC.
 param(
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.1.1',
     [string]$BuildDir = (Join-Path $PSScriptRoot '..\build\Release'),
     [string]$TestDriverDir = (Join-Path $PSScriptRoot '..\build\driver'),
     [string]$SignedDriverDir = (Join-Path $PSScriptRoot 'driver-signed'),

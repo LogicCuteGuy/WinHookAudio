@@ -5,7 +5,7 @@
 ; Firewall: UDP 6980-6981 (WHAA network stream).
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 #ifndef BuildDir
   #define BuildDir AddBackslash(SourcePath) + "..\build\Release"

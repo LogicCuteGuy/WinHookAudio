@@ -68,7 +68,7 @@ cmake -S . -B build -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release -E network      # offline tests
 driver\build.cmd                                  # WinHookAudio.sys, test-signed, into build\driver\
-installer\build-installer.ps1 -Version 0.1.0      # build\installer\WinHookAudio-Setup-0.1.0.exe
+installer\build-installer.ps1 -Version 0.1.1      # build\installer\WinHookAudio-Setup-0.1.1.exe
 ```
 
 GitHub Actions ([build.yml](.github/workflows/build.yml)) builds and tests every push, and a
