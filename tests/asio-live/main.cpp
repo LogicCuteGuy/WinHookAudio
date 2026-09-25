@@ -25,6 +25,10 @@
 //     crosses two resamplers, so it is checked for a steady delay (within 2 frames), not bit-exactness.
 //   --panel: open the driver's Control Panel while streaming (GENERAL shows requested vs actual);
 //     for a look by eye or screenshot, with --seconds long enough.
+// One app at a time (MasterClaim): while streaming, a second asio-live process must be refused
+// ("in use by ...") and a second instance in this process must still init; after this one lets go,
+// another process's init must work. The second process runs this program with
+// --claim-probe busy|free: it only creates and inits the driver and passes if the result is that.
 
 #include <windows.h>
 #include <audioclient.h>
@@ -144,6 +148,23 @@ long AsioMessage(long selector, long value, void*, double*) {
 // Try to open the HW output's render endpoint (gRenderId, empty = default) in shared mode as a second
 // client. S_OK: nobody holds it exclusively. AUDCLNT_E_DEVICE_IN_USE: someone (our HW output) does.
 std::string gRenderId;
+// Runs this program again as another process with `args`; its exit code (-1: could not start).
+int RunSelf(const char* args) {
+  char exe[MAX_PATH] = {};
+  GetModuleFileNameA(nullptr, exe, MAX_PATH);
+  std::string cmd = std::string("\"") + exe + "\" " + args;
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) return -1;
+  WaitForSingleObject(pi.hProcess, 30000);
+  DWORD code = static_cast<DWORD>(-1);
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return static_cast<int>(code);
+}
+
 HRESULT ProbeRender() {
   IMMDeviceEnumerator* e = nullptr;
   IMMDevice* d = nullptr;
@@ -237,6 +258,7 @@ int main(int argc, char** argv) {
   const char* renderName = nullptr;
   const char* captureName = nullptr;
   int mode = -1;
+  const char* claimProbe = nullptr;  // "busy" / "free": the other process of the MasterClaim checks
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--driver") && i + 1 < argc) driver = Widen(argv[++i]);
     else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
@@ -247,6 +269,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--loop")) gLoop = true;
     else if (!std::strcmp(argv[i], "--loop-out") && i + 1 < argc) gLoopOut = std::atol(argv[++i]) - 1;
     else if (!std::strcmp(argv[i], "--panel")) panel = true;
+    else if (!std::strcmp(argv[i], "--claim-probe") && i + 1 < argc) claimProbe = argv[++i];
     else if (!std::strcmp(argv[i], "--mode") && i + 1 < argc) {
       const std::string m = argv[++i];
       mode = m == "exclusive" ? HW_MODE_EXCLUSIVE : m == "shared" ? HW_MODE_SHARED : m == "auto" ? HW_MODE_AUTO : -2;
@@ -301,6 +324,20 @@ int main(int argc, char** argv) {
   bytes = sizeof(dllPath);
   RegGetValueW(HKEY_LOCAL_MACHINE, (ClsidKey(clsid) + L"\\InprocServer32").c_str(), nullptr, RRF_RT_REG_SZ, nullptr, dllPath, &bytes);
   std::printf("Driver DLL: %ls\n", dllPath);
+
+  if (claimProbe) {  // another process of the MasterClaim checks: create, init, report, go
+    IASIO* other = nullptr;
+    CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, clsid, reinterpret_cast<void**>(&other));
+    if (!other) return 1;
+    char message[128] = {};
+    const bool ok = other->init(GetConsoleWindow()) == ASIOTrue;
+    if (!ok) other->getErrorMessage(message);
+    std::printf("  other process: init %s%s%s\n", ok ? "ASIOTrue" : "ASIOFalse", ok ? "" : ": ", message);
+    other->Release();
+    CoUninitialize();
+    const bool busy = !std::strcmp(claimProbe, "busy");
+    return (busy ? !ok && std::strstr(message, "in use by") != nullptr : ok) ? 0 : 1;
+  }
 
   const HRESULT before = ProbeRender();
   std::printf("HW render endpoint before start: 0x%08lX\n", static_cast<unsigned long>(before));
@@ -400,6 +437,13 @@ int main(int argc, char** argv) {
   const HRESULT during = ProbeRender();
   std::printf("HW render endpoint while streaming: 0x%08lX%s\n", static_cast<unsigned long>(during),
               during == AUDCLNT_E_DEVICE_IN_USE ? " (AUDCLNT_E_DEVICE_IN_USE)" : "");
+  check("Master in use: another app's init is refused, saying by whom", RunSelf("--claim-probe busy") == 0);
+  {
+    IASIO* second = nullptr;  // a DAW may create a second instance while it scans its drivers
+    CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, clsid, reinterpret_cast<void**>(&second));
+    check("Master in use: a second instance in the same app still inits", second && second->init(GetConsoleWindow()) == ASIOTrue);
+    if (second) second->Release();
+  }
   watch(seconds * 0.5);
   WHAMasterStats st{};
   const bool haveStats = getStats && getStats(&st) == 0;  // before stop: counters live with the instance
@@ -599,6 +643,7 @@ int main(int argc, char** argv) {
   gAsio = nullptr;
   const HRESULT after = ProbeRender();
   check("HW render endpoint released after stop", after == S_OK);
+  check("Master let go: another app's init works now", RunSelf("--claim-probe free") == 0);
   CoUninitialize();
   if (tableMap) CloseHandle(tableMap);
 

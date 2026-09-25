@@ -83,6 +83,7 @@ class WinHookMasterASIO : public IASIO {
 
   std::atomic<ULONG> refCount_{1};
   bool initialized_ = false;
+  bool claimed_ = false;  // this instance holds (a share of) MasterClaim
   bool running_ = false;
   WHASlotTable* slotTable_ = nullptr;
   HANDLE slotTableMapping_ = nullptr;

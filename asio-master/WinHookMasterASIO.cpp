@@ -1,4 +1,5 @@
 #include "WinHookMasterASIO.h"
+#include "MasterClaim.h"
 #include "MasterHolder.h"
 #include "KsAudio.h"
 #include "KsCapture.h"
@@ -121,6 +122,7 @@ WinHookMasterASIO::~WinHookMasterASIO() {
   if (slotTable_) UnmapViewOfFile(slotTable_);
   if (masterAudio_) UnmapViewOfFile(masterAudio_);
   for (int i = 0; i < 4; ++i) if (bridgeShared_[i]) UnmapViewOfFile(bridgeShared_[i]);
+  if (claimed_) MasterClaim::release();
 }
 
 HRESULT STDMETHODCALLTYPE WinHookMasterASIO::QueryInterface(REFIID riid, void** ppv) {
@@ -143,6 +145,9 @@ ULONG STDMETHODCALLTYPE WinHookMasterASIO::Release() {
 ASIOBool WinHookMasterASIO::init(void* sysHandle) {
   (void)sysHandle;
   if (initialized_) return ASIOTrue;
+  // One app at a time (MasterClaim): another's Master would drive the same Slot Table and devices.
+  if (!claimed_ && !MasterClaim::acquire(errorText_, sizeof(errorText_))) return ASIOFalse;
+  claimed_ = true;
   // Create SlotTable SHM 80KB
   slotTableMapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                          static_cast<DWORD>(shm::kSlotTableSize), shm::kSlotTableName + 7);
