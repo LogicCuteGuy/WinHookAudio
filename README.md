@@ -38,6 +38,16 @@ The Control Panel (opens from the DAW's ASIO settings), with example routes:
 | **Network: LAN streams (PCM or Vorbis)** | **General: Master Clock, devices, buffers, Virtual Cables** |
 | [![Network tab](docs/images/panel-network.png)](docs/images/panel-network.png) | [![General tab](docs/images/panel-general.png)](docs/images/panel-general.png) |
 
+## Showcase
+
+Bitwig Studio and FL Studio running at the same time on one PC:
+
+| Bitwig on **WinHookAudio Master**: the DAW sees the names set in the Control Panel | FL Studio on **WinHookAudio Bridge 1**: its outputs go to Master inputs 5/6 |
+|---|---|
+| [![Bitwig with WinHookAudio Master](docs/images/showcase-bitwig-master.png)](docs/images/showcase-bitwig-master.png) | [![FL Studio with WinHookAudio Bridge 1](docs/images/showcase-fl-bridge.png)](docs/images/showcase-fl-bridge.png) |
+| **Bitwig track fed from a Virtual Cable input (`Virtual 2 L/2 R`)** | **Windows apps can play to the WinHookAudio Virtual Cable outputs** |
+| [![Bitwig track input from Virtual 2](docs/images/showcase-bitwig-virtual-input.png)](docs/images/showcase-bitwig-virtual-input.png) | [![Windows playback device list](docs/images/showcase-windows-playback.png)](docs/images/showcase-windows-playback.png) |
+
 ## Install
 
 1. Download `WinHookAudio-Setup-<version>.exe` from [Releases](https://github.com/LogicCuteGuy/WinHookAudio/releases).
