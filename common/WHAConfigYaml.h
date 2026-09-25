@@ -123,7 +123,7 @@ inline std::string SerializeSettings(const WHASlotTable& t, bool standalone = tr
   } else {
     out += "\n# ---- Settings (Control Panel GENERAL and NETWORK) ----\n";
   }
-  out += "clock:                  # Master Clock: 44100 | 48000 | 96000 Hz, buffer 64..1024\n";
+  out += "clock:                  # Master Clock: 44100 | 48000 | 88200 | 96000 | 176400 | 192000 Hz, buffer 64..1024\n";
   out += "  sampleRate: " + u(g.sampleRate) + "\n";
   out += "  bitDepth: " + u(g.bitDepth) + "\n";
   out += "  asioBuffer: " + u(g.asioBuffer) + "\n";
@@ -158,10 +158,10 @@ inline std::string SerializeSettings(const WHASlotTable& t, bool standalone = tr
   }
   out += "virtualCables:\n";
   out += "  name: " + YamlQuote(std::string_view(g.virtualName, strnlen(g.virtualName, sizeof(g.virtualName)))) + "\n";
-  out += "  cables:               # cable 1..8; channels 2 | 4 | 6 | 8; format float32 | pcm16 | pcm24 | pcm32 | pcm24in32\n";
+  out += "  cables:               # cable 1..16; channels 2 | 4 | 6 | 8; format float32 | pcm16 | pcm24 | pcm32 | pcm24in32\n";
   for (int c = 0; c < kVirtualSlotCables; ++c) {
-    out += "    - channels: " + u(t.cables[c].channels) + "\n";
-    out += std::string("      format: ") + CableFormatWord(t.cables[c].format) + "\n";
+    out += "    - channels: " + u(CableSetting(t, c).channels) + "\n";
+    out += std::string("      format: ") + CableFormatWord(CableSetting(t, c).format) + "\n";
   }
   out += "network:                # stream 1..8 each way; codec pcm-f32 | pcm-i16 | vorbis\n";
   for (int dir = 0; dir < 2; ++dir) {
@@ -401,14 +401,15 @@ inline bool ReadSettings(const YamlNode& root, WHASlotTable& t, std::string* err
       for (size_t c = 0; c < cables->items.size(); ++c) {
         const YamlNode& n = cables->items[c];
         const std::string where = "cable " + std::to_string(c + 1);
-        uint32_t channels = t.cables[c].channels;
+        WHACableSetting& cs = CableSetting(t, static_cast<int>(c));
+        uint32_t channels = cs.channels;
         if (!CheckMap(n, where, {"channels", "format"}, error) ||
             !ReadU32(n.Find("channels"), where + ": channels", channels, error) ||
             !ReadWord(n.Find("format"), where + ": format", "float32, pcm16, pcm24, pcm32, pcm24in32", ParseCableFormat,
-                      t.cables[c].format, error))
+                      cs.format, error))
           return false;
         if (channels > 255) return Fail(error, *n.Find("channels"), where + ": channels", "must be 2, 4, 6 or 8");
-        t.cables[c].channels = static_cast<uint8_t>(channels);
+        cs.channels = static_cast<uint8_t>(channels);
       }
     }
   }

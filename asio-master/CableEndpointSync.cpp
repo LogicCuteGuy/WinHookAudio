@@ -9,6 +9,7 @@
 #include <cwchar>
 #include <cwctype>
 
+#include "WHASlotTable.h"
 #include "virtual/WHACableFormat.h"
 
 namespace wha {
@@ -41,7 +42,7 @@ constexpr PROPERTYKEY kMatchingDeviceId = {{0xa8b865dd, 0x2e3d, 0x4094, {0xad, 0
 constexpr PROPERTYKEY kFilterPath = {{0x233164c8, 0x1b2c, 0x4c7d, {0xbc, 0x68, 0xb6, 0x71, 0x68, 0x7a, 0x25, 0x67}}, 1};
 constexpr PROPERTYKEY kDeviceFormat = {{0xf19f064d, 0x082c, 0x4e27, {0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c}}, 0};
 
-constexpr int kCables = 8;
+constexpr int kCables = kVirtualSlotCables;
 constexpr DWORD kPassMs = 2000;          // a pass without a wake
 constexpr ULONGLONG kRetryMs = 10000;   // the same endpoint, same wanted format, after a failure
 
@@ -52,9 +53,13 @@ int CableOfFilterPath(const wchar_t* path, bool capture) {
   tail = tail ? tail + 1 : path;
   const wchar_t* prefix = capture ? L"inputwave" : L"outputwave";
   const size_t n = std::wcslen(prefix);
-  if (_wcsnicmp(tail, prefix, n) != 0 || !std::iswdigit(tail[n]) || tail[n + 1] != L'\0') return -1;
-  const int cable = tail[n] - L'1';
-  return cable >= 0 && cable < kCables ? cable : -1;
+  if (_wcsnicmp(tail, prefix, n) != 0 || !std::iswdigit(tail[n])) return -1;
+  int number = 0;
+  for (const wchar_t* d = tail + n; *d; ++d) {  // "outputwave1" .. "outputwave16"
+    if (!std::iswdigit(*d) || number > kCables) return -1;
+    number = number * 10 + (*d - L'0');
+  }
+  return number >= 1 && number <= kCables ? number - 1 : -1;
 }
 
 struct Wanted {

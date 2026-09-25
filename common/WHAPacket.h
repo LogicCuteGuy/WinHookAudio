@@ -100,8 +100,7 @@ inline bool ValidateWhaaCodebook(const WHAACodebookHeader& h, std::string* error
   if (!IsValidWhaaVersion(h.version)) return fail("version invalid");
   if (h.packetType != WHAA_CODEBOOK) return fail("packetType not codebook");
   if (!IsValidWhaaStreamId(h.streamId)) return fail("streamId invalid");
-  if (h.sampleRate != 44100 && h.sampleRate != 48000 && h.sampleRate != 96000)
-    return fail("sampleRate invalid");
+  if (!IsValidSampleRate(h.sampleRate)) return fail("sampleRate invalid");
   if (!IsValidNetworkChannels(WHA_VORBIS, h.channels)) return fail("channels invalid");
   if (h.quality < 0.1f || h.quality > 1.0f) return fail("quality invalid");
   if (h.headersBytes == 0 || h.headersBytes > WHAA_MAX_PAYLOAD) return fail("headersBytes invalid");

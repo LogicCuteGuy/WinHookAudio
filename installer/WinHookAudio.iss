@@ -70,7 +70,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 [Components]
 Name: "asio"; Description: "ASIO drivers: WinHookAudio Master + Bridge 1-4"; Types: full custom; Flags: fixed
 #if HaveSignedDriver || HaveTestDriver
-Name: "cable"; Description: "Virtual Cable driver (8 cables as Windows sound devices)"; Types: full
+Name: "cable"; Description: "Virtual Cable driver (16 cables as Windows sound devices)"; Types: full
 #endif
 #if HaveSignedDriver
 Name: "cable\signed"; Description: "Signed driver (normal Windows)"; Types: full; Flags: exclusive

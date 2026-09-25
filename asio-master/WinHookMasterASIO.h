@@ -2,7 +2,8 @@
 
 // WinHookAudio Master ASIO driver — the IASIO the Master DAW loads (Steinberg ASIO SDK 2.3.4 ABI).
 // Vocabulary: Master Driver, Slot, Slot Table, Master Clock, Worker.
-// The Master Clock (sample rate + ASIO buffer) is set in the Control Panel; the DAW gets exactly that.
+// The Master Clock (sample rate + ASIO buffer) is set in the Control Panel; the DAW gets exactly that
+// buffer, and may change the rate (setSampleRate, any of kSampleRates).
 // A Master Clock thread calls bufferSwitch every period and hands audio to/from the Worker via SHM.
 
 #include "WHAAsio.h"

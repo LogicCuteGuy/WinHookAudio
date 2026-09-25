@@ -113,6 +113,9 @@ bool CheckMasterClockDefaults() {
   if (!wha::IsValidMasterClock(48000, 128)) return false;
   if (!wha::IsValidMasterClock(44100, 64)) return false;
   if (!wha::IsValidMasterClock(96000, 1024)) return false;
+  for (uint32_t rate : {88200u, 176400u, 192000u})
+    if (!wha::IsValidMasterClock(rate, 128)) return false;
+  if (wha::IsValidMasterClock(384000, 128)) return false;
   if (wha::IsValidMasterClock(22050, 128)) return false;
   if (wha::IsValidMasterClock(48000, 100)) return false;
   if (general.hwBuffer != 64) return false;

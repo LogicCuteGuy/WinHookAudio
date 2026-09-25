@@ -21,7 +21,7 @@ void __cdecl operator delete(void* p, POOL_FLAGS flags, ULONG tag);
 namespace wha {
 
 constexpr ULONG kPoolTag = 'cAHW';
-constexpr ULONG kCables = 8;  // = kVirtualSlotCables (WHASlotTable.h)
+constexpr ULONG kCables = 16;  // = kVirtualSlotCables (WHASlotTable.h)
 constexpr ULONG kSubdevicesPerCable = 4;  // wave + topology, for playback and for recording
 
 // One side's Windows volume and mute (the topology filter's volume and mute nodes), per channel.

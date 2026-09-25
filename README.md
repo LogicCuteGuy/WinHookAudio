@@ -16,11 +16,11 @@ sound cards, Windows apps, other DAWs, LAN  ->  WinHookAudio Master (ASIO)  ->  
 |---|---|
 | **WinHookAudio Master** (ASIO driver) | 512 inputs + 512 outputs for the Master DAW. Each slot is fed by a sound card, a Virtual Cable, a Bridge or the network. |
 | **HW devices** | Every sound card Windows has, as outputs and inputs, with all their channels (a 16-channel interface gives 16), in WASAPI Exclusive mode (no Windows mixer, lowest latency) or, per device, Shared (other apps keep their sound) or Auto. A device opens only when a slot uses it; each is kept in time with the Master Clock. |
-| **Virtual Cables** (`WinHookAudio.sys`) | 8 cables that appear in Windows as sound devices (up to 8 channels each). Windows apps play into them or record from them. |
+| **Virtual Cables** (`WinHookAudio.sys`) | 16 cables that appear in Windows as sound devices (up to 8 channels each). Windows apps play into them or record from them. |
 | **WinHookAudio Bridge 1-4** (ASIO drivers) | Let other DAWs or ASIO apps send and receive a set of channels; up to 4 apps share one Bridge. |
 | **Network streams** (WHAA) | Send and receive audio on the LAN over UDP 6980-6981, as PCM or Vorbis. |
 | **DAWs it works in** | 64-bit and 32-bit DAWs on Windows 10/11 x64, and ARM64 and x64 DAWs on Windows 11 on ARM. One DAW uses the Master at a time; any number use the Bridges. The Virtual Cable driver is x64 only for now. |
-| **Control Panel** | Opens from the DAW's ASIO settings: pick what feeds each slot, the Master Clock, devices, cables and streams. Saved to `%ProgramData%\WinHookAudio\routes.yml` + `settings.yml`, with Export / Import. |
+| **Control Panel** | Opens from the DAW's ASIO settings: pick what feeds each slot, the Master Clock (44.1 to 192 kHz; the DAW's own rate menu also sets it), devices, cables and streams. Saved to `%ProgramData%\WinHookAudio\routes.yml` + `settings.yml`, with Export / Import. |
 
 **Status:** early. It is tested on the developer's PC only (Windows 10 x64 with Bitwig Studio). Expect bugs; please report them in [Issues](https://github.com/LogicCuteGuy/WinHookAudio/issues).
 

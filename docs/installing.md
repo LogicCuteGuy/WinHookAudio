@@ -7,7 +7,7 @@
 | ASIO drivers Master + Bridge 1-4 | `C:\Program Files\WinHookAudio\WinHookAudio*ASIO64.dll`, registered under `HKLM\SOFTWARE\ASIO` (5 entries) |
 | The same for 32-bit DAWs | `WinHookAudio*ASIO32.dll`, registered in the 32-bit view (`HKLM\SOFTWARE\WOW6432Node\ASIO`) |
 | Windows on ARM only | `WinHookAudio*ASIOARM64.dll` for ARM64 DAWs and `WinHookAudio*ASIOARM64X.dll`, which the 64-bit entries point at: it hands ARM64 DAWs the ARM64 DLL and x64 DAWs the x64 one. No Virtual Cable yet (x64 driver only) |
-| Virtual Cable driver (optional) | `C:\Program Files\WinHookAudio\driver\`, device `Root\WinHookAudio` (8 cables in Windows Sound settings) |
+| Virtual Cable driver (optional) | `C:\Program Files\WinHookAudio\driver\`, device `Root\WinHookAudio` (16 cables in Windows Sound settings) |
 | Firewall rule "WinHookAudio" | UDP 6980-6981 in, for network streams |
 | `winhookaudio-devsetup.exe` | creates and removes the `Root\WinHookAudio` device |
 

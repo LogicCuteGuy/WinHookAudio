@@ -4,7 +4,7 @@
 // records it from the cable's Windows recording endpoint. First it sends the cable's format (as the
 // Worker does from the panel's settings) and sets both endpoints to it with CableEndpointSync. Needs
 // the driver installed and no Worker running (the control device takes one client). Not a ctest.
-//   winhookaudio-cable-live.exe [--seconds N] [--block FRAMES] [--cable 1..8]
+//   winhookaudio-cable-live.exe [--seconds N] [--block FRAMES] [--cable 1..16]
 //                               [--rate HZ] [--channels 2|4|6|8] [--format 0..4]
 // format: 0 = 32-bit float, 1 = 16-bit, 2 = 24-bit, 3 = 32-bit, 4 = 24 bits in 32.
 
@@ -191,7 +191,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--format")) gFormat = static_cast<unsigned>(std::atoi(argv[++i]));
   }
   if (block < 16 || block > WHA_CABLE_MAX_FRAMES) block = 256;
-  if (gCable < 1 || gCable > 8) gCable = 1;
+  if (gCable < 1 || gCable > 16) gCable = 1;
   if (gChannels != 2 && gChannels != 4 && gChannels != 6 && gChannels != 8) gChannels = 2;
   if (gFormat > 4) gFormat = 0;
   if (gRate < 8000 || gRate > 384000) gRate = 48000;

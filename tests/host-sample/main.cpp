@@ -101,9 +101,19 @@ int main() {
     check("master all input names, Float32LSB", allNames);
     double sr = 0;
     err = master->getSampleRate(&sr);
-    check("master getSampleRate", err == ASE_OK && (sr == 44100 || sr == 48000 || sr == 96000));
-    check("master canSampleRate: Master Clock only", master->canSampleRate(sr) == ASE_OK &&
-                                                          master->canSampleRate(sr == 48000 ? 44100 : 48000) == ASE_NoClock);
+    check("master getSampleRate", err == ASE_OK && IsValidSampleRate(static_cast<uint32_t>(sr)));
+    bool allRates = true;
+    for (uint32_t rate : kSampleRates) allRates = allRates && master->canSampleRate(rate) == ASE_OK;
+    check("master canSampleRate: 44.1 .. 192 kHz, nothing else", allRates && master->canSampleRate(22050) == ASE_NoClock &&
+                                                                     master->canSampleRate(384000) == ASE_NoClock &&
+                                                                     master->canSampleRate(44100.5) == ASE_NoClock);
+    {  // The DAW's rate menu sets the Master Clock (Slot Table), and back.
+      const double other = sr == 192000 ? 88200 : 192000;
+      double now = 0;
+      const bool set = master->setSampleRate(other) == ASE_OK && master->getSampleRate(&now) == ASE_OK && now == other;
+      const bool back = master->setSampleRate(sr) == ASE_OK && master->getSampleRate(&now) == ASE_OK && now == sr;
+      check("master setSampleRate changes the Master Clock", set && back && master->setSampleRate(22050) == ASE_NoClock);
+    }
     long minSz = 0, maxSz = 0, pref = 0, gran = -1;
     err = master->getBufferSize(&minSz, &maxSz, &pref, &gran);
     check("master getBufferSize = Master Clock buffer", err == ASE_OK && minSz == pref && maxSz == pref && gran == 0 &&

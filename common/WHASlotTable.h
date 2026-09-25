@@ -120,12 +120,17 @@ struct WHAHwModes {
 
 // Per Virtual Cable: its channels (2, 4, 6, 8) and sample format (WHASampleKind: 0 = 32-bit float,
 // 1 = 16, 2 = 24, 3 = 32-bit PCM, 4 = 24 bits in 32). The rate is the Master Clock's. The Worker sends
-// them to the driver, whose endpoints then offer exactly this format. Appended after hwMore.
-constexpr int32_t kVirtualSlotCables = 8;
+// them to the driver, whose endpoints then offer exactly this format. Cables 1..8 are `cables`
+// (appended after hwMore), 9..16 `cablesMore` (appended after hwModes); read them through CableSetting.
+constexpr int32_t kVirtualSlotCables = 16;
+constexpr int32_t kVirtualCablesFirst = 8;  // cables in the first append
 struct WHACableSetting {
   uint8_t channels = 2;
   uint8_t format = 0;
   uint8_t _pad[2] = {};
+};
+struct WHACableMore {
+  WHACableSetting cables[kVirtualSlotCables - kVirtualCablesFirst] = {};
 };
 
 struct WHASlotTable {
@@ -138,9 +143,10 @@ struct WHASlotTable {
   WHANetworkStream netTx[WHA_NET_STREAMS] = {};
   WHANetworkStream netRx[WHA_NET_STREAMS] = {};
   WHAHwMore hwMore = {};
-  WHACableSetting cables[kVirtualSlotCables] = {};
+  WHACableSetting cables[kVirtualCablesFirst] = {};
   WHAHwExtra hwExtra = {};
   WHAHwModes hwModes = {};
+  WHACableMore cablesMore = {};
 };
 
 // Every HW device's endpoint ID and mode, by device index: a copy of the Slot Table's lists (the
@@ -153,6 +159,15 @@ struct WHAHwDeviceIds {
 #pragma pack(pop)
 
 inline void TruncateCopy(char* dst, std::size_t dstLen, const char* src);
+
+// Virtual Cable `cable`'s setting (0-based, see WHACableMore); out of range = cable 1's.
+inline WHACableSetting& CableSetting(WHASlotTable& t, int cable) {
+  if (cable < 0 || cable >= kVirtualSlotCables) cable = 0;
+  return cable < kVirtualCablesFirst ? t.cables[cable] : t.cablesMore.cables[cable - kVirtualCablesFirst];
+}
+inline const WHACableSetting& CableSetting(const WHASlotTable& t, int cable) {
+  return CableSetting(const_cast<WHASlotTable&>(t), cable);
+}
 
 // Endpoint ID of HW device `device` of one direction (see WHAHwMore); nullptr out of range.
 inline const char* HwDeviceId(const WHASlotTable& t, bool isInput, int device) {
@@ -258,8 +273,16 @@ inline void TruncateCopy(char* dst, std::size_t dstLen, const char* src) {
   for (++i; i < dstLen; ++i) dst[i] = '\0';
 }
 
+// Master Clock rates (Hz): the Control Panel's list and what the DAW may pick (setSampleRate).
+constexpr uint32_t kSampleRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
+constexpr bool IsValidSampleRate(uint32_t rate) {
+  for (uint32_t r : kSampleRates)
+    if (r == rate) return true;
+  return false;
+}
+
 constexpr bool IsValidMasterClock(uint32_t rate, uint32_t buffer) {
-  const bool rateOk = rate == 44100 || rate == 48000 || rate == 96000;
+  const bool rateOk = IsValidSampleRate(rate);
   const bool bufferOk =
       buffer == 64 || buffer == 128 || buffer == 256 || buffer == 512 || buffer == 1024;
   return rateOk && bufferOk;
@@ -298,7 +321,7 @@ inline bool DawVisibleChanged(const WHASlotTable& a, const WHASlotTable& b) {
 constexpr int32_t kHwMaxChannels = 64;  // MADI-class interfaces
 
 // VIRTUAL slots take one channel of a Virtual Cable: srcChannel = cable * 8 + channel (0 = L, 1 = R,
-// then C, LFE, ... up to the cable's channel count), cables 1..8. A channel past the cable's count is
+// then C, LFE, ... up to the cable's channel count), cables 1..16. A channel past the cable's count is
 // silent. (Files from before 8-channel cables stored cable * 2 + side; DeserializeSlots converts them.)
 constexpr int32_t kVirtualCableChannels = 8;
 inline int VirtualCableOf(const WHASlot& s) {

@@ -13,12 +13,14 @@ namespace {
 // Pin and filter descriptions
 
 // Each cable's endpoint names: HKLM\...\MediaCategories\{this}\Name, written by WinHookAudio.inf.
-// Playback {5EDB54C0-...} = "WinHookAudio Output 1" ... {5EDB54C7-...} = "WinHookAudio Output 8";
-// recording {5EDB54D0-...} = "WinHookAudio Input 1" ... {5EDB54D7-...} = "WinHookAudio Input 8".
+// Playback {5EDB54C0-...} = "WinHookAudio Output 1" ... {5EDB54CF-...} = "WinHookAudio Output 16";
+// recording {5EDB54D0-...} = "WinHookAudio Input 1" ... {5EDB54DF-...} = "WinHookAudio Input 16".
 #define WHA_CABLE_NAME(first, n) {first + n, 0x7282, 0x42f3, {0x9c, 0x57, 0xf4, 0x83, 0xae, 0x5a, 0x32, 0xac}}
 #define WHA_CABLE_NAMES(first)                                                                              \
   {WHA_CABLE_NAME(first, 0), WHA_CABLE_NAME(first, 1), WHA_CABLE_NAME(first, 2), WHA_CABLE_NAME(first, 3), \
-   WHA_CABLE_NAME(first, 4), WHA_CABLE_NAME(first, 5), WHA_CABLE_NAME(first, 6), WHA_CABLE_NAME(first, 7)}
+   WHA_CABLE_NAME(first, 4), WHA_CABLE_NAME(first, 5), WHA_CABLE_NAME(first, 6), WHA_CABLE_NAME(first, 7), \
+   WHA_CABLE_NAME(first, 8), WHA_CABLE_NAME(first, 9), WHA_CABLE_NAME(first, 10), WHA_CABLE_NAME(first, 11), \
+   WHA_CABLE_NAME(first, 12), WHA_CABLE_NAME(first, 13), WHA_CABLE_NAME(first, 14), WHA_CABLE_NAME(first, 15)}
 const GUID kOutputNames[kCables] = WHA_CABLE_NAMES(0x5edb54c0);
 const GUID kInputNames[kCables] = WHA_CABLE_NAMES(0x5edb54d0);
 #undef WHA_CABLE_NAMES

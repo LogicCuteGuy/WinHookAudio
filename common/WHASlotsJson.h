@@ -59,8 +59,8 @@ inline bool ValidateSlots(const WHASlotTable& table, std::string* error) {
   for (int d = 0; d < kHwDevices; ++d)
     if (table.hwModes.render[d] >= kHwModeCount || table.hwModes.capture[d] >= kHwModeCount)
       return fail("general HW device mode must be 0..2");
-  for (const WHACableSetting& c : table.cables)
-    if (!IsValidCableSetting(c)) return fail("general cables: channels 2/4/6/8, format 0..4");
+  for (int c = 0; c < kVirtualSlotCables; ++c)
+    if (!IsValidCableSetting(CableSetting(table, c))) return fail("general cables: channels 2/4/6/8, format 0..4");
   for (int i = 0; i < WHA_BRIDGE_COUNT; ++i) {
     uint32_t v = table.general.bridgeBuffer[i];
     if (v != 64 && v != 128 && v != 256 && v != 512 && v != 1024)
@@ -523,7 +523,8 @@ inline std::string SerializeSlots(const WHASlotTable& t) {
   out += ",\"cables\":[";
   for (int c = 0; c < kVirtualSlotCables; ++c) {
     if (c) out += ",";
-    out += "{\"channels\":" + std::to_string(t.cables[c].channels) + ",\"format\":" + std::to_string(t.cables[c].format) + "}";
+    const WHACableSetting& cs = CableSetting(t, c);
+    out += "{\"channels\":" + std::to_string(cs.channels) + ",\"format\":" + std::to_string(cs.format) + "}";
   }
   out += "]";
   out += "},";
@@ -750,22 +751,26 @@ inline bool DeserializeSlots(std::string_view s, WHASlotTable& out, std::string*
             detail::SkipWs(s, p);
           }
           if (!detail::Expect(s, p, ']')) return fail("HW mode list ]");
-        } else if (gkey == "cables") {  // optional: absent = every cable stereo float
+        } else if (gkey == "cables") {  // optional: absent = every cable stereo float; 8 (older files) or 16
           if (!detail::Expect(s, p, '[')) return fail("cables [");
           for (int c = 0; c < kVirtualSlotCables; ++c) {
+            if (c == kVirtualCablesFirst) {  // an older file ends here
+              detail::SkipWs(s, p);
+              if (p < s.size() && s[p] == ']') break;
+            }
+            if (c > 0 && !detail::Expect(s, p, ',')) return fail("cables list ,");
             if (!detail::Expect(s, p, '{')) return fail("cables {");
             for (int field = 0; field < 2; ++field) {
               std::string ckey;
               uint32_t v = 0;
               if (!detail::ParseString(s, p, ckey) || !detail::Expect(s, p, ':') || !detail::ParseUInt(s, p, v) || v > 255)
                 return fail("cables field");
-              if (ckey == "channels") out.cables[c].channels = static_cast<uint8_t>(v);
-              else if (ckey == "format") out.cables[c].format = static_cast<uint8_t>(v);
+              if (ckey == "channels") CableSetting(out, c).channels = static_cast<uint8_t>(v);
+              else if (ckey == "format") CableSetting(out, c).format = static_cast<uint8_t>(v);
               else return fail("cables unknown field");
               if (field == 0 && !detail::Expect(s, p, ',')) return fail("cables ,");
             }
             if (!detail::Expect(s, p, '}')) return fail("cables }");
-            if (c + 1 < kVirtualSlotCables && !detail::Expect(s, p, ',')) return fail("cables list ,");
           }
           if (!detail::Expect(s, p, ']')) return fail("cables ]");
           haveCables = true;

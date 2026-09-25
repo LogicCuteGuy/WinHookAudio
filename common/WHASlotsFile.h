@@ -46,7 +46,7 @@ inline void FillDefaultSlotTable(WHASlotTable& t) {
   t.general.sampleRate = kMasterClockRateDefault;
   t.general.asioBuffer = kMasterClockBufferDefault;
   for (uint32_t i = 0; i < kNetStreams; ++i) t.netTx[i] = t.netRx[i] = WHANetworkStream{};  // zeroed: invalid
-  for (WHACableSetting& c : t.cables) c = WHACableSetting{};  // zeroed: 0 channels, invalid
+  for (int c = 0; c < kVirtualSlotCables; ++c) CableSetting(t, c) = WHACableSetting{};  // zeroed: 0 channels, invalid
   t.version = 1;
 }
 

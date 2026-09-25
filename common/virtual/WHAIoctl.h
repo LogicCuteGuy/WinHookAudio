@@ -26,13 +26,13 @@ constexpr uint32_t IOCTL_WHA_SET_LOOPBACK = 0x80000802;
 
 namespace wha {
 
-constexpr uint32_t kVirtualCables = 8;
+constexpr uint32_t kVirtualCables = 16;
 constexpr uint32_t kVirtualChannels = 8;  // up to 7.1 per cable (WHACableSetting::channels)
 constexpr uint32_t kRingBufferFrames = 8192;
 constexpr uint32_t kRingBufferBytes = kRingBufferFrames * kVirtualChannels * 4;  // 256 KB of float
 
 struct WHAIoctlRead {
-  uint32_t cableIndex = 0;  // 0..7
+  uint32_t cableIndex = 0;  // 0..15
   uint32_t frames = 0;
 };
 

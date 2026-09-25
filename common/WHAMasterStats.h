@@ -25,7 +25,8 @@ constexpr int kStatsEndpointIdLen = 64;  // = kEndpointIdLen (WHASlotTable.h)
 constexpr int kStatsHwDevices = 128;    // = kHwDevices (WHASlotTable.h)
 constexpr int kStatsHwMore = 3;         // = kHwMoreDevices: devices 1..3 (hwMoreOut / hwMoreIn)
 constexpr int kStatsHwExtra = kStatsHwDevices - 1 - kStatsHwMore;  // devices 4 and up (hwExtraOut / hwExtraIn)
-constexpr int kStatsCables = 8;         // = kVirtualSlotCables (WHASlotTable.h)
+constexpr int kStatsCables = 16;        // = kVirtualSlotCables (WHASlotTable.h)
+constexpr int kStatsCablesFirst = 8;    // = kVirtualCablesFirst: cables 1..8 (cables), 9..16 (cablesMore)
 
 // One more HW device (index 1 and up of its direction; read it with HwDeviceStats).
 struct WHAHwDeviceStats {
@@ -118,7 +119,7 @@ struct WHAMasterStats {
   // Virtual Cable driver: cables it has (0 = not installed or not open: cables loop inside the Worker).
   int32_t cableDriverCables;
   int32_t cableDriverError;  // Win32 error of the failed open, 0 if open (2 = not installed)
-  WHACableStats cables[kStatsCables];
+  WHACableStats cables[kStatsCablesFirst];  // read them through CableStats
   // HW devices 4 and up (WHAHwExtra), appended.
   WHAHwDeviceStats hwExtraOut[kStatsHwExtra];
   WHAHwDeviceStats hwExtraIn[kStatsHwExtra];
@@ -131,7 +132,18 @@ struct WHAMasterStats {
   int32_t hwInMode[kStatsHwDevices];
   int32_t hwOutRequestedMode[kStatsHwDevices];
   int32_t hwInRequestedMode[kStatsHwDevices];
+  // Virtual Cables 9..16, appended.
+  WHACableStats cablesMore[kStatsCables - kStatsCablesFirst];
 };
+
+// Virtual Cable `cable` (0 .. kStatsCables - 1); nullptr out of range.
+inline WHACableStats* CableStats(WHAMasterStats& s, int cable) {
+  if (cable < 0 || cable >= kStatsCables) return nullptr;
+  return cable < kStatsCablesFirst ? &s.cables[cable] : &s.cablesMore[cable - kStatsCablesFirst];
+}
+inline const WHACableStats* CableStats(const WHAMasterStats& s, int cable) {
+  return CableStats(const_cast<WHAMasterStats&>(s), cable);
+}
 
 // More HW device `device` (1 .. kStatsHwDevices - 1) of one direction; nullptr out of range.
 inline WHAHwDeviceStats* HwDeviceStats(WHAMasterStats& s, bool isInput, int device) {

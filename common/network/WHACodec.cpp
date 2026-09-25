@@ -52,7 +52,7 @@ bool SplitCodebookHeaders(const std::vector<uint8_t>& headers, const uint8_t* pa
 
 bool ValidateCodebook(const WHACodebook& cb) {
   if (cb.streamId >= kNetStreams) return false;
-  if (cb.sampleRate != 44100 && cb.sampleRate != 48000 && cb.sampleRate != 96000) return false;
+  if (!IsValidSampleRate(cb.sampleRate)) return false;
   if (!IsValidNetworkChannels(WHA_VORBIS, cb.channels)) return false;
   if (cb.quality < 0.1f || cb.quality > 1.0f) return false;
   if (cb.headers.size() > kWhaaMaxPayload) return false;

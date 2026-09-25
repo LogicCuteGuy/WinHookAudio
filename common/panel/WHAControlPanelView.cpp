@@ -23,7 +23,6 @@ std::atomic<int> gAssertCount{0};
 constexpr const char* kFilterNames = "All\0HW\0VIRTUAL\0NETWORK\0BRIDGE1\0BRIDGE2\0BRIDGE3\0BRIDGE4\0";
 constexpr const char* kCodecNames = "PCM_F32\0PCM_I16\0VORBIS\0";
 
-constexpr uint32_t kRates[] = {44100, 48000, 96000};
 constexpr uint32_t kFrames[] = {64, 128, 256, 512, 1024};
 constexpr uint32_t kHwFrames[] = {0, 64, 128, 256, 512, 1024};  // 0 = Auto (device minimum)
 constexpr uint32_t kJitterPcmMs[] = {10, 20, 40, 80};
@@ -122,7 +121,8 @@ void DrawSourceCell(PanelModel& edit, bool isInput, uint32_t idx, const PanelDev
     if (!cableDriver) ImGui::TextDisabled("Cable driver not running: only DAW OUT -> DAW IN loops work.");
     ImGui::TextDisabled("Channels per cable: GENERAL > Virtual Cables.");
     for (int c = 0; c < kVirtualSlotCables; ++c) {
-      const unsigned channels = IsValidCableSetting(edit.table.cables[c]) ? edit.table.cables[c].channels : 2u;
+      const WHACableSetting& cs = CableSetting(edit.table, c);
+      const unsigned channels = IsValidCableSetting(cs) ? cs.channels : 2u;
       ImGui::PushID(c);
       const std::string label = VirtualCableLabel(edit.table.general, c) + "  (" + CableChannelsLabel(channels) + ")";
       if (ImGui::BeginMenu(label.c_str())) {
@@ -496,7 +496,7 @@ void DrawCableFormats(PanelModel& edit) {
   ImGui::TableSetupColumn("Rate", ImGuiTableColumnFlags_WidthStretch);
   ImGui::TableHeadersRow();
   for (int c = 0; c < kVirtualSlotCables; ++c) {
-    const WHACableSetting cs = edit.table.cables[c];
+    const WHACableSetting cs = CableSetting(edit.table, c);
     ImGui::PushID(c);
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
@@ -536,7 +536,7 @@ void DrawGeneral(PanelModel& edit, const PanelViewState& state, PanelViewResult&
   uint32_t rate = g.sampleRate;
   uint32_t buf = g.asioBuffer;
   ImGui::SetNextItemWidth(140);
-  if (ComboU32("Sample Rate", rate, kRates, std::size(kRates), "%u")) SetMasterClock(edit, rate, g.asioBuffer);
+  if (ComboU32("Sample Rate", rate, kSampleRates, std::size(kSampleRates), "%u")) SetMasterClock(edit, rate, g.asioBuffer);
   ImGui::SetNextItemWidth(140);
   ImGui::LabelText("Bit Depth", "32 Float");
   ImGui::SetNextItemWidth(140);

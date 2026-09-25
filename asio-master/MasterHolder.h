@@ -159,7 +159,7 @@ class MasterHolder {
   std::vector<OutTraceRow> outTrace_;
   char outTracePath_[260] = {};
   float virtualScratch_[8 * 4096] = {};  // one Virtual Cable's interleaved block, up to 8 channels (Worker thread)
-  class WHARingBuffer* virtualRings_[8] = {};
+  class WHARingBuffer* virtualRings_[kVirtualSlotCables] = {};
   // Virtual Cable driver (Worker thread): control device, cables it has, exchange buffer (header +
   // WHA_CABLE_MAX_FRAMES frames of up to 8 channels, allocated at start). cableSent_ is the format the
   // driver last accepted for each cable (rate 0: none yet). cableStat_ publishes each cable's last
@@ -170,14 +170,14 @@ class MasterHolder {
   std::atomic<int> cableError_{0};
   std::vector<unsigned char> cableIo_;
   struct CableFormatSent { uint32_t rate = 0, channels = 0, format = 0; };
-  CableFormatSent cableSent_[8] = {};
+  CableFormatSent cableSent_[kVirtualSlotCables] = {};
   struct CableStat {
     std::atomic<uint32_t> rate{0}, channels{0}, format{0};  // what the cable's endpoints offer
     std::atomic<uint32_t> playRate{0}, recordRate{0}, playFill{0}, recordFill{0};
     std::atomic<uint32_t> playUnderruns{0}, playDrops{0}, recordUnderruns{0}, recordDrops{0};
     std::atomic<uint64_t> exchanges{0}, errors{0};
   };
-  CableStat cableStat_[8];
+  CableStat cableStat_[kVirtualSlotCables];
   class CableEndpointSync* endpointSync_ = nullptr;  // while the driver is open: Windows formats follow cableStat_
   class WHANetworkEngine* network_ = nullptr;
   std::function<void()> onTableChanged_;  // WHAA Tx/Rx; its own thread does sockets + codecs

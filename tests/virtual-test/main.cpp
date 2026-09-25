@@ -29,7 +29,7 @@ int main() {
   check("IOCTL_WHA_READ ok", true);
   check("IOCTL_WHA_WRITE ok", true);
   check("IOCTL_WHA_SET_LOOPBACK ok", true);
-  check("kVirtualCables 8", kVirtualCables == 8);
+  check("kVirtualCables 16", kVirtualCables == 16);
   check("kRingBufferBytes 256KB (8192 frames x 8 ch)", kRingBufferBytes == 256 * 1024);
 
   // Virtual Cable via MasterHolder: SHM Out -> Ring -> SHM In

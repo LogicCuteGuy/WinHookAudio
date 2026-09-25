@@ -227,7 +227,8 @@ int main() {
     SetInputType(nm, 2, SLOT_VIRTUAL);
     check("VIRTUAL cable 4 R (source 3*8+1) -> 'Virtual 4 R'", SetInputSource(nm, 2, 25, 0) && dawName(nm, 2, true) == "Virtual 4 R");
     check("VIRTUAL cable 8 Ch8 (source 63) -> 'Virtual 8 Ch8'", SetInputSource(nm, 2, 63, 0) && dawName(nm, 2, true) == "Virtual 8 Ch8");
-    check("VIRTUAL source 64 rejected (8 cables x 8 channels)", !SetInputSource(nm, 2, 64, 0));
+    check("VIRTUAL cable 16 L (source 15*8) -> 'Virtual 16 L'", SetInputSource(nm, 2, 120, 0) && dawName(nm, 2, true) == "Virtual 16 L");
+    check("VIRTUAL source 128 rejected (16 cables x 8 channels)", !SetInputSource(nm, 2, 128, 0));
     SetInputType(nm, 2, SLOT_NETWORK);
     check("NETWORK stream 2 ch 1 -> 'Rx3 Ch1'", SetInputSource(nm, 2, 0, 2) && dawName(nm, 2, true) == "Rx3 Ch1");
     check("NETWORK stream 8 rejected", !SetInputSource(nm, 2, 0, 8));
@@ -451,10 +452,13 @@ int main() {
                                           SlotSourceLabel(nm.table.masterIn[2], true, nullptr) == "Virtual 3 \xC2\xB7 L");
     {
       // Per-cable format (GENERAL > Virtual Cables): channels 2/4/6/8, formats 0..4, Master only.
-      check("cables default to stereo 32-bit float", nm.table.cables[5].channels == 2 && nm.table.cables[5].format == 0);
+      check("cables default to stereo 32-bit float", CableSetting(nm.table, 5).channels == 2 && CableSetting(nm.table, 5).format == 0 &&
+                                                         CableSetting(nm.table, 15).channels == 2 && CableSetting(nm.table, 15).format == 0);
       check("SetCableChannels 7.1 on cable 3", SetCableChannels(nm, 2, 8) && nm.table.cables[2].channels == 8);
-      check("SetCableChannels 3 / cable 9 rejected", !SetCableChannels(nm, 2, 3) && !SetCableChannels(nm, 8, 2) &&
-                                                         nm.table.cables[2].channels == 8);
+      check("SetCableChannels 3 / cable 17 rejected", !SetCableChannels(nm, 2, 3) && !SetCableChannels(nm, 16, 2) &&
+                                                          nm.table.cables[2].channels == 8);
+      check("SetCableChannels 5.1 on cable 12 (cablesMore)", SetCableChannels(nm, 11, 6) && nm.table.cablesMore.cables[3].channels == 6);
+      check("SetCableFormat 16-bit on cable 16 (cablesMore)", SetCableFormat(nm, 15, 1) && nm.table.cablesMore.cables[7].format == 1);
       check("SetCableFormat 24-in-32, 5 rejected", SetCableFormat(nm, 2, 4) && !SetCableFormat(nm, 2, 5) && nm.table.cables[2].format == 4);
       check("labels: 5.1, 24-bit in 32", std::string(CableChannelsLabel(6)) == "5.1" && std::string(CableFormatLabel(4)) == "24-bit in 32");
       check("Virtual 3 Ch7 label", AssignSource(nm, true, 2, SLOT_VIRTUAL, 2 * 8 + 6, 0) &&
@@ -471,6 +475,25 @@ int main() {
       check("json round trip keeps cable formats and Virtual 3 Ch7",
             DeserializeSlots(json, *back, &err) && back->cables[2].channels == 8 && back->cables[2].format == 4 &&
                 back->cables[0].channels == 2 && back->masterIn[2].srcChannel == 22);
+      check("json round trip keeps cables 12 and 16 (cablesMore)",
+            DeserializeSlots(json, *back, &err) && CableSetting(*back, 11).channels == 6 && CableSetting(*back, 15).format == 1);
+      {
+        auto yamlBack = std::make_unique<WHASlotTable>();
+        FillDefaultSlotTable(*yamlBack);
+        check("settings.yml round trip keeps cables 12 and 16",
+              DeserializeSettings(SerializeSettings(nm.table), *yamlBack, &err) && CableSetting(*yamlBack, 11).channels == 6 &&
+                  CableSetting(*yamlBack, 15).format == 1 && CableSetting(*yamlBack, 2).channels == 8);
+      }
+      {  // A file from 8-cable versions: its 8 cables load, cables 9..16 stay stereo float.
+        std::string eight = json;
+        size_t at9 = eight.find(",\"cables\":[");
+        for (int c = 0; at9 != std::string::npos && c < 8; ++c) at9 = eight.find('}', at9 + 1);
+        const size_t end16 = at9 == std::string::npos ? at9 : eight.find(']', at9);
+        if (end16 != std::string::npos) eight.erase(at9 + 1, end16 - at9 - 1);
+        check("8-cable json loads, cables 9..16 stereo float",
+              end16 != std::string::npos && DeserializeSlots(eight, *back, &err) && back->cables[2].channels == 8 &&
+                  CableSetting(*back, 11).channels == 2 && CableSetting(*back, 15).format == 0 && ValidateSlots(*back, &err));
+      }
       // A file from before 8-channel cables (no "cables"): Virtual N L/R = (N-1)*2 + side becomes channel 1/2.
       std::string old = json;
       const size_t at = old.find(",\"cables\":[");
@@ -490,6 +513,8 @@ int main() {
       check("changing a cable's format is live (no DAW reset)", !DawVisibleChanged(nm.table, *reformatted));
       SetCableChannels(nm, 2, 2);
       SetCableFormat(nm, 2, 0);
+      SetCableChannels(nm, 11, 2);
+      SetCableFormat(nm, 15, 0);
       AssignSource(nm, true, 2, SLOT_VIRTUAL, 16, 0);
     }
     check("Virtual Cable menu uses the GENERAL name", VirtualCableLabel(nm.table.general, 0) == "WinHookAudio Virtual 1");

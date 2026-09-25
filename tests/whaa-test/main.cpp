@@ -117,6 +117,25 @@ int main() {
     std::vector<float> none;
     check("Vorbis header-as-audio rejected", !dec.Decode(&cb.headers[12], 30, none));
     check("Vorbis encoder rejects Q1.5", !WHAVorbisEncoder().Open(0, kRate, kCh, 1.5f, bad));
+    // Every Master Clock rate: 1 s of silence-free signal encodes and decodes to about 1 s.
+    for (uint32_t rate : kSampleRates) {
+      std::vector<float> in(rate * kCh);
+      for (uint32_t f = 0; f < rate; ++f)
+        for (uint32_t c = 0; c < kCh; ++c) in[f * kCh + c] = static_cast<float>(0.5 * std::sin(2 * kPi * 1000.0 * f / rate));
+      WHAVorbisEncoder rateEnc;
+      WHAVorbisDecoder rateDec;
+      WHACodebook rateCb;
+      std::vector<std::vector<uint8_t>> ratePackets;
+      std::vector<float> rateOut;
+      bool ok = rateEnc.Open(2, rate, kCh, 0.4f, rateCb);
+      for (uint32_t f = 0; ok && f + kBlock <= rate; f += kBlock) ok = rateEnc.Encode(&in[f * kCh], kBlock, ratePackets);
+      ok = ok && rateEnc.Flush(ratePackets) && rateDec.Open(rateCb);
+      for (auto& p : ratePackets) ok = ok && rateDec.Decode(p.data(), static_cast<uint32_t>(p.size()), rateOut);
+      const size_t frames = rateOut.size() / kCh;
+      char name[64];
+      std::snprintf(name, sizeof(name), "Vorbis round trip at %u Hz (%zu frames)", rate, frames);
+      check(name, ok && frames + 4096 >= rate && frames <= rate + 4096);
+    }
   } else {
     check("Vorbis unavailable reports open failure", !enc.Open(0, kRate, kCh, 0.4f, cb));
   }

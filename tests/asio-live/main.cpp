@@ -546,7 +546,7 @@ int main(int argc, char** argv) {
     std::printf("Virtual Cable driver: %d cable(s)%s (open error %d)\n", st.cableDriverCables,
                 st.cableDriverCables ? "" : ", cables loop inside the Worker", st.cableDriverError);
     for (int c = 0; c < kStatsCables; ++c) {
-      const WHACableStats& cs = st.cables[c];
+      const WHACableStats& cs = *CableStats(st, c);
       if (!cs.used) continue;
       std::printf("Virtual %d: Windows playback %d Hz, recording %d Hz; queued play %d, record %d; exchanges %llu errors %llu;"
                   " play underruns %llu drops %llu, record underruns %llu drops %llu\n",

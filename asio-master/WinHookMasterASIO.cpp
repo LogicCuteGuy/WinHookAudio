@@ -198,6 +198,7 @@ ASIOError WinHookMasterASIO::start() {
   if (!initialized_) return ASE_NotPresent;
   if (!buffersCreated_) return ASE_InvalidMode;  // SDK: createBuffers before start
   if (running_) return ASE_OK;
+  sampleRate_ = static_cast<double>(slotTable_->general.sampleRate);  // a setSampleRate or Save since createBuffers
   hwClockSettled_ = false;
   if (!holder_) {
     auto* holder = new MasterHolder(slotTable_, masterAudio_, bridgeShared_, masterTick_, tableChanged_, bridgeTicks_);
@@ -360,7 +361,7 @@ bool WinHookMasterASIO::stats(WHAMasterStats* out) const {
   out->cableDriverCables = holder_->cableDriverCables();
   out->cableDriverError = holder_->cableDriverError();
   for (int c = 0; c < kStatsCables; ++c) {
-    WHACableStats& cs = out->cables[c];
+    WHACableStats& cs = *CableStats(*out, c);
     WHACableExchange reply{};
     uint64_t exchanges = 0, errors = 0;
     if (!holder_->cableStatus(c, reply, exchanges, errors)) continue;
@@ -445,9 +446,12 @@ ASIOError WinHookMasterASIO::getBufferSize(long* minSize, long* maxSize, long* p
   if (granularity) *granularity = 0;
   return ASE_OK;
 }
+// Any Master Clock rate (kSampleRates): the DAW's rate menu sets the Master Clock like the Control
+// Panel's does, for this session (a Control Panel Save keeps it).
 ASIOError WinHookMasterASIO::canSampleRate(ASIOSampleRate sampleRate) {
   if (!initialized_ || !slotTable_) return ASE_NotPresent;
-  return static_cast<uint32_t>(sampleRate) == slotTable_->general.sampleRate ? ASE_OK : ASE_NoClock;
+  const auto rate = static_cast<uint32_t>(sampleRate);
+  return rate == sampleRate && IsValidSampleRate(rate) ? ASE_OK : ASE_NoClock;
 }
 ASIOError WinHookMasterASIO::getSampleRate(ASIOSampleRate* sampleRate) {
   if (!sampleRate) return ASE_InvalidParameter;
@@ -457,7 +461,20 @@ ASIOError WinHookMasterASIO::getSampleRate(ASIOSampleRate* sampleRate) {
 }
 ASIOError WinHookMasterASIO::setSampleRate(ASIOSampleRate sampleRate) {
   if (sampleRate == 0.0) return ASE_OK;  // SDK: 0 = external clock request; we only have the Master Clock
-  return canSampleRate(sampleRate);
+  const ASIOError can = canSampleRate(sampleRate);
+  if (can != ASE_OK) return can;
+  const auto rate = static_cast<uint32_t>(sampleRate);
+  if (rate == slotTable_->general.sampleRate) return ASE_OK;
+  slotTable_->general.sampleRate = rate;
+  ++slotTable_->version;
+  if (tableChanged_) SetEvent(tableChanged_);  // Bridges and the Control Panel follow
+  if (running_) {
+    requestReset();  // the DAW stops and starts again: the Master Clock and HW reopen at the new rate
+  } else {
+    sampleRate_ = static_cast<double>(rate);
+    snapshotDawView();  // the DAW asked for it: no reset request for this change
+  }
+  return ASE_OK;
 }
 ASIOError WinHookMasterASIO::getClockSources(ASIOClockSource* clocks, long* numSources) {
   if (!clocks || !numSources || *numSources < 1) return ASE_InvalidParameter;

@@ -871,18 +871,20 @@ uint32_t GetVirtualCableCount(const PanelModel& model) { return model.table.gene
 std::string GetVirtualCableName(const PanelModel& model) { return std::string(model.table.general.virtualName); }
 bool SetCableChannels(PanelModel& model, int cable, uint32_t channels) {
   if (IsGeneralReadOnly(model) || cable < 0 || cable >= kVirtualSlotCables || channels > 255) return false;
-  WHACableSetting next = model.table.cables[cable];
+  WHACableSetting& setting = CableSetting(model.table, cable);
+  WHACableSetting next = setting;
   next.channels = static_cast<uint8_t>(channels);
   if (!IsValidCableSetting(next)) return false;
-  model.table.cables[cable] = next;
+  setting = next;
   return true;
 }
 bool SetCableFormat(PanelModel& model, int cable, uint32_t format) {
   if (IsGeneralReadOnly(model) || cable < 0 || cable >= kVirtualSlotCables || format > 255) return false;
-  WHACableSetting next = model.table.cables[cable];
+  WHACableSetting& setting = CableSetting(model.table, cable);
+  WHACableSetting next = setting;
   next.format = static_cast<uint8_t>(format);
   if (!IsValidCableSetting(next)) return false;
-  model.table.cables[cable] = next;
+  setting = next;
   return true;
 }
 const char* CableChannelsLabel(uint32_t channels) {

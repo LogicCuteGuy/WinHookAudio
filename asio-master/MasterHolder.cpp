@@ -32,13 +32,13 @@ MasterHolder::~MasterHolder() {
     delete outFifo_[d];
     delete in_[d];
   }
-  for (int i = 0; i < 8; ++i) delete virtualRings_[i];
+  for (WHARingBuffer* ring : virtualRings_) delete ring;
 }
 
 bool MasterHolder::start() {
   if (running_) return true;
   // Preallocate virtual rings at start, not per-tick
-  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+  for (WHARingBuffer*& ring : virtualRings_) if (!ring) ring = new WHARingBuffer();
   cableIo_.resize(sizeof(WHACableExchange) + WHA_CABLE_MAX_FRAMES * WHA_CABLE_MAX_CHANNELS * sizeof(float));
   if (!network_) network_ = new WHANetworkEngine(table_);
   network_->start();  // socket opens only once a Network Stream is mapped
@@ -232,7 +232,7 @@ void MasterHolder::openCables() {
     return;
   }
   cableDevice_ = h;
-  cableCount_ = static_cast<int>(probe.cables < 8 ? probe.cables : 8);
+  cableCount_ = static_cast<int>(probe.cables < kVirtualSlotCables ? probe.cables : kVirtualSlotCables);
   cableError_ = 0;
   cableCountPub_ = cableCount_;
   for (CableStat& st : cableStat_) st.rate = 0;  // no accepted format until this run's first exchange
@@ -293,7 +293,7 @@ bool MasterHolder::exchangeCable(int cable, uint32_t frames, bool hasRecord, uin
   return true;
 }
 bool MasterHolder::cableStatus(int c, WHACableExchange& reply, uint64_t& exchanges, uint64_t& errors) const {
-  if (c < 0 || c >= 8) return false;
+  if (c < 0 || c >= kVirtualSlotCables) return false;
   const CableStat& st = cableStat_[c];
   exchanges = st.exchanges.load();
   errors = st.errors.load();
@@ -315,7 +315,7 @@ bool MasterHolder::cableStatus(int c, WHACableExchange& reply, uint64_t& exchang
   return true;
 }
 void MasterHolder::tickOnce() {
-  for (int i = 0; i < 8; ++i) if (!virtualRings_[i]) virtualRings_[i] = new WHARingBuffer();
+  for (WHARingBuffer*& ring : virtualRings_) if (!ring) ring = new WHARingBuffer();
   doTick();
 }
 
@@ -403,24 +403,39 @@ void MasterHolder::doTick() {
       if (bridgeTicks_[bi][ci]) SetEvent(bridgeTicks_[bi][ci]);
   }
   // Virtual Cable. A VIRTUAL slot's source is one channel of one cable (VirtualCableOf/VirtualChannelOf);
-  // the cable has table_->cables[c].channels of them (a slot on a channel past that is silent). Per
+  // the cable has CableSetting(*table_, c).channels of them (a slot on a channel past that is silent). Per
   // cable, OUT slots are summed into their channel; one block feeds every IN slot of it. A cable
   // WinHookAudio.sys has goes to and from Windows: OUT -> its recording endpoint, its playback
   // endpoint -> IN (silence while nothing plays or an exchange fails); each exchange also sends the
   // cable's format, and an idle cable gets it once when it changes. Other cables loop OUT -> IN
-  // inside the Worker (the ring stub, always 8 channels wide).
+  // inside the Worker (the ring stub, always 8 channels wide). One pass over the slots finds the cables
+  // in use, so a cable without slots costs nothing (the slot lists are scanned per cable only for those).
   {
     const uint32_t frames = table_->general.asioBuffer < 4096 ? table_->general.asioBuffer : 4096;
+    uint32_t outCables = 0, inCables = 0;  // bit c: cable c has a VIRTUAL OUT / IN slot
+    for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi)
+      if (table_->masterOut[oi].type == SLOT_VIRTUAL) outCables |= 1u << VirtualCableOf(table_->masterOut[oi]);
+    for (uint32_t ii = 0; ii < table_->masterInCount; ++ii)
+      if (table_->masterIn[ii].type == SLOT_VIRTUAL) inCables |= 1u << VirtualCableOf(table_->masterIn[ii]);
+    static_assert(kVirtualSlotCables <= 32, "one bit per cable");
     for (int cable = 0; cable < static_cast<int>(kVirtualSlotCables); ++cable) {
       if (!virtualRings_[cable] || !frames) continue;
-      const WHACableSetting setting = table_->cables[cable];
+      const WHACableSetting setting = CableSetting(*table_, cable);
       const bool driverCable = cable < cableCount_;
       const uint32_t cableChannels = IsValidCableSetting(setting) ? setting.channels : 2u;
       const uint32_t format = IsValidCableSetting(setting) ? setting.format : 0u;
+      if (!((outCables | inCables) >> cable & 1u)) {  // idle: a driver cable still gets a changed format
+        if (driverCable) {
+          const CableFormatSent& sent = cableSent_[cable];
+          if (sent.rate != table_->general.sampleRate || sent.channels != cableChannels || sent.format != format)
+            exchangeCable(cable, 0, false, cableChannels, format);
+        }
+        continue;
+      }
       const uint32_t width = driverCable ? cableChannels : kVirtualChannels;  // interleave of virtualScratch_
       bool anyOut = false, anyIn = false;
       std::memset(virtualScratch_, 0, sizeof(float) * width * frames);
-      for (uint32_t oi = 0; oi < table_->masterOutCount; ++oi) {
+      for (uint32_t oi = 0; (outCables >> cable & 1u) && oi < table_->masterOutCount; ++oi) {
         const WHASlot& slot = table_->masterOut[oi];
         if (slot.type != SLOT_VIRTUAL || VirtualCableOf(slot) != cable) continue;
         const uint32_t ch = static_cast<uint32_t>(VirtualChannelOf(slot));
@@ -429,7 +444,7 @@ void MasterHolder::doTick() {
         for (uint32_t f = 0; f < frames; ++f) virtualScratch_[f * width + ch] += outBuf[f];
         anyOut = true;
       }
-      for (uint32_t ii = 0; ii < table_->masterInCount; ++ii) {
+      for (uint32_t ii = 0; (inCables >> cable & 1u) && ii < table_->masterInCount; ++ii) {
         const WHASlot& slot = table_->masterIn[ii];
         if (slot.type != SLOT_VIRTUAL || VirtualCableOf(slot) != cable) continue;
         anyIn = true;
