@@ -159,6 +159,7 @@ if(WHA_ARCH STREQUAL "ARM64")
         COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /Fo${WHA_FWD_DIR}/empty_arm64.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
         COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /arm64EC /Fo${WHA_FWD_DIR}/empty_arm64ec.obj ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/empty.c
         DEPENDS asio-arm64x/empty.c VERBATIM)
+    set(WHA_FWD_DLLS "")  # one target builds both: the objects' rule must run once (MSBuild ran it per target, in parallel)
     foreach(name Master Bridge)
         set(exports DllGetClassObject DllCanUnloadNow DllRegisterServer DllUnregisterServer)
         if(name STREQUAL "Master")
@@ -177,9 +178,9 @@ if(WHA_ARCH STREQUAL "ARM64")
             COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /defArm64Native:${WHA_FWD_DIR}/${name}-arm64.def
                     /def:${WHA_FWD_DIR}/${name}-x64.def /out:${fwd} ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj
             DEPENDS ${WHA_FWD_DIR}/empty_arm64.obj ${WHA_FWD_DIR}/empty_arm64ec.obj VERBATIM)
-        string(TOLOWER ${name} lower)
-        add_custom_target(winhookaudio-${lower}-arm64x ALL DEPENDS ${fwd})
+        list(APPEND WHA_FWD_DLLS ${fwd})
     endforeach()
+    add_custom_target(winhookaudio-arm64x ALL DEPENDS ${WHA_FWD_DLLS})
 endif()
 
 # SDK host sample offline test (CoCreateInstance -> init -> getChannels -> getChannelInfo -> createBuffers -> start -> bufferSwitch)
