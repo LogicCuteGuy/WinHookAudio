@@ -28,6 +28,16 @@ sound cards, Windows apps, other DAWs, LAN  ->  WinHookAudio Master (ASIO)  ->  
 > and short audio dropouts still happen in stress tests. Use it on a PC where a crash is acceptable,
 > or untick Virtual Cable in the installer.
 
+## Screenshots
+
+The Control Panel (opens from the DAW's ASIO settings), with example routes:
+
+| Inputs: what feeds each DAW input | Outputs: where each DAW output goes |
+|---|---|
+| [![Inputs tab](docs/images/panel-inputs.png)](docs/images/panel-inputs.png) | [![Outputs tab](docs/images/panel-outputs.png)](docs/images/panel-outputs.png) |
+| **Network: LAN streams (PCM or Vorbis)** | **General: Master Clock, devices, buffers, Virtual Cables** |
+| [![Network tab](docs/images/panel-network.png)](docs/images/panel-network.png) | [![General tab](docs/images/panel-general.png)](docs/images/panel-general.png) |
+
 ## Install
 
 1. Download `WinHookAudio-Setup-<version>.exe` from [Releases](https://github.com/LogicCuteGuy/WinHookAudio/releases).
