@@ -149,31 +149,42 @@ if(TARGET wha_imgui)
 endif()
 
 # ARM64 (ADR 0016): one ARM64X forwarder per ASIO DLL. On Windows on ARM, ARM64 and x64 apps read the
-# same registry view, so one InprocServer32 path must serve both: WinHookAudio<Name>ASIOARM64X.dll has
-# no code, only exports forwarding ARM64 callers to ...ASIOARM64.dll and x64 callers (emulated) to
-# ...ASIO64.dll (from an x64 build, installed next to it): asio-arm64x/forwarder.c built as ARM64 and
-# as ARM64EC with the target's name. Needs the ARM64 and ARM64EC build tools. One target builds both
-# forwarders (MSBuild ran a rule shared by two targets twice, in parallel).
+# same registry view, so one InprocServer32 path must serve both: WinHookAudio<Name>ASIOARM64X.dll sends
+# ARM64 callers to ...ASIOARM64.dll (forwarded exports) and x64 callers (emulated) to ...ASIO64.dll
+# (from an x64 build, installed next to it; small ARM64EC functions load and call it): asio-arm64x/
+# forwarder.c built as ARM64 and as ARM64EC. Needs the ARM64 and ARM64EC build tools. One target builds
+# both forwarders (MSBuild ran a rule shared by two targets twice, in parallel).
 if(WHA_ARCH STREQUAL "ARM64")
+    cmake_host_system_information(RESULT WHA_KITS QUERY WINDOWS_REGISTRY
+        "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots" VALUE KitsRoot10 VIEW BOTH)
+    if(NOT WHA_KITS)
+        set(WHA_KITS "C:/Program Files (x86)/Windows Kits/10")
+    endif()
+    file(TO_CMAKE_PATH "${WHA_KITS}" WHA_KITS)
+    set(WHA_KERNEL32 "${WHA_KITS}/Lib/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/um/arm64/kernel32.lib")
+    if(NOT EXISTS "${WHA_KERNEL32}")
+        message(FATAL_ERROR "ARM64X forwarders: ${WHA_KERNEL32} not found")
+    endif()
     set(WHA_FWD_DIR ${CMAKE_CURRENT_BINARY_DIR}/arm64x)
     set(WHA_FWD_SRC ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/forwarder.c)
     file(MAKE_DIRECTORY ${WHA_FWD_DIR})
     set(WHA_FWD_DLLS "")
     foreach(name Master Bridge)
         set(defs /DWHA_FWD_TARGET=WinHookAudio${name}ASIOARM64)
-        set(ecdefs /DWHA_FWD_TARGET=WinHookAudio${name}ASIO64)
+        set(ecdefs "")
         if(name STREQUAL "Master")
             list(APPEND defs /DWHA_FWD_MASTER)
             list(APPEND ecdefs /DWHA_FWD_MASTER)
         endif()
         set(native ${WHA_FWD_DIR}/${name}_arm64.obj)
         set(ec ${WHA_FWD_DIR}/${name}_arm64ec.obj)
+        set(def ${CMAKE_CURRENT_SOURCE_DIR}/asio-arm64x/Forwarder${name}.def)
         set(fwd ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/WinHookAudio${name}ASIOARM64X.dll)
         add_custom_command(OUTPUT ${fwd}
-            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl ${defs} /Fo${native} ${WHA_FWD_SRC}
-            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /arm64EC ${ecdefs} /Fo${ec} ${WHA_FWD_SRC}
-            COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /out:${fwd} ${native} ${ec}
-            DEPENDS ${WHA_FWD_SRC} VERBATIM)
+            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /GS- /W4 /WX ${defs} /Fo${native} ${WHA_FWD_SRC}
+            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /Zl /GS- /W4 /WX /arm64EC ${ecdefs} /Fo${ec} ${WHA_FWD_SRC}
+            COMMAND "${CMAKE_LINKER}" /nologo /dll /noentry /machine:arm64x /def:${def} /out:${fwd} ${native} ${ec} "${WHA_KERNEL32}"
+            DEPENDS ${WHA_FWD_SRC} ${def} VERBATIM)
         list(APPEND WHA_FWD_DLLS ${fwd})
     endforeach()
     add_custom_target(winhookaudio-arm64x ALL DEPENDS ${WHA_FWD_DLLS})

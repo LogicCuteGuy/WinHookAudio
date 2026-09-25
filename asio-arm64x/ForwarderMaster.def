@@ -1,0 +1,7 @@
+; ARM64X forwarder, x64 (ARM64EC) half: its exports (asio-arm64x/forwarder.c)
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    DllRegisterServer PRIVATE
+    DllUnregisterServer PRIVATE
+    WHAGetMasterStats PRIVATE

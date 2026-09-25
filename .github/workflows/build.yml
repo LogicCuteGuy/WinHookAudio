@@ -56,9 +56,10 @@ jobs:
           Copy-Item build/Release/winhookaudio-arm64x-test.exe build/x64-test/
           foreach ($n in 'Master', 'Bridge') {
             $fwd = (Resolve-Path "$d/WinHookAudio${n}ASIOARM64X.dll").Path
-            & "$d/winhookaudio-arm64x-test.exe" $fwd "WinHookAudio${n}ASIOARM64.dll"
+            $clsid = if ($n -eq 'Master') { '{CB739B1A-D8A2-409D-A8B7-8CFA4B699C76}' } else { '{A7C1B6FB-9A84-4E9D-A305-EA24944014BD}' }
+            & "$d/winhookaudio-arm64x-test.exe" $fwd $clsid "WinHookAudio${n}ASIOARM64.dll"
             if ($LASTEXITCODE) { exit 1 }
-            & build/x64-test/winhookaudio-arm64x-test.exe $fwd "WinHookAudio${n}ASIO64.dll"
+            & build/x64-test/winhookaudio-arm64x-test.exe $fwd $clsid "WinHookAudio${n}ASIO64.dll"
             if ($LASTEXITCODE) { exit 1 }
           }
 
