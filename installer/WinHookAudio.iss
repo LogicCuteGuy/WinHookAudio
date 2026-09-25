@@ -8,7 +8,7 @@
 ; 64-bit view points at so ARM64 and x64 DAWs each get their own. The Virtual Cable driver is x64 only.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef BuildDir
   #define BuildDir AddBackslash(SourcePath) + "..\build\Release"

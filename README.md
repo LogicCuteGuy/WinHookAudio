@@ -82,7 +82,7 @@ ctest --test-dir build -C Release -E network      # offline tests
 cmake -S . -B build-x86 -A Win32                  # optional: 32-bit DLLs for 32-bit DAWs (build the same way)
 cmake -S . -B build-arm64 -A ARM64                # optional: ARM64 DLLs + ARM64X forwarders (Windows on ARM)
 driver\build.cmd                                  # WinHookAudio.sys, test-signed, into build\driver\
-installer\build-installer.ps1 -Version 0.1.1      # build\installer\WinHookAudio-Setup-0.1.1.exe
+installer\build-installer.ps1 -Version 0.1.2      # build\installer\WinHookAudio-Setup-0.1.2.exe
 ```
 
 The installer takes the 32-bit and ARM64 DLLs when those build folders have them.

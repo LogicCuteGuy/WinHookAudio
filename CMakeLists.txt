@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WinHookAudio VERSION 0.1.1 LANGUAGES CXX)
+project(WinHookAudio VERSION 0.1.2 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "WinHookAudio requires Windows and MSVC.")
